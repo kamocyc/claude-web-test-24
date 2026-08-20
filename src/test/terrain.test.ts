@@ -61,6 +61,44 @@ describe('TerrainGenerator', () => {
     expect(found).toBeGreaterThan(0);
   });
 
+  it('keeps the river bed below the water line all along the channel', () => {
+    // The bed used to be eased down towards the floor in proportion to the channel
+    // strength, which left it above the water wherever the land rose, and broke the
+    // river into a string of disconnected pools. Every core column must hold water.
+    const gen = new TerrainGenerator(2061350291);
+    let core = 0;
+    let dry = 0;
+    for (let z = -450; z < 450; z += 6) {
+      for (let x = -450; x < 450; x += 6) {
+        const river = gen.riverAt(x, z);
+        if (river.strength < 0.35) continue;
+        const height = gen.height(x, z);
+        if (height <= SEA_LEVEL) continue;
+        core++;
+        if (height >= river.surface) dry++;
+      }
+    }
+    expect(core).toBeGreaterThan(50);
+    expect(dry / core).toBeLessThan(0.05);
+  });
+
+  it('never flattens a village over a river', () => {
+    const gen = new TerrainGenerator(2061350291);
+    for (let cell = -2; cell <= 2; cell++) {
+      const village = gen.findNearestVillage(cell * 900, cell * 700, 2);
+      if (!village) continue;
+      // A plateau reaching over the channel would dam the river it crosses.
+      for (let ring = 0; ring <= 38; ring += 8) {
+        for (let step = 0; step < 8; step++) {
+          const angle = (step / 8) * Math.PI * 2;
+          const x = Math.round(village.x + Math.cos(angle) * ring);
+          const z = Math.round(village.z + Math.sin(angle) * ring);
+          expect(gen.riverAt(x, z).strength).toBeLessThanOrEqual(0.02);
+        }
+      }
+    }
+  });
+
   it('finds a village and flattens the ground under it', () => {
     const gen = new TerrainGenerator(31337);
     const village = gen.findNearestVillage(0, 0, 4);

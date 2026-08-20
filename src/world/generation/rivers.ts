@@ -19,6 +19,9 @@ export function inlandness(continentalness: number): number {
 }
 /** Half width of the carved channel, in blocks of noise band. */
 const RIVER_WIDTH = 0.055;
+/** Strength at which a column counts as the channel itself rather than its bank. The
+ *  bed is cut straight down to the floor here, whatever the land above it is doing. */
+export const CHANNEL_CORE = 0.25;
 /** Deepest part of the channel below its surface. */
 const RIVER_DEPTH = 3;
 

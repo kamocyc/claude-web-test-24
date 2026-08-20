@@ -5,7 +5,7 @@ import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey
 import { WATER_FULL } from '../water';
 import { Biome, type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
 import { ORES, placeCactus, placeSugarCane, placeTree, treeCandidates } from './features';
-import { RIVER_CLIMB, RiverField, type RiverSample, inlandness } from './rivers';
+import { CHANNEL_CORE, RIVER_CLIMB, RiverField, type RiverSample, inlandness } from './rivers';
 import {
   type ChestMarker,
   type VillagePlan,
@@ -13,6 +13,7 @@ import {
   type VillageVariant,
   type VillagerMarker,
   VILLAGE_CELL,
+  VILLAGE_RADIUS,
   nearbyVillageSites,
   planVillage,
   plateauWeight,
@@ -144,7 +145,12 @@ export class TerrainGenerator {
   private carveRiver(height: number, base: number, x: number, z: number, cont: number): number {
     const river = this.riverSample(x, z, cont, base);
     if (river.strength <= 0.02) return height;
-    return lerp(height, Math.min(height, river.floor), river.strength);
+    const bed = Math.min(height, river.floor);
+    // Inside the channel the bed is cut outright. Easing it in by strength, as this
+    // used to, left the bed above the water line wherever the land around it rose
+    // more than a block or two, which broke the river into disconnected pools.
+    if (river.strength >= CHANNEL_CORE) return bed;
+    return lerp(height, bed, river.strength / CHANNEL_CORE);
   }
 
   /** Terrain height including the flat plateau a village sits on. */
@@ -207,8 +213,9 @@ export class TerrainGenerator {
     const def = biomeDef(biome);
     // Villages need reasonably flat, dry, buildable ground.
     let valid = def.allowsVillage && baseY > SEA_LEVEL + 2 && baseY < SEA_LEVEL + 24;
-    // Never flatten a village over a river: the plateau would dam it.
-    if (valid && this.riverAt(site.x, site.z).strength > 0.1) valid = false;
+    // Never flatten a village over a river: the plateau would dam it. The whole
+    // plateau has to be clear, not just the centre, because it reaches 38 blocks out.
+    if (valid && this.riverNearVillage(site.x, site.z)) valid = false;
     if (valid) {
       // Reject sites where the surrounding land is too steep to plausibly flatten.
       let min = baseY;
@@ -225,6 +232,20 @@ export class TerrainGenerator {
     const info: VillageInfo = { site, valid, baseY: baseY + 1, variant };
     this.villageInfoCache.set(key, info);
     return info;
+  }
+
+  /** True when any part of a village plateau would sit on a river channel. */
+  private riverNearVillage(x: number, z: number): boolean {
+    if (this.riverAt(x, z).strength > 0.02) return true;
+    for (let ring = 10; ring <= VILLAGE_RADIUS; ring += 9) {
+      for (let step = 0; step < 12; step++) {
+        const angle = (step / 12) * Math.PI * 2;
+        const sx = Math.round(x + Math.cos(angle) * ring);
+        const sz = Math.round(z + Math.sin(angle) * ring);
+        if (this.riverAt(sx, sz).strength > 0.02) return true;
+      }
+    }
+    return false;
   }
 
   private villagePlan(info: VillageInfo): VillagePlan {
