@@ -7,8 +7,16 @@ import { SEA_LEVEL } from '../chunk';
  *  take its surface height from the same continentalness noise that decides land from
  *  sea: that value falls off towards the ocean, so the river surface does too. */
 
-/** How far the water surface climbs between the coast and the deep inland. */
-const RIVER_CLIMB = 16;
+/** How far the land, and with it the river surface, climbs from coast to interior. */
+export const RIVER_CLIMB = 15;
+
+/** How far inland a column is, from 0 at the coast to 1 deep in the interior. This is
+ *  a monotone function of continentalness, which is what guarantees that a river never
+ *  has to run uphill: the terrain is lifted by the same amount, so the channel keeps
+ *  descending all the way to the sea. */
+export function inlandness(continentalness: number): number {
+  return clamp((continentalness + 0.02) / 0.34, 0, 1);
+}
 /** Half width of the carved channel, in blocks of noise band. */
 const RIVER_WIDTH = 0.055;
 /** Deepest part of the channel below its surface. */
@@ -32,10 +40,10 @@ export class RiverField {
     this.warp = new Noise(seed ^ 0x33a2b);
   }
 
-  /** Samples the river at a column. `continentalness` comes from the terrain generator
-   *  and is what makes the surface fall monotonically towards the sea; `landHeight` is
-   *  the surrounding terrain, which the surface is kept below so the banks hold. */
-  sample(x: number, z: number, continentalness: number, landHeight: number): RiverSample {
+  /** Samples the river at a column. The surface comes from continentalness alone, and
+   *  the terrain generator lifts the land by exactly the same amount, so the channel is
+   *  always sunk into its banks and always slopes towards the sea. */
+  sample(x: number, z: number, continentalness: number): RiverSample {
     // No rivers out at sea, and they fade out as they meet it.
     const land = smoothstep(-0.12, 0.06, continentalness + 0.16);
     if (land <= 0) return DRY;
@@ -48,9 +56,7 @@ export class RiverField {
     const strength = band * land;
     if (strength <= 0.02) return DRY;
 
-    // The water surface has to stay under the land it runs through, otherwise the
-    // river would simply flood the plain instead of sitting in its channel.
-    const surface = Math.min(this.surfaceLevel(continentalness), Math.floor(landHeight) - 2);
+    const surface = this.surfaceLevel(continentalness);
     return {
       strength,
       surface,
@@ -58,10 +64,10 @@ export class RiverField {
     };
   }
 
-  /** Water surface of the river, from just above the sea at the coast to well inland. */
+  /** Water surface of the river: three blocks below the base height of the land, which
+   *  leaves room for banks even where the terrain detail dips. */
   surfaceLevel(continentalness: number): number {
-    const inland = clamp((continentalness + 0.11) / 0.34, 0, 1);
-    return SEA_LEVEL + 1 + Math.round(inland * RIVER_CLIMB);
+    return SEA_LEVEL + Math.round(inlandness(continentalness) * RIVER_CLIMB);
   }
 
   /** True where a spring should bubble up: the far upstream end of a channel. */

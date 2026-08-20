@@ -5,7 +5,7 @@ import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey
 import { WATER_FULL } from '../water';
 import { Biome, type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
 import { ORES, placeCactus, placeSugarCane, placeTree, treeCandidates } from './features';
-import { RiverField, type RiverSample } from './rivers';
+import { RIVER_CLIMB, RiverField, type RiverSample, inlandness } from './rivers';
 import {
   type ChestMarker,
   type VillagePlan,
@@ -83,13 +83,38 @@ export class TerrainGenerator {
     const hilly = smoothstep(-0.15, 0.28, ero);
     const mountain = smoothstep(0.15, 0.42, ero) * smoothstep(0.3, 0.68, ridge);
 
-    let base = SEA_LEVEL - 14 + land * 17;
-    base += land * hilly * (6 + detail * 6);
-    base += land * mountain * (26 + ridge * 30);
+    // Land rises steadily towards the interior. That slope is what every river runs
+    // down, and it is monotone in continentalness so a river can never meet a hump.
+    const base =
+      SEA_LEVEL -
+      14 +
+      land * 17 +
+      land * inlandness(cont) * RIVER_CLIMB +
+      land * hilly * (6 + detail * 6) +
+      land * mountain * (26 + ridge * 30);
     // The fine detail is left out of `base` so the river surface, which is derived
     // from it, does not jitter up and down along the channel.
     const h = this.carveRiver(base + detail * 2, base, x, z, cont);
     return clamp(Math.round(h), MIN_HEIGHT, MAX_HEIGHT);
+  }
+
+  /** Terrain height before the fine detail is added, which is the level rivers and
+   *  villages are measured against. */
+  private baseHeight(x: number, z: number, cont: number): number {
+    const ero = this.erosion.fbm2(x * 0.0027, z * 0.0027, 3);
+    const ridge = this.ridge.ridged2(x * 0.0042, z * 0.0042, 4);
+    const detail = this.detail.fbm2(x * 0.02, z * 0.02, 3);
+    const land = smoothstep(-0.22, 0.05, cont + 0.16);
+    const hilly = smoothstep(-0.15, 0.28, ero);
+    const mountain = smoothstep(0.15, 0.42, ero) * smoothstep(0.3, 0.68, ridge);
+    return (
+      SEA_LEVEL -
+      14 +
+      land * 17 +
+      land * inlandness(cont) * RIVER_CLIMB +
+      land * hilly * (6 + detail * 6) +
+      land * mountain * (26 + ridge * 30)
+    );
   }
 
   /** Continentalness drives both the coastline and the height of every river. */
@@ -101,29 +126,25 @@ export class TerrainGenerator {
    *  water surface always sits below the surrounding land. */
   riverAt(x: number, z: number): RiverSample {
     const cont = this.continentalness(x, z);
-    return this.rivers.sample(x, z, cont, this.smoothHeight(x, z, cont));
+    return this.riverSample(x, z, cont, this.baseHeight(x, z, cont));
   }
 
-  /** Terrain height without the fine detail, which is what the river surface follows. */
-  private smoothHeight(x: number, z: number, cont: number): number {
-    const ero = this.erosion.fbm2(x * 0.0027, z * 0.0027, 3);
-    const ridge = this.ridge.ridged2(x * 0.0042, z * 0.0042, 4);
-    const detail = this.detail.fbm2(x * 0.02, z * 0.02, 3);
-    const land = smoothstep(-0.22, 0.05, cont + 0.16);
-    const hilly = smoothstep(-0.15, 0.28, ero);
-    const mountain = smoothstep(0.15, 0.42, ero) * smoothstep(0.3, 0.68, ridge);
-    return SEA_LEVEL - 14 + land * 17 + land * hilly * (6 + detail * 6) + land * mountain * (26 + ridge * 30);
+  /** River sample with the mountain fade already applied, so callers and the carving
+   *  code always agree on where a channel actually exists. */
+  private riverSample(x: number, z: number, cont: number, base: number): RiverSample {
+    const river = this.rivers.sample(x, z, cont);
+    if (river.strength <= 0) return river;
+    // Rivers fade out at the foot of a mountain rather than slicing a canyon through it.
+    const reach = 1 - smoothstep(16, 30, base - river.surface);
+    return reach >= 1 ? river : { ...river, strength: river.strength * reach };
   }
 
   /** Cuts the river channel into the land. Rivers fade out rather than slicing a
    *  canyon through a mountain range. */
   private carveRiver(height: number, base: number, x: number, z: number, cont: number): number {
-    const river = this.rivers.sample(x, z, cont, base);
-    if (river.strength <= 0) return height;
-    const reach = 1 - smoothstep(16, 30, base - river.surface);
-    const strength = river.strength * reach;
-    if (strength <= 0) return height;
-    return lerp(height, Math.min(height, river.floor), strength);
+    const river = this.riverSample(x, z, cont, base);
+    if (river.strength <= 0.02) return height;
+    return lerp(height, Math.min(height, river.floor), river.strength);
   }
 
   /** Terrain height including the flat plateau a village sits on. */
@@ -293,7 +314,7 @@ export class TerrainGenerator {
 
         // Rivers run above sea level, so they are filled from their own surface.
         const cont = this.continentalness(x, z);
-        const river = this.rivers.sample(x, z, cont, this.smoothHeight(x, z, cont));
+        const river = this.riverSample(x, z, cont, this.baseHeight(x, z, cont));
         if (river.strength > 0.2 && h < river.surface) {
           for (let y = h + 1; y <= river.surface; y++) setLocal(lx, y, lz, Block.WATER);
           if (this.rivers.isSpringSite(this.seed, x, z, river, cont)) {

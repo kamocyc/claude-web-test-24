@@ -267,6 +267,133 @@ const torchLight = await evaluate(() => {
 });
 console.log('block light at player:', torchLight);
 
+// --- rivers, channels and floodgates -----------------------------------------
+const river = await evaluate(() => {
+  window.voxelcraft.heal();
+  return window.voxelcraft.gotoRiver();
+});
+console.log('river:', JSON.stringify(river));
+if (river) {
+  await page.waitForFunction(() => window.voxelcraft?.pending() === 0, null, { timeout: 90000 });
+  await page.waitForTimeout(4000);
+  await evaluate(() => {
+    window.voxelcraft.game.player.pitch = -0.3;
+  });
+  await shot('15-river');
+  console.log('river depth:', await evaluate((r) => window.voxelcraft.waterDepth(r.x, r.surface, r.z), river));
+
+  // Build a stone aqueduct out of the river and check the water runs its length.
+  const works = await evaluate((r) => {
+    const g = window.voxelcraft.game;
+    const AIR = 0;
+    const STONE = 1;
+    // Head away from the river, towards dry ground.
+    let dir = null;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      if (window.voxelcraft.riverAt(r.x + dx * 12, r.z + dz * 12).strength < 0.05) {
+        dir = [dx, dz];
+        break;
+      }
+    }
+    if (!dir) return null;
+    const [dx, dz] = dir;
+    const LENGTH = 12;
+    const floorY = r.surface - 2;
+
+    for (let i = 1; i <= LENGTH + 1; i++) {
+      const x = r.x + dx * i;
+      const z = r.z + dz * i;
+      // Clear the trough and everything above it.
+      for (let y = floorY; y <= r.surface + 4; y++) g.world.setBlock(x, y, z, AIR);
+      g.world.setBlock(x, floorY, z, STONE);
+      // Walls on both sides, and a dam at the far end.
+      for (const [sx, sz] of [[dz, dx], [-dz, -dx]]) {
+        for (let y = floorY; y <= r.surface; y++) g.world.setBlock(x + sx, y, z + sz, STONE);
+      }
+      if (i === LENGTH + 1) {
+        for (let y = floorY; y <= r.surface; y++) g.world.setBlock(x, y, z, STONE);
+      }
+    }
+    return {
+      dx,
+      dz,
+      gate: [r.x + dx * 6, r.z + dz * 6],
+      far: [r.x + dx * LENGTH, r.z + dz * LENGTH],
+      floorY,
+      surface: r.surface,
+    };
+  }, river);
+  console.log('aqueduct:', JSON.stringify(works));
+
+  if (works) {
+    const farWater = () =>
+      evaluate((w) => window.voxelcraft.waterAt(w.far[0], w.floorY + 1, w.far[1]), works);
+    await page.waitForTimeout(9000);
+    console.log('water reached the far end:', await farWater());
+    await evaluate((w) => {
+      const g = window.voxelcraft.game;
+      g.player.teleportTo(w.far[0] + 0.5 - w.dx * 3, w.surface + 3, w.far[1] + 0.5 - w.dz * 3);
+      g.player.yaw = Math.atan2(-w.dx, -w.dz);
+      g.player.pitch = -0.5;
+    }, works);
+    await page.waitForTimeout(1500);
+    await shot('16-aqueduct');
+
+    // Drop a gate across the aqueduct and empty the far half.
+    await evaluate((w) => {
+      const g = window.voxelcraft.game;
+      for (let y = w.floorY; y <= w.surface; y++) g.world.setBlock(w.gate[0], y, w.gate[1], 57);
+      for (let i = 7; i <= 12; i++) {
+        const x = w.far[0] - w.dx * (12 - i);
+        const z = w.far[1] - w.dz * (12 - i);
+        for (let y = w.floorY + 1; y <= w.surface; y++) g.world.setBlock(x, y, z, 0);
+      }
+    }, works);
+    await page.waitForTimeout(7000);
+    console.log('with the gate shut:', await farWater());
+    await shot('17-gate-closed');
+
+    await evaluate((w) => {
+      const g = window.voxelcraft.game;
+      for (let y = w.floorY; y <= w.surface; y++) g.world.setBlock(w.gate[0], y, w.gate[1], 58);
+    }, works);
+    await page.waitForTimeout(9000);
+    console.log('with the gate open:', await farWater());
+    await shot('18-gate-open');
+
+    // A stack of pumps lifts water out of the aqueduct.
+    const pumped = await evaluate((w) => {
+      const g = window.voxelcraft.game;
+      const x = w.far[0] + w.dz;
+      const z = w.far[1] + w.dx;
+      for (let y = w.floorY; y < w.surface + 8; y++) g.world.setBlock(x, y, z, 0);
+      g.world.setBlock(x, w.floorY, z, 9);
+      g.world.setBlock(x, w.floorY + 1, z, 55);
+      g.world.setBlock(x, w.floorY + 3, z, 55);
+      return { x, z, base: w.floorY };
+    }, works);
+    await page.waitForTimeout(6000);
+    console.log('pump lifted water to:', JSON.stringify(await evaluate((p) => ({
+      firstStage: window.voxelcraft.waterAt(p.x, p.base + 2, p.z),
+      secondStage: window.voxelcraft.waterAt(p.x, p.base + 4, p.z),
+    }), pumped)));
+  }
+
+  // Dive in and watch the breath meter drop.
+  await evaluate((r) => {
+    const g = window.voxelcraft.game;
+    window.voxelcraft.heal();
+    g.player.teleportTo(r.x + 0.5, r.surface - 3, r.z + 0.5);
+  }, river);
+  await page.waitForTimeout(5000);
+  console.log('breath:', JSON.stringify(await evaluate(() => ({
+    air: Math.round(window.voxelcraft.player.air * 10) / 10,
+    submerged: window.voxelcraft.player.submerged,
+  }))));
+  await shot('19-underwater');
+  await evaluate(() => window.voxelcraft.heal());
+}
+
 // --- crafting table UI -------------------------------------------------------
 await evaluate(() => {
   window.voxelcraft.heal();

@@ -8,7 +8,15 @@ import { createChunkMaterials, type ChunkMaterials } from '../render/materials';
 import { Sky } from '../render/sky';
 import { buildAtlas, type Atlas } from '../render/textures';
 import { Block, blockDef, isFarmland, isReplaceable, supportsPlant } from '../world/blocks';
-import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, Chunk, chunkKey, toChunkCoord } from '../world/chunk';
+import {
+  CHUNK_HEIGHT,
+  CHUNK_SIZE,
+  CHUNK_VOLUME,
+  Chunk,
+  SEA_LEVEL,
+  chunkKey,
+  toChunkCoord,
+} from '../world/chunk';
 import { TerrainGenerator } from '../world/generation/terrain';
 import { LightEngine } from '../world/lighting';
 import { WATER_FULL } from '../world/water';
@@ -1001,6 +1009,39 @@ export class Game {
         }
         return this.mobs.add(new Mob(kind, x, y, z));
       },
+      /** Jumps to the bank of the nearest generated river. */
+      gotoRiver: (): { x: number; z: number; surface: number } | null => {
+        const startX = Math.floor(this.player.x);
+        const startZ = Math.floor(this.player.z);
+        for (let radius = 0; radius < 700; radius += 5) {
+          for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 16) {
+            const x = startX + Math.round(Math.cos(angle) * radius);
+            const z = startZ + Math.round(Math.sin(angle) * radius);
+            const river = this.generator.riverAt(x, z);
+            if (river.strength < 0.85) continue;
+            // Inland enough to be a proper channel rather than the tidal mouth, and
+            // actually cut below its own water line.
+            if (river.surface <= SEA_LEVEL + 3) continue;
+            if (this.generator.height(x, z) >= river.surface) continue;
+            // Land on the nearest dry bank rather than in the water.
+            for (let offset = 4; offset < 14; offset++) {
+              for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+                const bx = x + dx * offset;
+                const bz = z + dz * offset;
+                if (this.generator.height(bx, bz) > river.surface) {
+                  this.debug.teleport(bx, bz);
+                  return { x, z, surface: river.surface };
+                }
+              }
+            }
+            this.debug.teleport(x, z);
+            return { x, z, surface: river.surface };
+          }
+        }
+        return null;
+      },
+      /** River channel data at a column, for tests and debugging. */
+      riverAt: (x: number, z: number) => this.generator.riverAt(x, z),
       /** Drops the player into the nearest cave below, for testing underground light. */
       findCave: (): { x: number; y: number; z: number } | null => {
         const x = Math.floor(this.player.x);

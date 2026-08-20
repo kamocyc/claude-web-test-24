@@ -14,7 +14,7 @@ const SIMULATION_RADIUS = 96;
 /** Most a single cell can give away per step. */
 const MAX_FLOW = WATER_FULL;
 /** Water added by a spring each step. */
-export const SPRING_RATE = 40;
+export const SPRING_RATE = 24;
 /** Water a pump lifts each step. */
 export const PUMP_RATE = 70;
 
@@ -324,9 +324,14 @@ export class WaterSimulator {
       }
     }
 
-    // 2. Spread sideways towards whichever neighbours hold less, which makes a flat
-    //    surface the resting state.
+    // 2. Spread sideways. Every neighbour that holds less is brought up to the local
+    //    average in one step. Handing over a quarter of the difference at a time would
+    //    also settle flat, but it crawls: water would take a minute to run down a
+    //    channel that it should cross in a second.
     if (remaining > 0) {
+      let total = remaining;
+      let count = 1;
+      const receivers: { x: number; z: number; dx: number; dz: number; level: number }[] = [];
       for (let i = 0; i < NEIGHBORS.length; i++) {
         // Alternate the order so the sweep does not drift in one direction.
         const [dx, dz] = NEIGHBORS[(i + this.parity * 2) % NEIGHBORS.length];
@@ -342,18 +347,26 @@ export class WaterSimulator {
           flowZ += dz * amount;
           continue;
         }
-        const neighbor = this.world.getWater(nx, y, nz);
-        const difference = remaining - neighbor;
-        // A quarter of the difference keeps the sweep stable; the floor of one keeps
-        // shallow water from stalling a few levels short of flat.
-        if (difference < 2) continue;
-        const amount = clampFlow(Math.max(1, Math.floor(difference / 4)), remaining);
-        if (amount <= 0) continue;
-        this.world.setWater(nx, y, nz, neighbor + amount);
-        remaining -= amount;
-        flowX += dx * amount;
-        flowZ += dz * amount;
-        this.activateAround(nx, y, nz);
+        const level = this.world.getWater(nx, y, nz);
+        if (level >= remaining) continue;
+        total += level;
+        count++;
+        receivers.push({ x: nx, z: nz, dx, dz, level });
+      }
+
+      if (receivers.length > 0) {
+        const average = Math.floor(total / count);
+        for (const receiver of receivers) {
+          if (remaining <= average) break;
+          const want = Math.min(average - receiver.level, remaining - average);
+          const amount = clampFlow(want, remaining);
+          if (amount <= 0) continue;
+          this.world.setWater(receiver.x, y, receiver.z, receiver.level + amount);
+          remaining -= amount;
+          flowX += receiver.dx * amount;
+          flowZ += receiver.dz * amount;
+          this.activateAround(receiver.x, y, receiver.z);
+        }
       }
     }
 
