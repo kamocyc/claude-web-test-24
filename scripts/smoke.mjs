@@ -226,21 +226,25 @@ const farm = await evaluate(() => {
   window.voxelcraft.give('bread', 2);
   window.voxelcraft.heal();
   g.player.hunger.food = 8;
-  // Stand on a grass block so there is soil to till.
-  for (let r = 4; r < 60; r += 2) {
-    for (let a = 0; a < Math.PI * 2; a += Math.PI / 6) {
-      const x = Math.round(g.player.x + Math.cos(a) * r);
-      const z = Math.round(g.player.z + Math.sin(a) * r);
-      const top = g.world.heightAt(x, z);
-      if (top > 0 && g.world.getBlock(x, top, z) === 2) {
-        g.player.teleportTo(x + 0.5, top + 1, z + 0.5);
-        g.player.pitch = -1.5;
-        g.player.yaw = Math.PI / 2;
-        return { x, z, top };
+  // Stand on a grass block so there is soil to till. The village may well be in a
+  // snowy biome, where there is none, so fall back to the ground around the spawn.
+  const search = (cx, cz) => {
+    for (let r = 4; r < 60; r += 2) {
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 6) {
+        const x = Math.round(cx + Math.cos(a) * r);
+        const z = Math.round(cz + Math.sin(a) * r);
+        const top = g.world.heightAt(x, z);
+        if (top > 0 && g.world.getBlock(x, top, z) === 2) {
+          g.player.teleportTo(x + 0.5, top + 1, z + 0.5);
+          g.player.pitch = -1.5;
+          g.player.yaw = Math.PI / 2;
+          return { x, z, top };
+        }
       }
     }
-  }
-  return null;
+    return null;
+  };
+  return search(g.player.x, g.player.z) ?? search(g.spawnPoint.x, g.spawnPoint.z);
 });
 console.log('farm plot:', JSON.stringify(farm));
 if (farm) {
