@@ -417,8 +417,8 @@ if (river && river.surface !== null) {
   if (works) {
     const farWater = () =>
       evaluate((w) => window.voxelcraft.waterAt(w.far[0], w.floorY + 1, w.far[1]), works);
-    // The whole island's rivers are live, so the simulation's per-step budget is spread
-    // thin and a fresh channel fills over tens of seconds rather than a handful.
+    // Every river on the island is live and sharing one step's budget, so a fresh
+    // channel wets through over tens of seconds rather than instantly.
     await page.waitForTimeout(25000);
     console.log('water reached the far end:', await farWater());
     await evaluate((w) => {

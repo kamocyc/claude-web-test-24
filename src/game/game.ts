@@ -302,6 +302,10 @@ export class Game {
 
     this.player.autoStep = this.options.settings.autoStep;
     this.advanceWeather(this.weatherSeconds + dt);
+    // The island holds far more moving water than one step's budget, so the simulation
+    // needs to know where the player is: what they dig or break answers at once, and
+    // the rest of the island takes its turn.
+    this.water.focus = { x: this.player.x, z: this.player.z };
     this.water.update(dt);
     this.day.update(dt);
     this.materials.setSun(Math.max(0.06, this.day.sunLight));

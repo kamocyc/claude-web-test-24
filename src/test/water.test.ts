@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Block } from '../world/blocks';
 import { CHUNK_SIZE, Chunk, SEA_LEVEL } from '../world/chunk';
 import { WATER_FULL, WATER_MAX } from '../world/water';
-import { WaterSimulator } from '../world/waterSim';
+import { MAX_CELLS_PER_TICK, WaterSimulator } from '../world/waterSim';
 import { World } from '../world/world';
 
 interface Rig {
@@ -319,5 +319,87 @@ describe('the sea', () => {
     }
     for (let i = 0; i < 200; i++) sim.step();
     expect(totalWater(world)).toBe(before);
+  });
+});
+
+describe('the step budget', () => {
+  const LOW = -45;
+  const HIGH = 45;
+  /** Lowest point of the sloping bed. Solid rock below it, so a column dug out of it
+   *  holds the water that falls in. */
+  const FLOOR = 5;
+  /** How far along the bed drops a block. */
+  const RUN = 12;
+
+  const bedAt = (x: number) => FLOOR + Math.floor((HIGH - x) / RUN);
+
+  /** Far more moving water than one step can afford: a wide sheet running down a slope,
+   *  fed by springs at the head and drained at the foot, so nothing in it ever settles
+   *  and drops out of the queue. This is the shape a live island of rivers has, and the
+   *  shape that used to leave two thirds of the water unsimulated for ever. */
+  function crowded(): Rig {
+    const r = rig(3);
+    r.box(LOW - 1, 0, LOW - 1, HIGH + 1, FLOOR + 9, HIGH + 1, Block.STONE);
+    for (let z = LOW; z <= HIGH; z++) {
+      for (let x = LOW; x <= HIGH; x++) {
+        const bed = bedAt(x);
+        r.box(x, bed + 1, z, x, FLOOR + 9, z, Block.AIR);
+        r.pour(x, bed + 1, z, 2);
+      }
+    }
+    for (let z = LOW; z <= HIGH; z++) {
+      r.world.setBlock(LOW, bedAt(LOW), z, Block.SPRING, { record: false });
+      r.world.setBlock(HIGH, bedAt(HIGH), z, Block.DRAIN, { record: false });
+    }
+    r.run(40);
+    return r;
+  }
+
+  /** Knocks the bed out from under a column, the way a player mining does. The water
+   *  above it should fall in and stand on the rock two blocks down. */
+  function digOut(r: Rig, x: number, z: number): void {
+    r.world.setBlock(x, bedAt(x), z, Block.AIR, { record: false });
+    r.world.setBlock(x, bedAt(x) - 1, z, Block.AIR, { record: false });
+  }
+
+  const fellIn = (r: Rig, x: number, z: number) => r.world.getWater(x, bedAt(x) - 1, z);
+
+  it('comes round to every cell however many are awake', () => {
+    // The budget used to put the cells it had just run back at the front of the queue,
+    // ahead of the ones it had run out of budget for. The tail was then never reached
+    // again: on a full island two thirds of the water stopped being simulated at all,
+    // rivers ran short of the sea, and water stood in mid air over a hole dug under it.
+    const r = crowded();
+    expect(r.sim.activeCount).toBeGreaterThan(MAX_CELLS_PER_TICK * 2);
+
+    // A hole in each corner and one in the middle. Wherever they land in the queue,
+    // every one of them has to have water fall into it.
+    const holes = [
+      [LOW + 2, LOW + 2], [HIGH - 2, LOW + 2], [LOW + 2, HIGH - 2], [HIGH - 2, HIGH - 2], [0, 0],
+    ] as const;
+    for (const [x, z] of holes) digOut(r, x, z);
+    r.run(30);
+    for (const [x, z] of holes) expect(fellIn(r, x, z)).toBeGreaterThan(0);
+  });
+
+  it('answers at once around the player', () => {
+    const r = crowded();
+    r.sim.focus = { x: LOW + 2, z: LOW + 2 };
+    r.run(4);
+    digOut(r, LOW + 2, LOW + 2);
+    // Two blocks to fall through, and the water round the player comes round every step
+    // or two however busy the rest of the world is.
+    r.run(4);
+    expect(fellIn(r, LOW + 2, LOW + 2)).toBeGreaterThan(0);
+  });
+
+  it('never lets the water round the player starve the rest of the world', () => {
+    const r = crowded();
+    // Standing in the middle of all of it, so the near square alone is big enough to
+    // eat the whole budget if it were allowed to.
+    r.sim.focus = { x: 0, z: 0 };
+    digOut(r, HIGH - 2, HIGH - 2);
+    r.run(30);
+    expect(fellIn(r, HIGH - 2, HIGH - 2)).toBeGreaterThan(0);
   });
 });

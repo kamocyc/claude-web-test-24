@@ -371,7 +371,13 @@ export class TerrainGenerator {
           setLocal(lx, h - 1, lz, Block.SAND);
         }
         for (let y = h + 1; y <= SEA_LEVEL; y++) setLocal(lx, y, lz, Block.WATER);
-        if (h < SEA_LEVEL) seaColumn[lz * CHUNK_SIZE + lx] = 1;
+        // The ocean, and only the ocean: water that reaches it is gone for good. A
+        // column is ocean when the land itself was under the sea, not when a channel
+        // was cut through it — a river bed four blocks deep dips below sea level well
+        // inland, and flagging those swallowed the river running down them.
+        if (h < SEA_LEVEL && this.naturalHeight(x, z) < SEA_LEVEL) {
+          seaColumn[lz * CHUNK_SIZE + lx] = 1;
+        }
         if (h < SEA_LEVEL && isSnowy(biome)) setLocal(lx, SEA_LEVEL, lz, Block.ICE);
 
         // Rivers run above sea level, so they are filled from their own surface.

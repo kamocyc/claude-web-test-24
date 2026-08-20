@@ -5,11 +5,18 @@ import type { World } from './world';
 
 /** Seconds between simulation steps. */
 const WATER_TICK_SECONDS = 0.1;
-/** Cells processed per step; anything over this is carried to the next step. A live
- *  river keeps thousands of cells moving for as long as it runs, so this is the ceiling
- *  on what the water may cost a frame: past it the water simply flows more slowly
- *  instead of the frame rate falling. */
-const MAX_CELLS_PER_TICK = 8000;
+/** Cells processed per step. A live river keeps tens of thousands of cells moving for
+ *  as long as it runs, so this is the ceiling on what the water may cost a frame: past
+ *  it the water flows more slowly instead of the frame rate falling. */
+export const MAX_CELLS_PER_TICK = 8000;
+/** How far from the player water is simulated at full speed. What the player digs out
+ *  or breaks has to answer now, not when the island's round next comes to it. Measured
+ *  on the trunk of the biggest river on the verification seed, this square holds 2,400
+ *  to 3,500 moving cells, which fits inside the share below with room to spare. */
+const NEAR_RADIUS = 32;
+/** Most of the budget the water round the player may take. Standing in the middle of a
+ *  lake must not stop the rest of the island. */
+const NEAR_SHARE = 0.5;
 /** Steps allowed in a single frame, so a slow frame cannot spiral. */
 const MAX_TICKS_PER_FRAME = 1;
 /** Most a single cell can give away per step. */
@@ -57,13 +64,55 @@ export interface FlowVector {
 
 const NO_FLOW: FlowVector = { x: 0, z: 0 };
 
+/** A queue of cells that is always walked all the way round before it starts again.
+ *
+ *  The cursor is the whole point. The obvious version — snapshot the awake cells, run
+ *  as many as the budget allows, put the rest back — quietly never runs the rest: a cell
+ *  that moves wakes itself again from inside the loop, so it is queued ahead of the ones
+ *  the budget could not reach, and the same head is at the front for ever. On an island
+ *  with three times more moving water than one step can afford, two thirds of it was
+ *  never simulated at all: rivers stopped short, water sat over holes the player had dug
+ *  under it, and breaking the bank of a river did nothing. */
+class CellSweep {
+  /** Cells woken since this round started; they go into the round after it. */
+  private waking = new Set<number>();
+  private round: number[] = [];
+  private at = 0;
+
+  add(key: number): void {
+    this.waking.add(key);
+  }
+
+  get size(): number {
+    return this.waking.size + (this.round.length - this.at);
+  }
+
+  /** Runs at most `budget` cells, picking up where the last step stopped, and reports
+   *  how many it got through. A round is only ever restarted once per call, so a queue
+   *  that fits inside the budget runs every cell every step. */
+  run(budget: number, simulate: (key: number) => void): number {
+    if (this.at >= this.round.length) {
+      this.round = [...this.waking];
+      this.waking.clear();
+      this.at = 0;
+    }
+    const end = Math.min(this.round.length, this.at + budget);
+    const used = end - this.at;
+    for (; this.at < end; this.at++) simulate(this.round[this.at]);
+    return used;
+  }
+}
+
 /** Cellular water: every voxel holds a fill level, water falls, spreads sideways to
  *  level out, and a cell may hold a little more than full so pressure can push water
  *  back up on the far side of a dip. Cells that stop moving are dropped from the
  *  active set, so a settled ocean costs nothing at all. */
 export class WaterSimulator {
-  /** Cells to visit on the next step. */
-  private active = new Set<number>();
+  /** Water within `NEAR_RADIUS` of the player. It gets first call on the budget and
+   *  normally fits inside its share, so it runs every cell every step. */
+  private readonly near = new CellSweep();
+  /** The rest of the island, which comes round in a few steps rather than one. */
+  private readonly far = new CellSweep();
   /** Spring and pump blocks that produce or lift water every step. */
   private readonly springs = new Set<number>();
   private readonly pumps = new Set<number>();
@@ -81,8 +130,11 @@ export class WaterSimulator {
 
   constructor(private readonly world: World) {}
 
+  /** Where the player is standing, or null while there is nobody in the world yet. */
+  focus: { x: number; z: number } | null = null;
+
   get activeCount(): number {
-    return this.active.size;
+    return this.near.size + this.far.size;
   }
 
   get springCount(): number {
@@ -92,7 +144,15 @@ export class WaterSimulator {
   /** Wakes a cell and the water around it. */
   activate(x: number, y: number, z: number): void {
     if (y < 0 || y >= CHUNK_HEIGHT) return;
-    this.active.add(packCell(x, y, z));
+    const key = packCell(x, y, z);
+    if (this.isNear(x, z)) this.near.add(key);
+    else this.far.add(key);
+  }
+
+  private isNear(x: number, z: number): boolean {
+    const focus = this.focus;
+    if (!focus) return false;
+    return Math.abs(x - focus.x) <= NEAR_RADIUS && Math.abs(z - focus.z) <= NEAR_RADIUS;
   }
 
   private activateAround(x: number, y: number, z: number): void {
@@ -192,25 +252,20 @@ export class WaterSimulator {
     return ticks;
   }
 
-  /** One simulation step. */
+  /** One simulation step. The budget goes to the water round the player first, so
+   *  anything they dig or break answers at once, and what is left carries the island's
+   *  sweep forward from wherever it stopped. */
   step(): void {
     this.flow = new Map();
     this.parity ^= 1;
     this.runSprings();
     this.runPumps();
 
-    const cells = [...this.active];
-    this.active.clear();
-    let processed = 0;
-    for (const key of cells) {
-      if (processed >= MAX_CELLS_PER_TICK) {
-        // Out of budget: keep the rest for the next step rather than dropping them.
-        this.active.add(key);
-        continue;
-      }
-      processed++;
-      this.simulateCell(key);
-    }
+    const run = (key: number) => this.simulateCell(key);
+    // The player's own water first, capped so that standing in the middle of a lake
+    // cannot stop the rest of the island; whatever it leaves carries the island round.
+    const spent = this.near.run(Math.floor(MAX_CELLS_PER_TICK * NEAR_SHARE), run);
+    this.far.run(MAX_CELLS_PER_TICK - spent, run);
   }
 
   private runSprings(): void {
