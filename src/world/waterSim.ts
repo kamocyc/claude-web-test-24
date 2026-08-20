@@ -1,10 +1,10 @@
 import { Block, blocksWater, isWaterSink } from './blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, SEA_LEVEL, type Chunk } from './chunk';
-import { WATER_EPSILON, WATER_FULL, WATER_MAX, WATER_MIN } from './water';
+import { WATER_EPSILON, WATER_FULL, WATER_MAX } from './water';
 import type { World } from './world';
 
 /** Seconds between simulation steps. */
-export const WATER_TICK_SECONDS = 0.1;
+const WATER_TICK_SECONDS = 0.1;
 /** Cells processed per step; anything over this is carried to the next step. A live
  *  river keeps thousands of cells moving for as long as it runs, so this is the ceiling
  *  on what the water may cost a frame: past it the water simply flows more slowly
@@ -17,9 +17,9 @@ const MAX_FLOW = WATER_FULL;
 /** Water added by a spring each step. Every river now lives on what its springs give
  *  it, so this is what holds them at their level: too little and they run shallow, too
  *  much and they climb their banks. */
-export const SPRING_RATE = 32;
+const SPRING_RATE = 32;
 /** Water a pump lifts each step. */
-export const PUMP_RATE = 70;
+const PUMP_RATE = 70;
 
 const NEIGHBORS: readonly (readonly [number, number])[] = [
   [1, 0],
@@ -429,9 +429,4 @@ export class WaterSimulator {
 function clampFlow(amount: number, available: number): number {
   const value = Math.floor(Math.min(amount, MAX_FLOW, available));
   return value < WATER_EPSILON ? 0 : value;
-}
-
-/** True when a cell holds enough water to swim in or to irrigate from. */
-export function isWet(level: number): boolean {
-  return level >= WATER_MIN;
 }

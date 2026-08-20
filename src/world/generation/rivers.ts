@@ -3,17 +3,21 @@ import { hashFloat } from '../../core/rng';
 import { SEA_LEVEL } from '../chunk';
 
 /** Rivers are carved from a noise field rather than traced downstream, so every chunk
- *  can be generated on its own. The trick that keeps a river running downhill is to
- *  take its surface height from the same continentalness noise that decides land from
- *  sea: that value falls off towards the ocean, so the river surface does too. */
+ *  can be generated on its own. What keeps a channel running downhill is that its
+ *  height comes from how far inland a column is — a deliberately smooth field that
+ *  falls away towards the ocean — and that the land is lifted by exactly the same
+ *  amount, so the channel stays sunk into its banks the whole way.
+ *
+ *  The generator only fills the channel once, as an opening position. From then on the
+ *  water is the simulation's, and where it stands is whatever the springs and the
+ *  ground between them make of it. */
 
 /** How far the land, and with it the river surface, climbs from coast to interior. */
 export const RIVER_CLIMB = 15;
 
-/** How far inland a column is, from 0 at the coast to 1 deep in the interior. This is
- *  a monotone function of continentalness, which is what guarantees that a river never
- *  has to run uphill: the terrain is lifted by the same amount, so the channel keeps
- *  descending all the way to the sea. */
+/** Turns the inland field into a 0 to 1 fraction, flat at the coast and flat again deep
+ *  inland. Monotone, so a river's height never doubles back on itself for want of a
+ *  smooth ramp to run down. */
 export function inlandness(continentalness: number): number {
   return clamp((continentalness + 0.02) / 0.34, 0, 1);
 }
@@ -52,10 +56,6 @@ export interface RiverSample {
 export function riverCovers(sample: RiverSample, height: number, offset = 0): boolean {
   return sample.strength >= CHANNEL_CORE && sample.surface + offset > height + 1;
 }
-
-/** How far below its normal level a channel still holds water. The generator only lays
- *  the river down once; from then on the simulation decides where the water is. */
-export const RIVER_DEPTH_BELOW_SURFACE = 5;
 
 export class RiverField {
   private readonly path: Noise;

@@ -57,13 +57,6 @@ export class ChunkWorkerPool {
     this.pump();
   }
 
-  /** Drops queued work that is no longer near the player. */
-  cancelFarther(keep: (cx: number, cz: number) => boolean): void {
-    for (const [key, job] of this.queue) {
-      if (!keep(job.cx, job.cz)) this.queue.delete(key);
-    }
-  }
-
   private pump(): void {
     while (this.idle.length > 0 && this.queue.size > 0) {
       let bestKey: string | null = null;

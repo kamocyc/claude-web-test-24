@@ -70,15 +70,12 @@ export class World {
   removeChunk(cx: number, cz: number): void {
     const key = chunkKey(cx, cz);
     const chunk = this.chunks.get(key);
-    // Water the player made is not reproducible from the seed, so keep it around.
-    if (chunk && this.edits.has(key)) this.waterSnapshots.set(key, chunk.water.slice());
+    // No water anywhere is reproducible from the seed any more, so it leaves with the
+    // chunk and comes back with it. Nothing in the game unloads a chunk today; this is
+    // here for the tests and for whatever comes after.
+    if (chunk) this.waterSnapshots.set(key, chunk.water.slice());
     this.chunks.delete(key);
     this.dirtyWaterChunks.delete(key);
-  }
-
-  /** Current water of a chunk, whether it is loaded or only kept as a snapshot. */
-  waterOf(key: string): Uint8Array | undefined {
-    return this.chunks.get(key)?.water ?? this.waterSnapshots.get(key);
   }
 
   hasChunk(cx: number, cz: number): boolean {
