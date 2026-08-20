@@ -36,6 +36,18 @@ const closeScreen = async () => {
 };
 const debugText = () => page.locator('.debug').textContent();
 const evaluate = (fn, arg) => page.evaluate(fn, arg);
+/** Right-clicks at the crosshair until the world reacts. A single dropped frame on the
+ *  software renderer can swallow the press, and a retry is cheaper than a flaky run. */
+const useUntil = async (predicate, arg = null, attempts = 6) => {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    await page.mouse.move(640, 360);
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.up({ button: 'right' });
+    await page.waitForTimeout(500);
+    if (await page.evaluate(predicate, arg)) return true;
+  }
+  return false;
+};
 
 await page.goto(url, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(1500);
@@ -191,12 +203,8 @@ console.log('crosshair pick:', JSON.stringify(await evaluate(() => {
     villager: villager ? [+villager.x.toFixed(2), +villager.y.toFixed(2), +villager.z.toFixed(2)] : null,
   };
 })));
-await page.mouse.move(640, 360);
-await page.mouse.down({ button: 'right' });
-await page.mouse.up({ button: 'right' });
-await page.waitForTimeout(600);
+const tradeOpen = await useUntil(() => window.voxelcraft.game.screens.kind === 'trade');
 await shot('07-trade');
-const tradeOpen = await evaluate(() => window.voxelcraft.game.screens.kind === 'trade');
 if (tradeOpen) {
   await page.locator('.trade-button:not([disabled])').first().click();
   await page.waitForTimeout(400);
@@ -241,10 +249,10 @@ if (farm) {
     const inv = window.voxelcraft.player.inventory;
     inv.selected = inv.find('wooden_hoe');
   });
-  await page.mouse.move(640, 360);
-  await page.mouse.down({ button: 'right' });
-  await page.mouse.up({ button: 'right' });
-  await page.waitForTimeout(400);
+  await useUntil(() => {
+    const g = window.voxelcraft.game;
+    return g.world.getBlock(Math.floor(g.player.x), Math.floor(g.player.y) - 1, Math.floor(g.player.z)) === 35;
+  });
   const tilled = await evaluate(() => {
     const g = window.voxelcraft.game;
     const below = { x: Math.floor(g.player.x), y: Math.floor(g.player.y) - 1, z: Math.floor(g.player.z) };
@@ -252,9 +260,10 @@ if (farm) {
     inv.selected = inv.find('wheat_seeds');
     return g.world.getBlock(below.x, below.y, below.z);
   });
-  await page.mouse.down({ button: 'right' });
-  await page.mouse.up({ button: 'right' });
-  await page.waitForTimeout(400);
+  await useUntil(() => {
+    const g = window.voxelcraft.game;
+    return g.world.getBlock(Math.floor(g.player.x), Math.floor(g.player.y), Math.floor(g.player.z)) !== 0;
+  });
   const planted = await evaluate(() => {
     const g = window.voxelcraft.game;
     const x = Math.floor(g.player.x), z = Math.floor(g.player.z);
@@ -265,16 +274,13 @@ if (farm) {
   await shot('07b-farm');
 }
 
-const eaten = await evaluate(async () => {
+const eaten = await evaluate(() => {
   const g = window.voxelcraft.game;
-  const before = g.player.hunger.food;
   const inv = g.player.inventory;
   inv.selected = inv.find('bread');
-  return before;
+  return g.player.hunger.food;
 });
-await page.mouse.down({ button: 'right' });
-await page.mouse.up({ button: 'right' });
-await page.waitForTimeout(400);
+await useUntil((before) => window.voxelcraft.player.hunger.food > before, eaten);
 console.log('hunger before/after eating:', eaten, await evaluate(() => window.voxelcraft.player.hunger.food));
 
 // --- furnace and chest screens ----------------------------------------------
@@ -304,10 +310,10 @@ await evaluate(() => {
   inv.selected = inv.find('torch');
   window.voxelcraft.player.pitch = -1.0;
 });
-await page.mouse.move(640, 360);
-await page.mouse.down({ button: 'right' });
-await page.mouse.up({ button: 'right' });
-await page.waitForTimeout(800);
+await useUntil(() => {
+  const g = window.voxelcraft.game;
+  return g.world.getBlockLight(Math.floor(g.player.x), Math.floor(g.player.y), Math.floor(g.player.z)) > 0;
+});
 await evaluate(() => {
   window.voxelcraft.player.pitch = -0.2;
 });
