@@ -9,6 +9,8 @@ export interface Settings {
   compass: boolean;
   /** Overhead map in the top right corner. */
   minimap: boolean;
+  /** Panel showing the season, and how long before the weather upstream arrives. */
+  forecast: boolean;
   /** Swap to the best tool in the hotbar for whatever is being mined. */
   autoTool: boolean;
   /** Walk up single block steps without jumping. */
@@ -22,6 +24,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sensitivity: 0.0022,
   compass: true,
   minimap: true,
+  forecast: true,
   autoTool: true,
   autoStep: true,
 };
@@ -51,6 +54,7 @@ export function loadSettings(): Settings {
       ),
       compass: parsed.compass ?? DEFAULT_SETTINGS.compass,
       minimap: parsed.minimap ?? DEFAULT_SETTINGS.minimap,
+      forecast: parsed.forecast ?? DEFAULT_SETTINGS.forecast,
       autoTool: parsed.autoTool ?? DEFAULT_SETTINGS.autoTool,
       autoStep: parsed.autoStep ?? DEFAULT_SETTINGS.autoStep,
     };

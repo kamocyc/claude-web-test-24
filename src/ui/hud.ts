@@ -5,6 +5,7 @@ import { HOTBAR_SIZE } from '../game/inventory';
 import { clear, el } from './dom';
 import { Compass, type CompassMarker } from './compass';
 import { Minimap } from './minimap';
+import { ForecastPanel, type ForecastView } from './forecast';
 import type { World } from '../world/world';
 import { renderSlot } from './containers';
 
@@ -25,6 +26,8 @@ export interface NavigationInfo {
   markers: CompassMarker[];
   showCompass: boolean;
   showMinimap: boolean;
+  showForecast: boolean;
+  forecast: ForecastView;
 }
 
 /** Health, hunger, hotbar, crosshair and the debug overlay. */
@@ -43,6 +46,7 @@ export class Hud {
   private readonly underwater = el('div', 'underwater');
   readonly compass = new Compass();
   readonly minimap: Minimap;
+  readonly forecast = new ForecastPanel();
   private debugVisible = false;
   private heldLabelTimer = 0;
 
@@ -65,6 +69,7 @@ export class Hud {
       crosshair,
       this.compass.root,
       this.minimap.root,
+      this.forecast.root,
       bottom,
       this.debug,
       this.toasts,
@@ -116,6 +121,8 @@ export class Hud {
     if (navigation.showCompass) this.compass.update(player.yaw, player.x, player.z, navigation.markers);
     this.minimap.setVisible(navigation.showMinimap);
     if (navigation.showMinimap) this.minimap.update(navigation.world, player.x, player.z, player.yaw);
+    this.forecast.setVisible(navigation.showForecast);
+    if (navigation.showForecast) this.forecast.update(navigation.forecast);
 
     this.renderBar(this.hearts, player.health, player.maxHealth, 'heart');
     this.renderBar(this.food, player.hunger.food, 20, 'drumstick');

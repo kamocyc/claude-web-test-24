@@ -6,11 +6,12 @@ import {
 import { VERIFICATION_SEED_TEXT } from '../game/seeds';
 import { el, show } from './dom';
 
-type ToggleKey = 'compass' | 'minimap' | 'autoTool' | 'autoStep';
+type ToggleKey = 'compass' | 'minimap' | 'forecast' | 'autoTool' | 'autoStep';
 
 const TOGGLE_LABELS: [ToggleKey, string][] = [
   ['compass', '方角コンパス'],
   ['minimap', 'ミニマップ'],
+  ['forecast', '天候の予報'],
   ['autoTool', '道具の自動切り替え'],
   ['autoStep', '段差を自動で登る'],
 ];

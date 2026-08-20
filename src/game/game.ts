@@ -357,11 +357,20 @@ export class Game {
     if (this.nearestVillage) {
       markers.push({ kind: 'village', x: this.nearestVillage.x, z: this.nearestVillage.z });
     }
+    const forecast = this.forecast();
     return {
       world: this.world,
       markers,
       showCompass: this.options.settings.compass,
       showMinimap: this.options.settings.minimap,
+      showForecast: this.options.settings.forecast,
+      forecast: {
+        here: forecast.here.kind,
+        endsIn: forecast.here.endsIn,
+        next: forecast.next,
+        upstream: forecast.upstream,
+        wetness: forecast.wetness,
+      },
     };
   }
 
