@@ -80,20 +80,33 @@ export class Menus {
 
   showTitle(visible: boolean): void {
     show(this.title, visible);
-    show(this.root, true);
+    this.refreshRoot();
   }
 
   showPause(visible: boolean): void {
     show(this.pause, visible);
+    this.refreshRoot();
   }
 
   showDeath(visible: boolean): void {
     show(this.death, visible);
+    this.refreshRoot();
   }
 
   showLoading(visible: boolean, message?: string): void {
     if (message) this.loadingText.textContent = message;
     show(this.loading, visible);
+    this.refreshRoot();
+  }
+
+  /** The overlay is only in the DOM flow while one of the menus is up, and only
+   *  paints an opaque background outside of gameplay. */
+  private refreshRoot(): void {
+    const visible = [this.title, this.pause, this.death, this.loading];
+    const anyVisible = visible.some((node) => node.style.display !== 'none');
+    show(this.root, anyVisible);
+    const opaque = this.title.style.display !== 'none' || this.loading.style.display !== 'none';
+    this.root.classList.toggle('opaque', opaque);
   }
 
   setSaveLabel(text: string): void {
@@ -105,6 +118,6 @@ export class Menus {
     show(this.pause, false);
     show(this.death, false);
     show(this.loading, false);
-    show(this.root, false);
+    this.refreshRoot();
   }
 }

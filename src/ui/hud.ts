@@ -26,6 +26,7 @@ export class Hud {
   private readonly toasts = el('div', 'toasts');
   private readonly flash = el('div', 'damage-flash');
   private readonly clickPrompt = el('div', 'click-prompt', 'クリックしてプレイ');
+  private readonly underwater = el('div', 'underwater');
   private debugVisible = false;
   private heldLabelTimer = 0;
 
@@ -40,9 +41,15 @@ export class Hud {
       this.hotbar.appendChild(slot);
     }
     bottom.append(this.heldLabel, stats, this.hotbar);
-    this.root.append(this.flash, crosshair, bottom, this.debug, this.toasts, this.clickPrompt);
+    this.root.append(this.underwater, this.flash, crosshair, bottom, this.debug, this.toasts, this.clickPrompt);
+    this.underwater.style.display = 'none';
     this.clickPrompt.style.display = 'none';
     this.debug.style.display = 'none';
+  }
+
+  /** Blue tint while the camera is submerged. */
+  setUnderwater(active: boolean): void {
+    this.underwater.style.display = active ? '' : 'none';
   }
 
   /** Shown until the player clicks, because pointer lock needs a user gesture. */

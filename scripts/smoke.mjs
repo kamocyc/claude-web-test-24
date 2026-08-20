@@ -124,5 +124,91 @@ const torchLight = await evaluate(() => {
 });
 console.log('block light at player:', torchLight);
 
+// --- crafting table UI -------------------------------------------------------
+await evaluate(() => {
+  window.voxelcraft.give('oak_planks', 12);
+  window.voxelcraft.give('stick', 6);
+  window.voxelcraft.give('iron_ingot', 5);
+  window.voxelcraft.openScreen('crafting');
+});
+await page.waitForTimeout(500);
+
+// Lay out a wooden pickaxe by clicking slots, exactly as a player would.
+const slots = page.locator('.panel .slot');
+const GRID = 0;
+const RESULT = 9;
+const HOTBAR = 10 + 27;
+const planksSlot = HOTBAR + (await evaluate(() => window.voxelcraft.player.inventory.find('oak_planks')));
+const sticksSlot = HOTBAR + (await evaluate(() => window.voxelcraft.player.inventory.find('stick')));
+
+await slots.nth(planksSlot).click();
+for (const cell of [0, 1, 2]) await slots.nth(GRID + cell).click({ button: 'right' });
+await slots.nth(planksSlot).click();
+await slots.nth(sticksSlot).click();
+for (const cell of [4, 7]) await slots.nth(GRID + cell).click({ button: 'right' });
+await slots.nth(sticksSlot).click();
+await page.waitForTimeout(300);
+await shot('09-crafting');
+
+await slots.nth(RESULT).click();
+await slots.nth(10).click();
+await page.waitForTimeout(300);
+const crafted = await evaluate(() => window.voxelcraft.player.inventory.count('wooden_pickaxe'));
+console.log('crafted wooden pickaxes:', crafted);
+await page.keyboard.press('Escape');
+await page.waitForTimeout(400);
+
+// --- water ------------------------------------------------------------------
+const shore = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  for (let r = 20; r < 400; r += 8) {
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
+      const x = Math.round(g.player.x + Math.cos(a) * r);
+      const z = Math.round(g.player.z + Math.sin(a) * r);
+      if (g.generator.height(x, z) < 42) {
+        window.voxelcraft.teleport(x, z);
+        g.player.pitch = -0.2;
+        return { x, z };
+      }
+    }
+  }
+  return null;
+});
+console.log('shore:', JSON.stringify(shore));
+await page.waitForFunction(() => window.voxelcraft.pending() === 0, null, { timeout: 90000 });
+await page.waitForTimeout(3000);
+await shot('11-water');
+console.log('in water:', await evaluate(() => window.voxelcraft.player.inWater));
+
+// --- death and respawn -------------------------------------------------------
+await evaluate(() => {
+  window.voxelcraft.player.health = 0;
+});
+await page.waitForTimeout(600);
+await shot('12-death');
+const deathVisible = await page.locator('.menu.death').isVisible();
+await page.click('.menu.death .menu-button');
+await page.waitForTimeout(1200);
+const revived = await evaluate(() => ({ health: window.voxelcraft.player.health, dead: window.voxelcraft.player.isDead }));
+console.log('death screen:', deathVisible, 'after respawn:', JSON.stringify(revived));
+
+// --- save, reload and continue ----------------------------------------------
+const before = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  g.save(false);
+  return { x: +g.player.x.toFixed(2), z: +g.player.z.toFixed(2), torches: g.player.inventory.count('torch') };
+});
+await page.reload({ waitUntil: 'domcontentloaded' });
+await page.waitForTimeout(1200);
+await page.click('.menu-button:not(.primary)');
+await page.waitForFunction(() => window.voxelcraft?.isReady() === true, null, { timeout: 90000 });
+await page.waitForTimeout(2000);
+const after = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  return { x: +g.player.x.toFixed(2), z: +g.player.z.toFixed(2), torches: g.player.inventory.count('torch'), seed: g.world.seed };
+});
+console.log('saved:', JSON.stringify(before), 'loaded:', JSON.stringify(after));
+await shot('10-reloaded');
+
 console.log(errors.length === 0 ? 'NO PAGE ERRORS' : `ERRORS:\n${errors.join('\n')}`);
 await browser.close();

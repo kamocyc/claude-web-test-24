@@ -420,6 +420,11 @@ body.screen-open #viewport {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Translucent while paused or dead, so the world stays visible behind. */
+  background: rgba(4, 8, 14, 0.6);
+}
+
+.menu-layer.opaque {
   background: linear-gradient(160deg, #0b1522, #060a12 70%);
 }
 
@@ -503,4 +508,10 @@ body.screen-open #viewport {
   background: rgba(0, 0, 0, 0.6);
   border-radius: 8px;
   letter-spacing: 0.05em;
+}
+
+.underwater {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle, rgba(30, 90, 170, 0.35) 30%, rgba(12, 46, 96, 0.7) 100%);
 }

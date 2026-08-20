@@ -34,10 +34,10 @@ export function placeTree(put: PlaceFn, rng: Rng, x: number, groundY: number, z:
   if (spec.conifer) {
     const height = 7 + Math.floor(rng() * 5);
     for (let i = 0; i < height; i++) put(x, groundY + 1 + i, z, spec.log);
-    let radius = 2;
     for (let y = groundY + 3; y <= groundY + height + 1; y++) {
       const layer = y - (groundY + 3);
-      radius = layer % 2 === 0 ? 2 : 1;
+      // Alternating wide and narrow rings give the classic spruce silhouette.
+      let radius = layer % 2 === 0 ? 2 : 1;
       if (y > groundY + height - 1) radius = 0;
       for (let dz = -radius; dz <= radius; dz++) {
         for (let dx = -radius; dx <= radius; dx++) {

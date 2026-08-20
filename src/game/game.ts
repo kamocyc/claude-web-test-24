@@ -187,7 +187,9 @@ export class Game {
         this.ready = true;
         this.options.menus.showLoading(false);
         this.options.menus.hideAll();
-        this.settlePlayerOnGround();
+        // A loaded save already knows where the player stood; only a brand new world
+        // needs to be dropped onto the freshly generated surface.
+        if (!this.options.save) this.settlePlayerOnGround();
         // Pointer lock can only be requested from a real user gesture, so the player
         // clicks once to start looking around.
         this.hud.setClickPrompt(true);
@@ -223,6 +225,10 @@ export class Game {
     this.updateFurnaces(dt);
     this.checkOpenContainer();
 
+    this.hud.setUnderwater(
+      this.world.getBlock(Math.floor(this.player.x), Math.floor(this.player.eyeY), Math.floor(this.player.z)) ===
+        Block.WATER,
+    );
     this.effects.update(dt);
     this.entityRenderer.sync(this.mobs.mobs, this.drops.drops, this.mobs.arrows, performance.now() / 1000);
     this.screens.refresh();
@@ -723,6 +729,15 @@ export class Game {
 
   respawn(): void {
     this.options.menus.showDeath(false);
+    // Everything the player was carrying stays where they died.
+    const { x, y, z } = this.player;
+    for (const inventory of [this.player.inventory, this.player.inventory.armor]) {
+      for (const slot of inventory.slots) {
+        if (slot) this.drops.spawn(x, y + 0.5, z, { ...slot });
+      }
+      inventory.clear();
+    }
+    this.hud.toast('持ち物は死んだ場所に落ちた');
     this.placeAtSpawn();
     this.player.respawn(this.player.x, this.player.y, this.player.z);
     this.settlePlayerOnGround();
@@ -841,6 +856,15 @@ export class Game {
         const village = this.generator.findNearestVillage(this.player.x, this.player.z, 4);
         if (village) this.debug.teleport(village.x, village.z);
         return village;
+      },
+      /** Opens a container screen without having to place and click the block. */
+      openScreen: (kind: 'inventory' | 'crafting' | 'furnace' | 'chest'): void => {
+        this.openScreen(() => {
+          if (kind === 'crafting') this.screens.openCraftingTable();
+          else if (kind === 'furnace') this.screens.openFurnace(createFurnace());
+          else if (kind === 'chest') this.screens.openChest(createChest().slots);
+          else this.screens.openInventory();
+        });
       },
       biome: (): string =>
         biomeDef(this.generator.biomeAt(Math.floor(this.player.x), Math.floor(this.player.z))).label,
