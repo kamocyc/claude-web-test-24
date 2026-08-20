@@ -56,6 +56,11 @@ export const Block = {
   WOOL: 51,
   BOOKSHELF: 52,
   MOSSY_COBBLESTONE: 53,
+  SPRING: 54,
+  PUMP: 55,
+  DRAIN: 56,
+  FLOODGATE_CLOSED: 57,
+  FLOODGATE_OPEN: 58,
 } as const;
 
 export type BlockId = number;
@@ -173,6 +178,15 @@ def({ id: B.WOOL, name: 'wool', label: '羊毛', hardness: 0.8, tex: { all: 'woo
 def({ id: B.BOOKSHELF, name: 'bookshelf', label: '本棚', hardness: 1.5, tool: 'axe', tex: { top: 'oak_planks', side: 'bookshelf', bottom: 'oak_planks' } });
 def({ id: B.MOSSY_COBBLESTONE, name: 'mossy_cobblestone', label: '苔石', hardness: 2, tool: 'pickaxe', tier: 1, tex: { all: 'mossy_cobblestone' } });
 
+// --- water works -------------------------------------------------------------
+def({ id: B.SPRING, name: 'spring', label: '水源', hardness: 3, tool: 'pickaxe', tier: 1, tex: { top: 'spring_top', side: 'spring_side', bottom: 'stone' } });
+def({ id: B.PUMP, name: 'pump', label: 'ポンプ', hardness: 3, tool: 'pickaxe', tier: 1, tex: { top: 'pump_top', side: 'pump_side', bottom: 'pump_top' } });
+def({ id: B.DRAIN, name: 'drain', label: '排水口', hardness: 3, tool: 'pickaxe', tier: 1, tex: { top: 'drain_top', side: 'pump_side', bottom: 'pump_side' } });
+def({ id: B.FLOODGATE_CLOSED, name: 'floodgate_closed', label: '水門', hardness: 3, tool: 'pickaxe', tier: 1, tex: { all: 'floodgate_closed' }, drop: 'floodgate' });
+// The open gate lets water and entities straight through, so it is neither solid nor
+// opaque; only its frame is drawn.
+def({ id: B.FLOODGATE_OPEN, name: 'floodgate_open', label: '水門（開）', hardness: 3, tool: 'pickaxe', tier: 1, solid: false, opaque: false, replaceable: false, tex: { all: 'floodgate_open' }, drop: 'floodgate' });
+
 for (let i = 0; i < DEFS.length; i++) {
   if (!DEFS[i]) throw new Error(`block id ${i} has no definition`);
 }
@@ -225,6 +239,21 @@ export function cropAt(id: BlockId): { base: BlockId; stage: number; stages: num
     }
   }
   return null;
+}
+
+/** Blocks that swallow any water flowing into them. */
+export function isWaterSink(id: BlockId): boolean {
+  return id === Block.DRAIN;
+}
+
+/** Blocks water cannot pass through, which is what makes dams and levees work. */
+export function blocksWater(id: BlockId): boolean {
+  const def = blockDef(id);
+  if (id === Block.WATER || id === Block.AIR) return false;
+  if (id === Block.FLOODGATE_OPEN) return false;
+  if (id === Block.DRAIN) return false;
+  // Plants and crops are washed through rather than holding water back.
+  return def.render !== 'cross';
 }
 
 export function isFarmland(id: BlockId): boolean {

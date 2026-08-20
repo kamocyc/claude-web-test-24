@@ -11,6 +11,7 @@ import { Block, blockDef, isFarmland, isReplaceable, supportsPlant } from '../wo
 import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, Chunk, chunkKey, toChunkCoord } from '../world/chunk';
 import { TerrainGenerator } from '../world/generation/terrain';
 import { LightEngine } from '../world/lighting';
+import { WaterSimulator } from '../world/waterSim';
 import { raycastVoxels, type RaycastHit } from '../world/raycast';
 import { TICK_INTERVAL, randomTickChunk } from '../world/ticks';
 import { World } from '../world/world';
@@ -80,6 +81,7 @@ export class Game {
   private readonly effects: Effects;
   private readonly sky: Sky;
   private readonly light: LightEngine;
+  private readonly water: WaterSimulator;
   private readonly generator: TerrainGenerator;
   private readonly pool: ChunkWorkerPool;
   private readonly mobs: MobManager;
@@ -108,8 +110,10 @@ export class Game {
     this.world = new World(options.seed);
     this.generator = new TerrainGenerator(options.seed);
     this.light = new LightEngine(this.world);
+    this.water = new WaterSimulator(this.world);
     this.world.onBlockChange((x, y, z, previous, next) => {
       this.light.onBlockChanged(x, y, z, previous, next);
+      this.water.onBlockChanged(x, y, z, previous, next);
       this.onBlockChanged(x, y, z, previous, next);
     });
 
@@ -215,6 +219,7 @@ export class Game {
       return;
     }
 
+    this.water.update(dt);
     this.day.update(dt);
     this.materials.setSun(Math.max(0.06, this.day.sunLight));
 
@@ -312,6 +317,7 @@ export class Game {
     chunk.generated = true;
     this.world.addChunk(chunk);
     this.light.seedChunk(chunk);
+    this.water.registerChunk(chunk, message.springs ?? []);
 
     const key = chunkKey(message.cx, message.cz);
     if (!this.populatedChunks.has(key)) {
@@ -882,6 +888,12 @@ export class Game {
       game: this,
       player: this.player,
       isReady: (): boolean => this.ready,
+      waterAt: (x: number, y: number, z: number): number => this.world.getWater(x, y, z),
+      waterDepth: (x: number, y: number, z: number): number => this.water.depthAt(x, y, z),
+      activeWaterCells: (): number => this.water.activeCount,
+      pourWater: (x: number, y: number, z: number, blocks = 1): void => {
+        for (let i = 0; i < blocks; i++) this.water.pour(x, y + i, z);
+      },
       heal: (): void => {
         this.player.health = this.player.maxHealth;
         this.player.hunger.reset();

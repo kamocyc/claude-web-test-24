@@ -22,6 +22,8 @@ export interface ChunkGenResult {
   blocks: Uint16Array;
   /** Fill level per voxel, matching the WATER blocks in `blocks`. */
   water: Uint8Array;
+  /** Positions of generated spring blocks. */
+  springs: { x: number; y: number; z: number }[];
   villagers: VillagerMarker[];
   chests: ChestMarker[];
 }
@@ -295,6 +297,7 @@ export class TerrainGenerator {
     // --- 5. villages (last, so they overwrite trees and grass) --------------
     const villagers: VillagerMarker[] = [];
     const chests: ChestMarker[] = [];
+    const springs: { x: number; y: number; z: number }[] = [];
     const key = chunkKey(cx, cz);
     for (const info of this.villagesForChunk(cx, cz)) {
       if (!info.valid) continue;
@@ -311,7 +314,7 @@ export class TerrainGenerator {
       }
     }
 
-    return { blocks, water, villagers, chests };
+    return { blocks, water, springs, villagers, chests };
   }
 
   /** Villages whose block list can reach into this chunk (plateau radius plus slack). */

@@ -19,6 +19,8 @@ export interface ChunkReadyMessage {
   cz: number;
   blocks: Uint16Array;
   water: Uint8Array;
+  /** Spring blocks placed by generation, which the water simulator has to know about. */
+  springs: { x: number; y: number; z: number }[];
   villagers: VillagerMarker[];
   chests: ChestMarker[];
 }

@@ -377,6 +377,54 @@ tile('cactus_side', (ctx, rng) => {
   }
 });
 
+// --- water works ---------------------------------------------------------------
+
+tile('spring_top', (ctx, rng) => {
+  drawings.get('cobblestone')!(ctx, rng);
+  blob(ctx, rng, 8, 8, 5, [70, 130, 210]);
+  blob(ctx, rng, 8, 8, 2, [140, 200, 240]);
+});
+
+tile('spring_side', (ctx, rng) => {
+  drawings.get('cobblestone')!(ctx, rng);
+  for (let y = 4; y < TILE; y += 5) rect(ctx, 3, y, 10, 2, [70, 130, 210]);
+});
+
+tile('pump_top', (ctx, rng) => {
+  grain(ctx, rng, [150, 150, 158], 10);
+  blob(ctx, rng, 8, 8, 4, [96, 96, 104]);
+  blob(ctx, rng, 8, 8, 2, [58, 110, 178]);
+});
+
+tile('pump_side', (ctx, rng) => {
+  grain(ctx, rng, [150, 150, 158], 10);
+  rect(ctx, 0, 3, TILE, 2, [104, 104, 112]);
+  rect(ctx, 0, 11, TILE, 2, [104, 104, 112]);
+  rect(ctx, 6, 5, 4, 6, [72, 72, 80]);
+});
+
+tile('drain_top', (ctx, rng) => {
+  grain(ctx, rng, [122, 122, 130], 10);
+  for (let i = 3; i < TILE - 2; i += 3) rect(ctx, i, 3, 2, TILE - 6, [40, 44, 52]);
+});
+
+tile('floodgate_closed', (ctx, rng) => {
+  grain(ctx, rng, WOOD, 10);
+  rect(ctx, 0, 0, TILE, 2, [120, 120, 128]);
+  rect(ctx, 0, TILE - 2, TILE, 2, [120, 120, 128]);
+  for (let y = 3; y < TILE - 2; y += 4) rect(ctx, 1, y, TILE - 2, 2, shade(WOOD, -34));
+  rect(ctx, 6, 6, 4, 4, [150, 150, 158]);
+});
+
+tile('floodgate_open', (ctx) => {
+  ctx.clearRect(0, 0, TILE, TILE);
+  // Only the frame remains once the gate is raised.
+  rect(ctx, 0, 0, TILE, 3, [120, 120, 128]);
+  rect(ctx, 0, TILE - 3, TILE, 3, shade(WOOD, -20));
+  rect(ctx, 0, 0, 2, TILE, [120, 120, 128]);
+  rect(ctx, TILE - 2, 0, 2, TILE, [120, 120, 128]);
+});
+
 // --- cross-shaped plants -----------------------------------------------------
 
 function plantTile(draw: Draw): Draw {

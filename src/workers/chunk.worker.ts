@@ -22,6 +22,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       cz: message.cz,
       blocks: result.blocks,
       water: result.water,
+      springs: result.springs,
       villagers: result.villagers,
       chests: result.chests,
     };
