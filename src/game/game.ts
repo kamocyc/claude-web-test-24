@@ -1169,6 +1169,12 @@ export class Game {
         }
         return this.weatherSeconds;
       },
+      /** Sets the world clock outright, which is how the browser tests watch a change
+       *  upstream arrive here a few minutes later. */
+      setWeatherSeconds: (seconds: number): number => {
+        this.advanceWeather(Math.max(0, seconds));
+        return this.weatherSeconds;
+      },
       /** Height of the water's top face in a column, or null when it is dry. */
       waterSurface: (x: number, z: number): number | null => {
         for (let y = CHUNK_HEIGHT - 1; y > 0; y--) {
