@@ -41,6 +41,18 @@ export const NO_INPUT: PlayerInput = {
   sneak: false,
 };
 
+/** Rotates a movement input given in camera space (x = strafe right, z = backwards)
+ *  into world space. The camera looks along (-sin yaw, -cos yaw), and its right hand
+ *  side is (cos yaw, -sin yaw), so the input must be rotated by -yaw about Y. */
+export function movementDirection(yaw: number, inputX: number, inputZ: number): { x: number; z: number } {
+  const sin = Math.sin(yaw);
+  const cos = Math.cos(yaw);
+  return {
+    x: inputX * cos + inputZ * sin,
+    z: -inputX * sin + inputZ * cos,
+  };
+}
+
 export interface PlayerTickEvents {
   fellFrom: number;
   tookDamage: number;
@@ -111,11 +123,7 @@ export class Player implements Damageable {
       inputZ /= inputLength;
     }
 
-    const sin = Math.sin(this.yaw);
-    const cos = Math.cos(this.yaw);
-    // Rotate the input into world space (yaw 0 faces -Z).
-    const wishX = inputX * cos - inputZ * sin;
-    const wishZ = inputX * sin + inputZ * cos;
+    const { x: wishX, z: wishZ } = movementDirection(this.yaw, inputX, inputZ);
 
     const sprinting = input.sprint && !input.sneak && inputLength > 0 && !this.inWater;
     const target = this.inWater
