@@ -12,6 +12,11 @@ const SAMPLES_PER_CHUNK = 3;
 const WATER_RANGE = 4;
 /** Fill level a cell needs before it counts as a water source for irrigation. */
 const IRRIGATION_MIN = WATER_FULL * 0.25;
+/** Chance a crop on dry ground loses a stage when it is ticked. Slow enough that a
+ *  short dry spell is survivable and a whole drought is not. */
+const WILT_CHANCE = 0.2;
+/** Chance a crop that has already wilted to nothing dies outright. */
+const WITHER_CHANCE = 0.5;
 
 /** Slow, ambient world changes: crops ripening, grass spreading, farmland drying out. */
 export function randomTickChunk(world: World, chunk: Chunk, rng: Rng): void {
@@ -37,15 +42,24 @@ function tickBlock(world: World, x: number, y: number, z: number, rng: Rng): voi
 
   const crop = cropAt(id);
   if (crop) {
-    if (crop.stage >= crop.stages - 1) return;
     if (!isFarmland(world.getBlock(x, y - 1, z))) {
       world.setBlock(x, y, z, Block.AIR);
       return;
     }
-    if (lightAt(world, x, y, z) < 9) return;
-    // Wet farmland roughly doubles the growth rate.
     const wet = world.getBlock(x, y - 1, z) === Block.FARMLAND_WET;
-    if (rng() < (wet ? 0.35 : 0.16)) world.setBlock(x, y, z, id + 1);
+    if (!wet) {
+      // Nothing grows on parched ground, and left there long enough it wilts back a
+      // stage at a time. A drought upstream is what usually does this, so a field cut
+      // off from the river is worth a reservoir.
+      if (rng() < WILT_CHANCE) {
+        if (crop.stage > 0) world.setBlock(x, y, z, id - 1);
+        else if (rng() < WITHER_CHANCE) world.setBlock(x, y, z, Block.AIR);
+      }
+      return;
+    }
+    if (crop.stage >= crop.stages - 1) return;
+    if (lightAt(world, x, y, z) < 9) return;
+    if (rng() < 0.35) world.setBlock(x, y, z, id + 1);
     return;
   }
 

@@ -48,6 +48,50 @@ describe('random ticks', () => {
     expect(world.getBlock(3, 11, 3)).toBe(Block.WHEAT_3);
   });
 
+  it('never ripens a crop on parched ground', () => {
+    const { world, chunk } = farmWorld();
+    for (let z = 0; z < 16; z++) {
+      for (let x = 0; x < 16; x++) {
+        world.setBlock(x, 10, z, Block.FARMLAND);
+        world.setBlock(x, 11, z, Block.WHEAT_2);
+      }
+    }
+    chunk.recomputeHeightMap();
+    const rng = mulberry32(11);
+    for (let i = 0; i < 500; i++) randomTickChunk(world, chunk, rng);
+    for (let z = 0; z < 16; z++) {
+      for (let x = 0; x < 16; x++) {
+        expect(world.getBlock(x, 11, z)).not.toBe(Block.WHEAT_3);
+      }
+    }
+  });
+
+  it('wilts a crop that stays dry, and kills it in the end', () => {
+    // A drought upstream is what usually dries a field out, so this is the pressure
+    // that makes a reservoir worth building.
+    const { world, chunk } = farmWorld();
+    for (let z = 0; z < 16; z++) {
+      for (let x = 0; x < 16; x++) {
+        world.setBlock(x, 10, z, Block.FARMLAND);
+        world.setBlock(x, 11, z, Block.WHEAT_3);
+      }
+    }
+    chunk.recomputeHeightMap();
+    const rng = mulberry32(23);
+    for (let i = 0; i < 2000; i++) randomTickChunk(world, chunk, rng);
+    let wilted = 0;
+    let gone = 0;
+    for (let z = 0; z < 16; z++) {
+      for (let x = 0; x < 16; x++) {
+        const id = world.getBlock(x, 11, z);
+        if (id === Block.AIR) gone++;
+        else if (id !== Block.WHEAT_3) wilted++;
+      }
+    }
+    expect(wilted + gone).toBeGreaterThan(0);
+    expect(gone).toBeGreaterThan(0);
+  });
+
   it('drops crops whose farmland was removed', () => {
     const { world, chunk } = farmWorld();
     world.setBlock(5, 11, 5, Block.CARROTS_1);

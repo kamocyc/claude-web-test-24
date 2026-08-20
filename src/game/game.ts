@@ -6,6 +6,7 @@ import { Effects } from '../render/effects';
 import { EntityRenderer } from '../render/entityRenderer';
 import { createChunkMaterials, type ChunkMaterials } from '../render/materials';
 import { Sky } from '../render/sky';
+import { Rain } from '../render/rain';
 import { buildAtlas, type Atlas } from '../render/textures';
 import { Block, type BlockId, blockDef, isFarmland, isReplaceable, supportsPlant } from '../world/blocks';
 import {
@@ -102,6 +103,7 @@ export class Game {
   private readonly entityRenderer: EntityRenderer;
   private readonly effects: Effects;
   private readonly sky: Sky;
+  private readonly rain: Rain;
   private readonly light: LightEngine;
   private readonly water: WaterSimulator;
   private readonly riverFlow: RiverFlow;
@@ -160,6 +162,7 @@ export class Game {
     this.entityRenderer = new EntityRenderer(this.atlas);
     this.effects = new Effects(this.atlas);
     this.sky = new Sky(this.scene, this.renderDistance * CHUNK_SIZE);
+    this.rain = new Rain(this.scene);
     this.scene.add(this.chunkRenderer.group, this.entityRenderer.group, this.effects.group);
 
     this.mobs = new MobManager(this.world, options.seed);
@@ -199,6 +202,7 @@ export class Game {
     window.removeEventListener('resize', this.onResize);
     if (this.keyHandler) this.options.input.offKey(this.keyHandler);
     if (this.lockHandler) document.removeEventListener('pointerlockchange', this.lockHandler);
+    this.rain.dispose();
     this.pool.dispose();
     this.chunkRenderer.dispose();
     this.hud.root.remove();
@@ -222,7 +226,7 @@ export class Game {
     this.lastFrame = now;
     this.fps = this.fps * 0.9 + (1 / Math.max(dt, 1e-4)) * 0.1;
     this.update(dt);
-    this.render();
+    this.render(dt);
     this.options.input.endFrame();
   };
 
@@ -342,10 +346,12 @@ export class Game {
     }
   }
 
-  private render(): void {
+  private render(dt: number): void {
     this.camera.position.set(this.player.x, this.player.eyeY, this.player.z);
     this.camera.rotation.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
-    this.sky.update(this.day, this.camera, this.renderer);
+    const wetness = this.forecast().wetness;
+    this.sky.update(this.day, this.camera, this.renderer, wetness);
+    this.rain.update(dt, this.camera, wetness, this.day.sunLight);
     this.renderer.render(this.scene, this.camera);
   }
 
