@@ -5,6 +5,14 @@ export interface Settings {
   renderDistance: number;
   /** Radians of camera rotation per pixel of mouse movement. */
   sensitivity: number;
+  /** Heading strip with markers for spawn, the last death and the nearest village. */
+  compass: boolean;
+  /** Overhead map in the top right corner. */
+  minimap: boolean;
+  /** Swap to the best tool in the hotbar for whatever is being mined. */
+  autoTool: boolean;
+  /** Walk up single block steps without jumping. */
+  autoStep: boolean;
 }
 
 export const SETTINGS_KEY = 'voxelcraft.settings.v1';
@@ -12,6 +20,10 @@ export const SETTINGS_KEY = 'voxelcraft.settings.v1';
 export const DEFAULT_SETTINGS: Settings = {
   renderDistance: 8,
   sensitivity: 0.0022,
+  compass: true,
+  minimap: true,
+  autoTool: true,
+  autoStep: true,
 };
 
 export const RENDER_DISTANCE_RANGE = { min: 4, max: 12 };
@@ -37,6 +49,10 @@ export function loadSettings(): Settings {
         SENSITIVITY_RANGE.min,
         SENSITIVITY_RANGE.max,
       ),
+      compass: parsed.compass ?? DEFAULT_SETTINGS.compass,
+      minimap: parsed.minimap ?? DEFAULT_SETTINGS.minimap,
+      autoTool: parsed.autoTool ?? DEFAULT_SETTINGS.autoTool,
+      autoStep: parsed.autoStep ?? DEFAULT_SETTINGS.autoStep,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

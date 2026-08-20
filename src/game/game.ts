@@ -7,7 +7,7 @@ import { EntityRenderer } from '../render/entityRenderer';
 import { createChunkMaterials, type ChunkMaterials } from '../render/materials';
 import { Sky } from '../render/sky';
 import { buildAtlas, type Atlas } from '../render/textures';
-import { Block, blockDef, isFarmland, isReplaceable, supportsPlant } from '../world/blocks';
+import { Block, type BlockId, blockDef, isFarmland, isReplaceable, supportsPlant } from '../world/blocks';
 import {
   CHUNK_HEIGHT,
   CHUNK_SIZE,
@@ -26,7 +26,8 @@ import { TICK_INTERVAL, randomTickChunk } from '../world/ticks';
 import { World } from '../world/world';
 import { ChunkWorkerPool } from '../workers/pool';
 import type { ChunkReadyMessage } from '../workers/chunkMessages';
-import { Hud } from '../ui/hud';
+import { Hud, type NavigationInfo } from '../ui/hud';
+import type { CompassMarker } from '../ui/compass';
 import type { Input } from '../ui/input';
 import type { Menus } from '../ui/menus';
 import { ScreenManager } from '../ui/screens';
@@ -35,10 +36,10 @@ import { applyDamage, applyKnockback } from './combat';
 import { DayCycle } from './daycycle';
 import { DropManager } from './drops';
 import { EXHAUSTION } from './hunger';
-import { Inventory, type ItemStack } from './inventory';
+import { HOTBAR_SIZE, Inventory, type ItemStack } from './inventory';
 import { itemDef, itemLabel } from './items';
 import { fillVillageChest } from './loot';
-import { blockDrops, heldTool, miningTime } from './mining';
+import { bestToolSlot, blockDrops, heldTool, miningTime } from './mining';
 import { Mob } from './mobs/ai';
 import { MobManager, type MobUpdateContext } from './mobs/spawner';
 import type { MobKind } from './mobs/types';
@@ -52,6 +53,7 @@ import {
   encodeWater,
   writeSave,
 } from './save';
+import { findSpawn } from './seeds';
 import type { Settings } from './settings';
 import { tickFurnace } from './smelting';
 import { tradesFromJSON, tradesToJSON } from './trading';
@@ -114,6 +116,12 @@ export class Game {
   private renderDistance: number;
   private keyHandler: ((event: KeyboardEvent) => void) | null = null;
   private lockHandler: (() => void) | null = null;
+  /** Where the player started, so the compass can always point home. */
+  private spawnPoint = { x: 0, z: 0 };
+  /** Where the player last died, so their dropped items can be found again. */
+  private deathPoint: { x: number; z: number } | null = null;
+  private nearestVillage: { x: number; z: number } | null = null;
+  private villageSearchTimer = 0;
 
   constructor(private readonly options: GameOptions) {
     this.world = new World(options.seed);
@@ -229,10 +237,11 @@ export class Game {
 
     if (this.paused || this.player.isDead) {
       if (this.player.isDead) this.options.menus.showDeath(true);
-      this.hud.update(dt, this.player, this.debugInfo());
+      this.hud.update(dt, this.player, this.debugInfo(), this.navigationInfo());
       return;
     }
 
+    this.player.autoStep = this.options.settings.autoStep;
     this.water.setCenter(this.player.x, this.player.z);
     this.water.update(dt);
     this.day.update(dt);
@@ -269,7 +278,13 @@ export class Game {
     this.effects.update(dt);
     this.entityRenderer.sync(this.mobs.mobs, this.drops.drops, this.mobs.arrows, performance.now() / 1000);
     this.screens.refresh();
-    this.hud.update(dt, this.player, this.debugInfo());
+    this.hud.update(dt, this.player, this.debugInfo(), this.navigationInfo());
+
+    this.villageSearchTimer -= dt;
+    if (this.villageSearchTimer <= 0) {
+      this.villageSearchTimer = 2;
+      this.nearestVillage = this.generator.findNearestVillage(this.player.x, this.player.z, 2);
+    }
 
     this.autosaveTimer += dt;
     if (this.autosaveTimer >= AUTOSAVE_SECONDS) {
@@ -294,8 +309,25 @@ export class Game {
     this.renderer.render(this.scene, this.camera);
   }
 
+  /** Places worth walking back to, refreshed at most once a second because finding
+   *  the nearest village walks the village grid. */
+  private navigationInfo(): NavigationInfo {
+    const markers: CompassMarker[] = [{ kind: 'spawn', x: this.spawnPoint.x, z: this.spawnPoint.z }];
+    if (this.deathPoint) markers.push({ kind: 'death', x: this.deathPoint.x, z: this.deathPoint.z });
+    if (this.nearestVillage) {
+      markers.push({ kind: 'village', x: this.nearestVillage.x, z: this.nearestVillage.z });
+    }
+    return {
+      world: this.world,
+      markers,
+      showCompass: this.options.settings.compass,
+      showMinimap: this.options.settings.minimap,
+    };
+  }
+
   private debugInfo() {
     return {
+      seed: this.world.seed,
       fps: this.fps,
       chunks: this.chunkRenderer.meshCount,
       pending: this.pool.pending,
@@ -482,6 +514,7 @@ export class Game {
     ) {
       this.miningTarget = { x: hit.x, y: hit.y, z: hit.z };
       this.miningProgress = 0;
+      this.selectBestTool(hit.block);
     }
     const tool = heldTool(this.player.inventory.held);
     const seconds = miningTime(hit.block, tool);
@@ -495,6 +528,16 @@ export class Game {
       this.breakBlock(hit.x, hit.y, hit.z, hit.block);
       this.resetMining();
     }
+  }
+
+  /** Puts the right tool in hand for whatever the crosshair just landed on. */
+  private selectBestTool(block: BlockId): void {
+    if (!this.options.settings.autoTool) return;
+    const inventory = this.player.inventory;
+    const slot = bestToolSlot(inventory.slots.slice(0, HOTBAR_SIZE), block, inventory.selected);
+    if (slot === inventory.selected) return;
+    inventory.selected = slot;
+    this.hud.showHeldItem(inventory.held?.id ?? null);
   }
 
   private resetMining(): void {
@@ -843,6 +886,7 @@ export class Game {
     this.options.menus.showDeath(false);
     // Everything the player was carrying stays where they died.
     const { x, y, z } = this.player;
+    this.deathPoint = { x: Math.round(x), z: Math.round(z) };
     for (const inventory of [this.player.inventory, this.player.inventory.armor]) {
       for (const slot of inventory.slots) {
         if (slot) this.drops.spawn(x, y + 0.5, z, { ...slot });
@@ -859,22 +903,12 @@ export class Game {
   // --- spawn placement -------------------------------------------------------
 
   private placeAtSpawn(): void {
-    const spawn = this.findSpawn();
+    const spawn = findSpawn(this.generator);
+    this.spawnPoint = { x: spawn.x, z: spawn.z };
     this.player.teleportTo(spawn.x + 0.5, spawn.y, spawn.z + 0.5);
   }
 
-  /** Spirals outwards from the origin looking for dry land above the sea. */
-  private findSpawn(): { x: number; y: number; z: number } {
-    for (let radius = 0; radius < 400; radius += 8) {
-      for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 6) {
-        const x = Math.round(Math.cos(angle) * radius);
-        const z = Math.round(Math.sin(angle) * radius);
-        const height = this.generator.height(x, z);
-        if (height > 47 && height < CHUNK_HEIGHT - 20) return { x, y: height + 1, z };
-      }
-    }
-    return { x: 0, y: 70, z: 0 };
-  }
+
 
   /** After the spawn chunk loads, drop the player onto the real surface. */
   private settlePlayerOnGround(): void {

@@ -41,14 +41,35 @@ await page.goto(url, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(1500);
 await shot('01-title');
 
-await page.fill('.seed-input', 'voxelcraft');
-await page.click('.menu-button.primary');
+// The fixed verification seed is one click on the title screen.
+await page.click('.menu-button:has-text("検証用ワールド")');
 await page.waitForFunction(() => window.voxelcraft?.isReady() === true, null, { timeout: 90000 });
 await page.waitForTimeout(1500);
 await page.keyboard.press('F3');
 await page.waitForTimeout(400);
 await shot('02-spawn');
 console.log('spawn:', JSON.stringify(await debugText()));
+console.log('verification seed:', await evaluate(() => window.voxelcraft.game.world.seed));
+
+// --- navigation aids ---------------------------------------------------------
+const navigation = await evaluate(() => ({
+  compass: document.querySelector('.compass')?.style.display !== 'none',
+  cardinals: [...document.querySelectorAll('.compass-tick.major')]
+    .filter((n) => n.style.display !== 'none')
+    .map((n) => n.textContent),
+  spawnMarker: document.querySelector('.compass-marker.spawn')?.style.display !== 'none',
+  minimapPainted: (() => {
+    const canvas = document.querySelector('.minimap-canvas');
+    if (!canvas) return 0;
+    const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    let painted = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] + data[i + 1] + data[i + 2] > 90) painted++;
+    }
+    return painted;
+  })(),
+}));
+console.log('compass and minimap:', JSON.stringify(navigation));
 
 // --- mining: look down and hold the left mouse button ------------------------
 await evaluate(() => {
@@ -501,7 +522,7 @@ const before = await evaluate(() => {
 });
 await page.reload({ waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(1200);
-await page.click('.menu-button:not(.primary)');
+await page.click('.menu-button:has-text("続きから")');
 await page.waitForFunction(() => window.voxelcraft?.isReady() === true, null, { timeout: 90000 });
 await page.waitForTimeout(2000);
 const after = await evaluate(() => {
@@ -511,17 +532,21 @@ const after = await evaluate(() => {
 console.log('saved:', JSON.stringify(before), 'loaded:', JSON.stringify(after));
 await shot('10-reloaded');
 
-// --- back to the title, then a second world ---------------------------------
+// --- the pause screen names the seed so a world can be found again ----------
 await page.keyboard.press('Escape');
 await page.waitForTimeout(400);
+console.log('pause seed label:', (await page.locator('.seed-label').textContent())?.trim());
 await page.click('.menu-button:has-text("タイトルへ戻る")');
 await page.waitForTimeout(800);
-await page.fill('.seed-input', 'second');
-await page.click('.menu-button.primary');
+
+// --- a seed in the URL opens that exact world without touching the title ----
+await page.goto(`${url}?seed=second`, { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => window.voxelcraft?.isReady() === true, null, { timeout: 90000 });
 await page.waitForTimeout(1500);
+await page.keyboard.press('F3');
+await page.waitForTimeout(300);
 await shot('14-second-world');
-console.log('second world:', JSON.stringify(await debugText()));
+console.log('world from the URL:', JSON.stringify(await debugText()));
 
 console.log(errors.length === 0 ? 'NO PAGE ERRORS' : `ERRORS:\n${errors.join('\n')}`);
 await browser.close();

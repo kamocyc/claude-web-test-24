@@ -21,6 +21,28 @@ function flatWorld(groundY = 20): World {
   return world;
 }
 
+/** Flat ground with a one block kerb running along x = 3. */
+function worldWithStep(groundY = 20): World {
+  const world = flatWorld(groundY);
+  for (let z = -20; z < 20; z++) {
+    for (let x = 3; x < 8; x++) world.setBlock(x, groundY + 1, z, Block.STONE);
+  }
+  return world;
+}
+
+/** Walks east for a second and reports where the player ended up. */
+function walkEast(world: World, autoStep: boolean, groundY = 20): Player {
+  const player = new Player();
+  player.autoStep = autoStep;
+  player.x = 0.5;
+  player.y = groundY + 1;
+  player.z = 0.5;
+  // Yaw -PI/2 looks towards +X.
+  player.yaw = -Math.PI / 2;
+  for (let i = 0; i < 90; i++) player.update(1 / 60, world, { ...NO_INPUT, forward: true });
+  return player;
+}
+
 /** Runs the player for a second and reports how far, and in which direction, it moved. */
 function walk(yaw: number, keys: Partial<typeof NO_INPUT>): { x: number; z: number } {
   const world = flatWorld();
@@ -162,5 +184,28 @@ describe('water', () => {
     player.z = 0.5;
     for (let i = 0; i < 60; i++) player.update(1 / 60, world, NO_INPUT, { x: 0.5, z: 0 });
     expect(Math.abs(player.x - 0.5)).toBeLessThan(0.05);
+  });
+
+  it('walks up a single block step without jumping', () => {
+    const climbed = walkEast(worldWithStep(), true);
+    expect(climbed.x).toBeGreaterThan(4);
+    expect(climbed.y).toBeCloseTo(22, 1);
+    expect(climbed.onGround).toBe(true);
+  });
+
+  it('is stopped by the same step when auto stepping is off', () => {
+    const blocked = walkEast(worldWithStep(), false);
+    expect(blocked.x).toBeLessThan(3);
+    expect(blocked.y).toBeCloseTo(21, 1);
+  });
+
+  it('does not climb a two block wall', () => {
+    const world = worldWithStep();
+    for (let z = -20; z < 20; z++) {
+      for (let x = 3; x < 8; x++) world.setBlock(x, 22, z, Block.STONE);
+    }
+    const player = walkEast(world, true);
+    expect(player.x).toBeLessThan(3);
+    expect(player.y).toBeCloseTo(21, 1);
   });
 });

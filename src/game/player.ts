@@ -1,4 +1,4 @@
-import { type EntityBox, sweepMove } from '../core/aabb';
+import { type EntityBox, canStepUp, sweepMove } from '../core/aabb';
 import { blockDef } from '../world/blocks';
 import { WATER_FULL } from '../world/water';
 import type { World } from '../world/world';
@@ -29,6 +29,8 @@ export const MAX_AIR = 10;
 const DROWN_INTERVAL = 1.5;
 /** How hard a flowing current pushes, in blocks per second per unit of flow. */
 const CURRENT_STRENGTH = 26;
+/** How high a single step the player walks up without jumping. */
+const STEP_HEIGHT = 1.02;
 
 export interface PlayerInput {
   forward: boolean;
@@ -99,6 +101,8 @@ export class Player implements Damageable {
   readonly hunger = new Hunger();
   /** Set while the player is flying in creative-style free camera. */
   flying = false;
+  /** Walk up single block steps instead of having to jump every kerb. */
+  autoStep = true;
 
   get eyeY(): number {
     return this.y + EYE_HEIGHT;
@@ -120,6 +124,34 @@ export class Player implements Damageable {
       y: Math.sin(this.pitch),
       z: -Math.cos(this.yaw) * cosPitch,
     };
+  }
+
+  /** Retries a blocked horizontal move from one block higher, then settles back down
+   *  onto whatever the player just climbed. Returns whether it got any further. */
+  private stepUp(
+    world: World,
+    fromX: number,
+    fromY: number,
+    fromZ: number,
+    wishX: number,
+    wishZ: number,
+    attemptedX: number,
+    attemptedZ: number,
+  ): boolean {
+    const foot: EntityBox = { x: fromX, y: fromY, z: fromZ, width: PLAYER_WIDTH, height: PLAYER_HEIGHT };
+    if (!canStepUp(world, foot, wishX, wishZ)) return false;
+
+    const achieved = Math.hypot(this.x - fromX, this.z - fromZ);
+    const raised: EntityBox = { ...foot, y: fromY + STEP_HEIGHT };
+    sweepMove(world, raised, attemptedX, 0, attemptedZ);
+    if (Math.hypot(raised.x - fromX, raised.z - fromZ) <= achieved + 0.001) return false;
+
+    // Fall back onto the step so the player is not left hovering a block up.
+    sweepMove(world, raised, 0, -STEP_HEIGHT, 0);
+    this.x = raised.x;
+    this.y = raised.y;
+    this.z = raised.z;
+    return true;
   }
 
   update(
@@ -201,8 +233,13 @@ export class Player implements Damageable {
     // --- collision -----------------------------------------------------------
     const box = this.box();
     const beforeX = this.x;
+    const beforeY = this.y;
     const beforeZ = this.z;
     const wasOnGround = this.onGround;
+    // Kept for the step-up retry below, which happens after the collision has zeroed
+    // the velocity of whichever axis ran into the wall.
+    const attemptedX = this.vx * dt;
+    const attemptedZ = this.vz * dt;
     const move = sweepMove(world, box, this.vx * dt, this.vy * dt, this.vz * dt);
     this.x = box.x;
     this.y = box.y;
@@ -211,6 +248,21 @@ export class Player implements Damageable {
     if (move.collidedZ) this.vz = 0;
     if (move.collidedY) this.vy = 0;
     this.onGround = move.onGround || this.flying;
+
+    // --- walking up a step ---------------------------------------------------
+    // A wall one block high is a kerb, not an obstacle: retry the same move from a
+    // block higher and drop back down, so the player never has to jump on the spot.
+    if (
+      this.autoStep &&
+      (move.collidedX || move.collidedZ) &&
+      wasOnGround &&
+      !this.flying &&
+      !this.inWater &&
+      inputLength > 0
+    ) {
+      const climbed = this.stepUp(world, beforeX, beforeY, beforeZ, wishX, wishZ, attemptedX, attemptedZ);
+      if (climbed) this.onGround = true;
+    }
 
     // --- fall damage ---------------------------------------------------------
     if (!wasOnGround && this.onGround) {

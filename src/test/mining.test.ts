@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Block } from '../world/blocks';
-import { blockDrops, canHarvest, heldTool, miningTime } from '../game/mining';
+import { bestToolSlot, blockDrops, canHarvest, heldTool, miningTime } from '../game/mining';
 import { itemDef } from '../game/items';
 
 const wooden = itemDef('wooden_pickaxe');
@@ -56,5 +56,37 @@ describe('mining', () => {
     expect(heldTool({ id: 'iron_pickaxe', count: 1 })?.id).toBe('iron_pickaxe');
     expect(heldTool({ id: 'dirt', count: 1 })).toBeUndefined();
     expect(heldTool(null)).toBeUndefined();
+  });
+
+  describe('automatic tool selection', () => {
+    const hotbar = [
+      { id: 'torch', count: 8 },
+      { id: 'wooden_pickaxe', count: 1 },
+      { id: 'iron_shovel', count: 1 },
+      { id: 'iron_pickaxe', count: 1 },
+      null,
+      null,
+      null,
+      null,
+      null,
+    ];
+
+    it('reaches for the fastest pickaxe on stone', () => {
+      expect(bestToolSlot(hotbar, Block.STONE, 0)).toBe(3);
+    });
+
+    it('reaches for the shovel on dirt', () => {
+      expect(bestToolSlot(hotbar, Block.DIRT, 0)).toBe(2);
+    });
+
+    it('prefers a tool that can harvest over one that is merely quick', () => {
+      // Only iron and better drops diamond, so the wooden pickaxe must not win.
+      expect(bestToolSlot(hotbar, Block.DIAMOND_ORE, 1)).toBe(3);
+    });
+
+    it('keeps the held item when nothing in the bar does better', () => {
+      expect(bestToolSlot(hotbar, Block.TALL_GRASS, 0)).toBe(0);
+      expect(bestToolSlot([null, null], Block.STONE, 1)).toBe(1);
+    });
   });
 });

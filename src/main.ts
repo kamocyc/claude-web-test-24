@@ -5,6 +5,7 @@ import { Input } from './ui/input';
 import { Menus } from './ui/menus';
 import { hasSave, readSave } from './game/save';
 import { loadSettings, saveSettings } from './game/settings';
+import { seedFromUrl } from './game/seeds';
 
 const canvas = document.createElement('canvas');
 canvas.id = 'viewport';
@@ -34,6 +35,7 @@ function startGame(seed: number, save: ReturnType<typeof readSave>): void {
   menus.showPause(false);
   menus.showDeath(false);
   game = new Game({ canvas, input, menus, seed, save, settings, onQuit: quitToTitle });
+  menus.setSeed(seed);
   menus.bindSettings(settings, (next) => {
     input.sensitivity = next.sensitivity;
     game?.setRenderDistance(next.renderDistance);
@@ -66,7 +68,15 @@ const titleActions = {
 };
 
 menus.bindTitle(titleActions, hasSave());
-menus.showTitle(true);
+
+// `?seed=...` opens that exact world straight away, which is how a specific world
+// gets shared as a link and how the browser smoke test pins its terrain.
+const requested = seedFromUrl(window.location.search);
+if (requested) {
+  startGame(requested.seed, null);
+} else {
+  menus.showTitle(true);
+}
 
 window.addEventListener('beforeunload', () => {
   game?.save(false);

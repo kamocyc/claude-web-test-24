@@ -33,6 +33,37 @@ export function miningTime(block: BlockId, tool: ItemDef | undefined): number {
   return Math.max(0.05, seconds);
 }
 
+/** Hotbar slot holding the best tool for a block: the one that harvests it, and among
+ *  those the fastest. Ties keep whatever is already in hand so the bar stops flapping
+ *  when nothing in it makes a difference. */
+export function bestToolSlot(
+  slots: readonly (ItemStack | null)[],
+  block: BlockId,
+  current: number,
+): number {
+  if (slots.length === 0) return current;
+  const start = Math.max(0, Math.min(slots.length - 1, current));
+  const rate = (index: number): { time: number; harvest: boolean } => {
+    const tool = heldTool(slots[index] ?? null);
+    return { time: miningTime(block, tool), harvest: canHarvest(block, tool) };
+  };
+  let best = start;
+  let bestRate = rate(start);
+  for (let i = 0; i < slots.length; i++) {
+    if (i === start) continue;
+    const candidate = rate(i);
+    const better =
+      candidate.harvest !== bestRate.harvest
+        ? candidate.harvest
+        : candidate.time < bestRate.time - 1e-6;
+    if (better) {
+      best = i;
+      bestRate = candidate;
+    }
+  }
+  return best;
+}
+
 export interface DropContext {
   /** 0..1 random source, injected so drops stay testable. */
   random: () => number;

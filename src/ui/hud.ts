@@ -3,6 +3,9 @@ import { itemDef, itemLabel } from '../game/items';
 import type { Atlas } from '../render/textures';
 import { HOTBAR_SIZE } from '../game/inventory';
 import { clear, el } from './dom';
+import { Compass, type CompassMarker } from './compass';
+import { Minimap } from './minimap';
+import type { World } from '../world/world';
 import { renderSlot } from './containers';
 
 export interface DebugInfo {
@@ -13,6 +16,15 @@ export interface DebugInfo {
   clock: string;
   mobs: number;
   waterDepth: number;
+  seed: number;
+}
+
+/** Everything the navigation aids need, gathered once per frame by the game. */
+export interface NavigationInfo {
+  world: World;
+  markers: CompassMarker[];
+  showCompass: boolean;
+  showMinimap: boolean;
 }
 
 /** Health, hunger, hotbar, crosshair and the debug overlay. */
@@ -29,10 +41,13 @@ export class Hud {
   private readonly flash = el('div', 'damage-flash');
   private readonly clickPrompt = el('div', 'click-prompt', 'クリックしてプレイ');
   private readonly underwater = el('div', 'underwater');
+  readonly compass = new Compass();
+  readonly minimap: Minimap;
   private debugVisible = false;
   private heldLabelTimer = 0;
 
   constructor(private readonly atlas: Atlas) {
+    this.minimap = new Minimap(atlas);
     const crosshair = el('div', 'crosshair');
     const stats = el('div', 'stats');
     stats.append(this.hearts, this.food);
@@ -44,7 +59,17 @@ export class Hud {
       this.hotbar.appendChild(slot);
     }
     bottom.append(this.heldLabel, this.air, stats, this.hotbar);
-    this.root.append(this.underwater, this.flash, crosshair, bottom, this.debug, this.toasts, this.clickPrompt);
+    this.root.append(
+      this.underwater,
+      this.flash,
+      crosshair,
+      this.compass.root,
+      this.minimap.root,
+      bottom,
+      this.debug,
+      this.toasts,
+      this.clickPrompt,
+    );
     this.underwater.style.display = 'none';
     this.clickPrompt.style.display = 'none';
     this.debug.style.display = 'none';
@@ -86,7 +111,12 @@ export class Hud {
     this.flash.classList.add('active');
   }
 
-  update(dt: number, player: Player, info: DebugInfo): void {
+  update(dt: number, player: Player, info: DebugInfo, navigation: NavigationInfo): void {
+    this.compass.setVisible(navigation.showCompass);
+    if (navigation.showCompass) this.compass.update(player.yaw, player.x, player.z, navigation.markers);
+    this.minimap.setVisible(navigation.showMinimap);
+    if (navigation.showMinimap) this.minimap.update(navigation.world, player.x, player.z, player.yaw);
+
     this.renderBar(this.hearts, player.health, player.maxHealth, 'heart');
     this.renderBar(this.food, player.hunger.food, 20, 'drumstick');
     // The breath meter only appears once the player is actually holding their breath.
@@ -115,6 +145,7 @@ export class Hud {
         `チャンク ${info.chunks} (生成待ち ${info.pending})`,
         `モブ ${info.mobs}`,
         `水深 ${info.waterDepth.toFixed(2)}`,
+        `シード ${info.seed}`,
         `手持ち ${held ? `${itemDef(held.id)?.label ?? held.id} x${held.count}` : 'なし'}`,
       ].join('\n');
     }
