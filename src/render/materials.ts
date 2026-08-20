@@ -48,12 +48,16 @@ export interface ChunkMaterials {
   opaque: THREE.ShaderMaterial;
   cutout: THREE.ShaderMaterial;
   transparent: THREE.ShaderMaterial;
+  water: THREE.ShaderMaterial;
   /** Updates the sunlight level shared by all three passes. */
   setSun(value: number): void;
   all(): THREE.ShaderMaterial[];
 }
 
-function make(map: THREE.Texture, options: { cutout?: boolean; transparent?: boolean; opacity?: number }): THREE.ShaderMaterial {
+function make(
+  map: THREE.Texture,
+  options: { cutout?: boolean; transparent?: boolean; opacity?: number; doubleSided?: boolean },
+): THREE.ShaderMaterial {
   const material = new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.merge([
       THREE.UniformsLib.fog,
@@ -64,7 +68,7 @@ function make(map: THREE.Texture, options: { cutout?: boolean; transparent?: boo
     fog: true,
     transparent: options.transparent ?? false,
     depthWrite: !(options.transparent ?? false),
-    side: options.cutout ? THREE.DoubleSide : THREE.FrontSide,
+    side: options.cutout || options.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
     defines: options.cutout ? { CUTOUT: '' } : {},
   });
   material.uniforms.uMap.value = map;
@@ -75,11 +79,14 @@ export function createChunkMaterials(map: THREE.Texture): ChunkMaterials {
   const opaque = make(map, {});
   const cutout = make(map, { cutout: true });
   const transparent = make(map, { transparent: true, opacity: 0.82 });
-  const all = (): THREE.ShaderMaterial[] => [opaque, cutout, transparent];
+  // Water is drawn from both sides so a submerged camera still sees the surface.
+  const water = make(map, { transparent: true, opacity: 0.72, doubleSided: true });
+  const all = (): THREE.ShaderMaterial[] => [opaque, cutout, transparent, water];
   return {
     opaque,
     cutout,
     transparent,
+    water,
     all,
     setSun(value: number) {
       for (const material of all()) material.uniforms.uSun.value = value;

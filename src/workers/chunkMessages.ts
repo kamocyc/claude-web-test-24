@@ -18,6 +18,7 @@ export interface ChunkReadyMessage {
   cx: number;
   cz: number;
   blocks: Uint16Array;
+  water: Uint8Array;
   villagers: VillagerMarker[];
   chests: ChestMarker[];
 }

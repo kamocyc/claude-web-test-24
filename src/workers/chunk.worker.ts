@@ -21,9 +21,10 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       cx: message.cx,
       cz: message.cz,
       blocks: result.blocks,
+      water: result.water,
       villagers: result.villagers,
       chests: result.chests,
     };
-    (self as unknown as Worker).postMessage(response, [result.blocks.buffer]);
+    (self as unknown as Worker).postMessage(response, [result.blocks.buffer, result.water.buffer]);
   }
 };

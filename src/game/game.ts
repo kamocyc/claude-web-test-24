@@ -8,7 +8,7 @@ import { createChunkMaterials, type ChunkMaterials } from '../render/materials';
 import { Sky } from '../render/sky';
 import { buildAtlas, type Atlas } from '../render/textures';
 import { Block, blockDef, isFarmland, isReplaceable, supportsPlant } from '../world/blocks';
-import { CHUNK_HEIGHT, CHUNK_SIZE, Chunk, chunkKey, toChunkCoord } from '../world/chunk';
+import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, Chunk, chunkKey, toChunkCoord } from '../world/chunk';
 import { TerrainGenerator } from '../world/generation/terrain';
 import { LightEngine } from '../world/lighting';
 import { raycastVoxels, type RaycastHit } from '../world/raycast';
@@ -37,7 +37,9 @@ import {
   type SaveData,
   SAVE_VERSION,
   decodeEdits,
+  decodeWater,
   encodeEdits,
+  encodeWater,
   writeSave,
 } from './save';
 import type { Settings } from './settings';
@@ -51,6 +53,8 @@ const ATTACK_REACH = 3.6;
 const AUTOSAVE_SECONDS = 30;
 /** Chunk meshes rebuilt per frame; higher values load faster but stutter more. */
 const MESH_BUDGET = 3;
+/** Water-only rebuilds are much cheaper, so more of them fit in a frame. */
+const WATER_MESH_BUDGET = 6;
 
 export interface GameOptions {
   canvas: HTMLCanvasElement;
@@ -185,6 +189,7 @@ export class Game {
     this.streamChunks();
     this.light.update(20000);
     this.chunkRenderer.processDirty(MESH_BUDGET, this.player.x, this.player.z);
+    this.chunkRenderer.processWaterDirty(WATER_MESH_BUDGET);
 
     if (!this.ready) {
       // Wait until the ground under the player exists before handing over control.
@@ -303,7 +308,7 @@ export class Game {
   }
 
   private onChunkReady(message: ChunkReadyMessage): void {
-    const chunk = new Chunk(message.cx, message.cz, message.blocks);
+    const chunk = new Chunk(message.cx, message.cz, message.blocks, message.water);
     chunk.generated = true;
     this.world.addChunk(chunk);
     this.light.seedChunk(chunk);
@@ -808,8 +813,13 @@ export class Game {
 
   save(announce = true): boolean {
     const edits: Record<string, string> = {};
+    const water: Record<string, string> = {};
     for (const [key, map] of this.world.edits) {
-      if (map.size > 0) edits[key] = encodeEdits(map);
+      if (map.size === 0) continue;
+      edits[key] = encodeEdits(map);
+      // Water in edited chunks was shaped by the player, so it cannot be regenerated.
+      const levels = this.world.waterOf(key);
+      if (levels) water[key] = encodeWater(levels);
     }
     const chests: SaveData['chests'] = [];
     const furnaces: SaveData['furnaces'] = [];
@@ -845,6 +855,7 @@ export class Game {
         armor: this.player.inventory.armor.toJSON(),
       },
       edits,
+      water,
       chests,
       furnaces,
       villagers: this.mobs.mobs
@@ -963,6 +974,9 @@ export class Game {
 
     for (const [key, encoded] of Object.entries(data.edits)) {
       this.world.edits.set(key, decodeEdits(encoded));
+    }
+    for (const [key, encoded] of Object.entries(data.water ?? {})) {
+      this.world.waterSnapshots.set(key, decodeWater(encoded, CHUNK_VOLUME));
     }
     for (const chest of data.chests) {
       const slots = new Inventory(27);

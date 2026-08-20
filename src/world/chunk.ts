@@ -1,4 +1,5 @@
 import { Block, type BlockId } from './blocks';
+import { WATER_MAX } from './water';
 
 export const CHUNK_SIZE = 16;
 export const CHUNK_HEIGHT = 128;
@@ -34,10 +35,14 @@ export class Chunk {
   readonly blocks: Uint16Array;
   /** High nibble = skylight, low nibble = block light. */
   readonly light: Uint8Array;
+  /** Fill level per voxel, 0 when dry. See water.ts for the scale. */
+  readonly water: Uint8Array;
   /** Y of the highest non-air block in each column, -1 when the column is empty. */
   readonly heightMap: Int16Array;
   /** Set while the mesh no longer matches the block data. */
   dirty = true;
+  /** Set when only the water levels changed, which needs a much cheaper rebuild. */
+  waterDirty = false;
   /** Terrain generation finished. */
   generated = false;
   /** Initial light seeding finished. */
@@ -47,9 +52,11 @@ export class Chunk {
     readonly cx: number,
     readonly cz: number,
     blocks?: Uint16Array,
+    water?: Uint8Array,
   ) {
     this.blocks = blocks ?? new Uint16Array(CHUNK_VOLUME);
     this.light = new Uint8Array(CHUNK_VOLUME);
+    this.water = water ?? new Uint8Array(CHUNK_VOLUME);
     this.heightMap = new Int16Array(CHUNK_AREA).fill(-1);
   }
 
@@ -76,6 +83,16 @@ export class Chunk {
     this.blocks[blockIndex(x, y, z)] = id;
   }
 
+  getWater(x: number, y: number, z: number): number {
+    if (y < 0 || y >= CHUNK_HEIGHT) return 0;
+    return this.water[blockIndex(x, y, z)];
+  }
+
+  setWater(x: number, y: number, z: number, level: number): void {
+    if (y < 0 || y >= CHUNK_HEIGHT) return;
+    this.water[blockIndex(x, y, z)] = Math.max(0, Math.min(WATER_MAX, Math.round(level)));
+  }
+
   getSkyLight(x: number, y: number, z: number): number {
     if (y < 0) return 0;
     if (y >= CHUNK_HEIGHT) return 15;
@@ -97,6 +114,17 @@ export class Chunk {
     if (y < 0 || y >= CHUNK_HEIGHT) return;
     const i = blockIndex(x, y, z);
     this.light[i] = (this.light[i] & 0xf0) | value;
+  }
+
+  /** Restores the "water level > 0 means a WATER block" invariant after the water
+   *  array is replaced wholesale, such as when a save is loaded. */
+  syncWaterMarkers(): void {
+    for (let i = 0; i < this.water.length; i++) {
+      const level = this.water[i];
+      if (level > 0 && this.blocks[i] === Block.AIR) this.blocks[i] = Block.WATER;
+      else if (level === 0 && this.blocks[i] === Block.WATER) this.blocks[i] = Block.AIR;
+      else if (level > 0 && this.blocks[i] !== Block.WATER) this.water[i] = 0;
+    }
   }
 
   /** Recomputes the per-column height map from the block data. */

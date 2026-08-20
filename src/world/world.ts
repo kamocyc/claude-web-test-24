@@ -1,4 +1,5 @@
 import { Block, type BlockId, blockDef } from './blocks';
+import { WATER_FULL, WATER_MAX } from './water';
 import {
   CHUNK_HEIGHT,
   CHUNK_SIZE,
@@ -35,9 +36,13 @@ export class World {
   /** Player edits, per chunk: block index -> block id. This is all that gets saved. */
   readonly edits = new Map<string, Map<number, BlockId>>();
   readonly blockEntities = new Map<string, BlockEntity>();
+  /** Water of chunks the player has changed, kept while they are unloaded. */
+  readonly waterSnapshots = new Map<string, Uint8Array>();
   private readonly listeners: BlockChangeListener[] = [];
   /** Chunks whose mesh must be rebuilt. */
   readonly dirtyChunks = new Set<string>();
+  /** Chunks where only the water changed. */
+  readonly dirtyWaterChunks = new Set<string>();
 
   constructor(public readonly seed: number) {}
 
@@ -52,13 +57,28 @@ export class World {
   addChunk(chunk: Chunk): void {
     this.chunks.set(chunk.key, chunk);
     this.applyEditsTo(chunk);
+    const snapshot = this.waterSnapshots.get(chunk.key);
+    if (snapshot && snapshot.length === chunk.water.length) {
+      chunk.water.set(snapshot);
+      chunk.syncWaterMarkers();
+    }
     chunk.recomputeHeightMap();
     this.markDirty(chunk.cx, chunk.cz);
     for (const [dx, dz] of NEIGHBOR_OFFSETS) this.markDirty(chunk.cx + dx, chunk.cz + dz);
   }
 
   removeChunk(cx: number, cz: number): void {
-    this.chunks.delete(chunkKey(cx, cz));
+    const key = chunkKey(cx, cz);
+    const chunk = this.chunks.get(key);
+    // Water the player made is not reproducible from the seed, so keep it around.
+    if (chunk && this.edits.has(key)) this.waterSnapshots.set(key, chunk.water.slice());
+    this.chunks.delete(key);
+    this.dirtyWaterChunks.delete(key);
+  }
+
+  /** Current water of a chunk, whether it is loaded or only kept as a snapshot. */
+  waterOf(key: string): Uint8Array | undefined {
+    return this.chunks.get(key)?.water ?? this.waterSnapshots.get(key);
   }
 
   hasChunk(cx: number, cz: number): boolean {
@@ -98,6 +118,9 @@ export class World {
 
     chunk.set(lx, y, lz, id);
     chunk.updateHeightAfterChange(lx, y, lz, id);
+    // Placing anything solid displaces the water that was in the cell; placing water
+    // (from a bucket, or during generation) fills it.
+    chunk.setWater(lx, y, lz, id === Block.WATER ? WATER_FULL : 0);
 
     if (options.record !== false) {
       let edits = this.edits.get(chunk.key);
@@ -126,6 +149,50 @@ export class World {
     if (!chunk) return;
     chunk.dirty = true;
     this.dirtyChunks.add(key);
+  }
+
+  /** Fill level of a cell, 0 when dry or out of the loaded world. */
+  getWater(x: number, y: number, z: number): number {
+    if (y < 0 || y >= CHUNK_HEIGHT) return 0;
+    const chunk = this.getChunk(toChunkCoord(x), toChunkCoord(z));
+    if (!chunk) return 0;
+    return chunk.getWater(toLocalCoord(x), y, toLocalCoord(z));
+  }
+
+  /** Writes a fill level and keeps the WATER block marker in sync with it. */
+  setWater(x: number, y: number, z: number, level: number): boolean {
+    if (y < 0 || y >= CHUNK_HEIGHT) return false;
+    const cx = toChunkCoord(x);
+    const cz = toChunkCoord(z);
+    const chunk = this.getChunk(cx, cz);
+    if (!chunk) return false;
+    const lx = toLocalCoord(x);
+    const lz = toLocalCoord(z);
+    const clamped = Math.max(0, Math.min(WATER_MAX, Math.round(level)));
+    if (chunk.getWater(lx, y, lz) === clamped) return false;
+    chunk.setWater(lx, y, lz, clamped);
+
+    // The block id stays the marker for "there is water here", so every existing
+    // check (rendering pass, replaceable, light filter, swimming) keeps working.
+    const current = chunk.get(lx, y, lz);
+    if (clamped > 0 && current === Block.AIR) chunk.set(lx, y, lz, Block.WATER);
+    else if (clamped === 0 && current === Block.WATER) chunk.set(lx, y, lz, Block.AIR);
+
+    this.markWaterDirty(cx, cz);
+    if (lx === 0) this.markWaterDirty(cx - 1, cz);
+    if (lx === CHUNK_SIZE - 1) this.markWaterDirty(cx + 1, cz);
+    if (lz === 0) this.markWaterDirty(cx, cz - 1);
+    if (lz === CHUNK_SIZE - 1) this.markWaterDirty(cx, cz + 1);
+    return true;
+  }
+
+  /** Queues a water-only mesh rebuild, which is far cheaper than a full remesh. */
+  markWaterDirty(cx: number, cz: number): void {
+    const key = chunkKey(cx, cz);
+    const chunk = this.chunks.get(key);
+    if (!chunk) return;
+    chunk.waterDirty = true;
+    this.dirtyWaterChunks.add(key);
   }
 
   getSkyLight(x: number, y: number, z: number): number {
@@ -186,7 +253,11 @@ export class World {
   private applyEditsTo(chunk: Chunk): void {
     const edits = this.edits.get(chunk.key);
     if (!edits) return;
-    for (const [index, id] of edits) chunk.blocks[index] = id;
+    for (const [index, id] of edits) {
+      chunk.blocks[index] = id;
+      // Keep the water array consistent; a saved water snapshot overwrites this after.
+      chunk.water[index] = id === Block.WATER ? WATER_FULL : 0;
+    }
   }
 }
 

@@ -2,6 +2,7 @@ import { Noise, clamp, lerp, smoothstep } from '../../core/noise';
 import { hashFloat, mulberry32, hashInts } from '../../core/rng';
 import { Block, type BlockId } from '../blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey } from '../chunk';
+import { WATER_FULL } from '../water';
 import { Biome, type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
 import { ORES, placeCactus, placeSugarCane, placeTree, treeCandidates } from './features';
 import {
@@ -19,6 +20,8 @@ import {
 
 export interface ChunkGenResult {
   blocks: Uint16Array;
+  /** Fill level per voxel, matching the WATER blocks in `blocks`. */
+  water: Uint8Array;
   villagers: VillagerMarker[];
   chests: ChestMarker[];
 }
@@ -194,6 +197,7 @@ export class TerrainGenerator {
 
   generateChunk(cx: number, cz: number): ChunkGenResult {
     const blocks = new Uint16Array(CHUNK_VOLUME);
+    const water = new Uint8Array(CHUNK_VOLUME);
     const originX = cx * CHUNK_SIZE;
     const originZ = cz * CHUNK_SIZE;
     const heights = new Int16Array(CHUNK_SIZE * CHUNK_SIZE);
@@ -201,7 +205,10 @@ export class TerrainGenerator {
 
     const setLocal = (lx: number, y: number, lz: number, id: BlockId): void => {
       if (y < 0 || y >= CHUNK_HEIGHT || lx < 0 || lx >= CHUNK_SIZE || lz < 0 || lz >= CHUNK_SIZE) return;
-      blocks[blockIndex(lx, y, lz)] = id;
+      const index = blockIndex(lx, y, lz);
+      blocks[index] = id;
+      // Generated water starts out full; anything else placed over it dries the cell.
+      water[index] = id === Block.WATER ? WATER_FULL : 0;
     };
     /** World-space setter that silently drops anything outside this chunk. */
     const put = (x: number, y: number, z: number, id: BlockId): void => {
@@ -252,7 +259,10 @@ export class TerrainGenerator {
           const index = blockIndex(lx, y, lz);
           const current = blocks[index];
           if (current === Block.BEDROCK || current === Block.WATER) continue;
-          if (this.isCave(x, y, z, h)) blocks[index] = Block.AIR;
+          if (this.isCave(x, y, z, h)) {
+            blocks[index] = Block.AIR;
+            water[index] = 0;
+          }
         }
       }
     }
@@ -301,7 +311,7 @@ export class TerrainGenerator {
       }
     }
 
-    return { blocks, villagers, chests };
+    return { blocks, water, villagers, chests };
   }
 
   /** Villages whose block list can reach into this chunk (plateau radius plus slack). */

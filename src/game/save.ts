@@ -2,7 +2,7 @@
  *  save stays small no matter how far the player has explored. */
 
 export const SAVE_KEY = 'voxelcraft.save.v1';
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 
 export interface SavedPlayer {
   x: number;
@@ -47,6 +47,8 @@ export interface SaveData {
   player: SavedPlayer;
   /** Chunk key -> base64 encoded (blockIndex, blockId) pairs. */
   edits: Record<string, string>;
+  /** Chunk key -> run length encoded water levels, for chunks the player changed. */
+  water: Record<string, string>;
   chests: SavedChest[];
   furnaces: SavedFurnace[];
   villagers: SavedVillager[];
@@ -87,6 +89,33 @@ export function decodeEdits(text: string): Map<number, number> {
   const map = new Map<number, number>();
   for (let i = 0; i < packed.length; i += 2) map.set(packed[i], packed[i + 1]);
   return map;
+}
+
+/** Run length encodes water levels: long stretches of dry or full cells collapse to a
+ *  couple of bytes, which keeps a reservoir cheap to store. */
+export function encodeWater(levels: Uint8Array): string {
+  const out: number[] = [];
+  let index = 0;
+  while (index < levels.length) {
+    const value = levels[index];
+    let run = 1;
+    while (run < 255 && index + run < levels.length && levels[index + run] === value) run++;
+    out.push(run, value);
+    index += run;
+  }
+  return bytesToBase64(new Uint8Array(out));
+}
+
+export function decodeWater(text: string, length: number): Uint8Array {
+  const bytes = base64ToBytes(text);
+  const levels = new Uint8Array(length);
+  let index = 0;
+  for (let i = 0; i + 1 < bytes.length; i += 2) {
+    const run = bytes[i];
+    const value = bytes[i + 1];
+    for (let n = 0; n < run && index < length; n++) levels[index++] = value;
+  }
+  return levels;
 }
 
 export function writeSave(data: SaveData): boolean {

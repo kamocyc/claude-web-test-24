@@ -1,5 +1,6 @@
 import { Block, type BlockId, blockDef } from '../world/blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, type Chunk } from '../world/chunk';
+import { waterFraction } from '../world/water';
 import type { World } from '../world/world';
 import type { Atlas, TileUv } from './textures';
 
@@ -7,7 +8,9 @@ import type { Atlas, TileUv } from './textures';
 export const PASS_OPAQUE = 0;
 export const PASS_CUTOUT = 1;
 export const PASS_TRANSPARENT = 2;
-export type Pass = 0 | 1 | 2;
+/** Water gets its own pass so a flowing river only rebuilds this small geometry. */
+export const PASS_WATER = 3;
+export type Pass = 0 | 1 | 2 | 3;
 
 export interface GeometryArrays {
   position: Float32Array;
@@ -120,9 +123,10 @@ const FACES: Face[] = RAW_FACES.map((face) => {
 
 const AO_LEVELS = [0.45, 0.68, 0.86, 1];
 
-const TRANSPARENT_BLOCKS = new Set<BlockId>([Block.WATER, Block.GLASS, Block.ICE]);
+const TRANSPARENT_BLOCKS = new Set<BlockId>([Block.GLASS, Block.ICE]);
 
 export function passOf(id: BlockId): Pass {
+  if (id === Block.WATER) return PASS_WATER;
   if (TRANSPARENT_BLOCKS.has(id)) return PASS_TRANSPARENT;
   const def = blockDef(id);
   if (def.render === 'cross') return PASS_CUTOUT;
@@ -160,18 +164,24 @@ function textureFor(id: BlockId, dirY: number): string {
   return def.tex.side ?? def.tex.all ?? def.tex.top ?? 'stone';
 }
 
-/** Height of the top surface: water sits slightly below a full block. */
-function topHeight(id: BlockId): number {
-  return id === Block.WATER ? 0.875 : 1;
+export interface MeshOptions {
+  /** Skip everything except water, for the cheap rebuild while a river flows. */
+  waterOnly?: boolean;
 }
 
-/** Builds the three geometries for one chunk, reading neighbouring chunks through the
- *  world so faces along a chunk seam are culled correctly. */
-export function buildChunkMesh(world: World, chunk: Chunk, atlas: Atlas): MeshData {
+/** Builds the geometry for one chunk, reading neighbouring chunks through the world so
+ *  faces along a chunk seam are culled correctly. */
+export function buildChunkMesh(
+  world: World,
+  chunk: Chunk,
+  atlas: Atlas,
+  options: MeshOptions = {},
+): MeshData {
   const builders: Record<Pass, Builder> = {
     [PASS_OPAQUE]: newBuilder(),
     [PASS_CUTOUT]: newBuilder(),
     [PASS_TRANSPARENT]: newBuilder(),
+    [PASS_WATER]: newBuilder(),
   };
   const originX = chunk.originX;
   const originZ = chunk.originZ;
@@ -204,14 +214,47 @@ export function buildChunkMesh(world: World, chunk: Chunk, atlas: Atlas): MeshDa
 
   const occludes = (x: number, y: number, z: number): boolean => blockDef(blockAt(x, y, z)).opaque;
 
+  const waterAt = (x: number, y: number, z: number): number => {
+    if (y < 0 || y >= CHUNK_HEIGHT) return 0;
+    if (x >= 0 && x < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE) return chunk.getWater(x, y, z);
+    return world.getWater(originX + x, y, originZ + z);
+  };
+
+  /** Surface height at one corner of a water cell: the average fill of the cells that
+   *  share the corner. Neighbouring cells compute this from the same set, so their
+   *  surfaces always meet and the water reads as one continuous sheet. */
+  const cornerHeight = (x: number, y: number, z: number, dx: number, dz: number): number => {
+    let sum = 0;
+    let count = 0;
+    for (const [ox, oz] of [[0, 0], [dx, 0], [0, dz], [dx, dz]] as const) {
+      if (waterAt(x + ox, y + 1, z + oz) > 0) return 1;
+      const level = waterAt(x + ox, y, z + oz);
+      if (level > 0) {
+        sum += waterFraction(level);
+        count++;
+      }
+    }
+    return count > 0 ? Math.max(0.1, sum / count) : waterFraction(waterAt(x, y, z));
+  };
+
   for (let y = 0; y < CHUNK_HEIGHT; y++) {
     for (let z = 0; z < CHUNK_SIZE; z++) {
       for (let x = 0; x < CHUNK_SIZE; x++) {
         const id = chunk.get(x, y, z);
         if (id === Block.AIR) continue;
+        if (options.waterOnly && id !== Block.WATER) continue;
         const def = blockDef(id);
         const pass = passOf(id);
         const builder = builders[pass];
+
+        // Water surfaces slope with the fill level, so its corners are precomputed.
+        const heights =
+          id === Block.WATER
+            ? [
+                [cornerHeight(x, y, z, -1, -1), cornerHeight(x, y, z, -1, 1)],
+                [cornerHeight(x, y, z, 1, -1), cornerHeight(x, y, z, 1, 1)],
+              ]
+            : null;
 
         if (def.render === 'cross') {
           emitCross(builder, atlas.uv(def.tex.all ?? 'tall_grass'), x, y, z, skyAt(x, y, z), blockLightAt(x, y, z));
@@ -235,12 +278,12 @@ export function buildChunkMesh(world: World, chunk: Chunk, atlas: Atlas): MeshDa
           const uv = atlas.uv(textureFor(id, face.dir[1]));
           const sky = skyAt(nx, ny, nz) / 15;
           const blockLight = blockLightAt(nx, ny, nz) / 15;
-          const height = topHeight(id);
 
           const base = builder.position.length / 3;
           for (let c = 0; c < 4; c++) {
             const corner = face.corners[c];
-            const cy = corner.pos[1] === 1 ? height : 0;
+            const cy =
+              corner.pos[1] === 1 ? (heights ? heights[corner.pos[0]][corner.pos[2]] : 1) : 0;
             builder.position.push(x + corner.pos[0], y + cy, z + corner.pos[2]);
             builder.uv.push(
               uv.u0 + corner.uv[0] * (uv.u1 - uv.u0),
@@ -265,6 +308,7 @@ export function buildChunkMesh(world: World, chunk: Chunk, atlas: Atlas): MeshDa
     [PASS_OPAQUE]: finish(builders[PASS_OPAQUE]),
     [PASS_CUTOUT]: finish(builders[PASS_CUTOUT]),
     [PASS_TRANSPARENT]: finish(builders[PASS_TRANSPARENT]),
+    [PASS_WATER]: finish(builders[PASS_WATER]),
   };
 }
 
