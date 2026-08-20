@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { TerrainGenerator } from '../world/generation/terrain';
-import { planVillage, plateauWeight, villageInCell, VILLAGE_RADIUS } from '../world/generation/village';
+import {
+  planVillage,
+  plateauWeight,
+  villageInCell,
+  VILLAGE_RADIUS,
+  type VillageVariant,
+} from '../world/generation/village';
 import { Block } from '../world/blocks';
 
 describe('village placement', () => {
@@ -78,4 +84,30 @@ describe('village terrain integration', () => {
     );
     expect(hasVillageBlock).toBe(true);
   });
+});
+
+/** The pinned seed test guards terrain; this guards the village layout itself. Village
+ *  growth adds buildings from a separate random stream, so stage 0 must keep emitting
+ *  exactly the blocks it always has. Any change to the order or count of `rng()` calls
+ *  inside `planVillage` moves these numbers, and that is never accidental. */
+describe('village layout is pinned', () => {
+  const site = { cellX: 0, cellZ: 0, x: 100, z: 200 };
+  const expected: Record<VillageVariant, { count: number; hash: number }> = {
+    plains: { count: 4685, hash: 753737959 },
+    desert: { count: 4685, hash: -1449032277 },
+    snowy: { count: 4685, hash: 1344703105 },
+  };
+
+  for (const variant of ['plains', 'desert', 'snowy'] as VillageVariant[]) {
+    it(`lays the same ${variant} blocks it always has`, () => {
+      const plan = planVillage(999, site, 60, variant);
+      const all = [...plan.byChunk.values()].flat();
+      let hash = 0;
+      for (const p of all) hash = (hash * 31 + p.x * 7 + p.y * 13 + p.z * 17 + p.b) | 0;
+      expect(all.length).toBe(expected[variant].count);
+      expect(hash).toBe(expected[variant].hash);
+      expect(plan.villagers.length).toBe(7);
+      expect(plan.chests.length).toBe(5);
+    });
+  }
 });
