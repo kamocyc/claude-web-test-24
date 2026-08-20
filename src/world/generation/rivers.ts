@@ -26,6 +26,20 @@ export const CHANNEL_CORE = 0.25;
 const RIVER_DEPTH = 3;
 /** Furthest the centre line search may step, in blocks. */
 const CENTER_REACH = 14;
+/** How far heavy rain lifts the water. The bank is carved down to `ceil(surface)`, so
+ *  its top face is a full block above the normal water line: anything under 1 fills the
+ *  channel to the brim without spilling over it. */
+export const RIVER_FLOOD = 0.8;
+/** How far a drought drops it. The channel is three to five blocks deep, so the flow
+ *  narrows to a thread between drying banks rather than disappearing altogether. */
+export const RIVER_DROUGHT = 1.8;
+
+/** Where the water sits relative to its normal level, for a wetness of -1 to +1.
+ *  Droughts bite deeper than rain lifts, which is what makes them the interesting half
+ *  of the cycle. */
+export function levelOffset(wetness: number): number {
+  return wetness >= 0 ? wetness * RIVER_FLOOD : wetness * RIVER_DROUGHT;
+}
 
 export interface RiverSample {
   /** 0 outside the river, 1 in the middle of the channel. */
@@ -37,13 +51,16 @@ export interface RiverSample {
   surface: number;
   /** Y the channel floor is cut down to. */
   floor: number;
+  /** 0 at the river mouth, 1 at the headwaters. Decides how long the weather upstream
+   *  takes to arrive, and so how far behind the headwaters this column runs. */
+  inland: number;
 }
 
 /** True when the river covers a column of ground `height` blocks high. A column is
  *  covered only inside the channel itself: the banks are carved to stay clear of the
  *  water line. */
-export function riverCovers(sample: RiverSample, height: number): boolean {
-  return sample.strength >= CHANNEL_CORE && sample.surface > height + 1;
+export function riverCovers(sample: RiverSample, height: number, offset = 0): boolean {
+  return sample.strength >= CHANNEL_CORE && sample.surface + offset > height + 1;
 }
 
 export class RiverField {
@@ -95,17 +112,19 @@ export class RiverField {
     const strength = band * land;
     if (strength <= 0.02) return DRY;
 
-    const surface = this.surfaceLevel(this.centerCont(x, z, value));
+    const inland = inlandness(this.centerCont(x, z, value));
+    const surface = SEA_LEVEL + 1 + inland * RIVER_CLIMB;
     return {
       strength,
       surface,
       floor: Math.floor(surface) - 2 - Math.round(strength * RIVER_DEPTH),
+      inland,
     };
   }
 
-  /** Top face of the river's water. It climbs inland with continentalness and is left
-   *  as a fraction, so the surface is a smooth ramp rather than a staircase. At the
-   *  coast it meets the top face of the sea exactly. */
+  /** Top face of the river's water in a normal season. It climbs inland with
+   *  continentalness and is left as a fraction, so the surface is a smooth ramp rather
+   *  than a staircase. At the coast it meets the top face of the sea exactly. */
   surfaceLevel(continentalness: number): number {
     return SEA_LEVEL + 1 + inlandness(continentalness) * RIVER_CLIMB;
   }
@@ -119,4 +138,4 @@ export class RiverField {
   }
 }
 
-const DRY: RiverSample = { strength: 0, surface: 0, floor: 0 };
+const DRY: RiverSample = { strength: 0, surface: 0, floor: 0, inland: 0 };

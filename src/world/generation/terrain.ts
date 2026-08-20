@@ -5,7 +5,16 @@ import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey
 import { WATER_FULL } from '../water';
 import { Biome, type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
 import { ORES, placeCactus, placeSugarCane, placeTree, treeCandidates } from './features';
-import { CHANNEL_CORE, RIVER_CLIMB, RiverField, type RiverSample, inlandness, riverCovers } from './rivers';
+import {
+  CHANNEL_CORE,
+  RIVER_CLIMB,
+  RiverField,
+  type RiverSample,
+  inlandness,
+  levelOffset,
+  riverCovers,
+} from './rivers';
+import { localWetness } from '../weather';
 import {
   type ChestMarker,
   type VillagePlan,
@@ -41,6 +50,21 @@ const MIN_HEIGHT = 4;
 /** Thinnest film the generator will lay as a river's topmost cell. Anything shallower
  *  is invisible, so the surface is left flush with the block boundary instead. */
 const MIN_FILM = 10;
+
+/** Lays a river column's water, from the ground up to a surface given as a fraction.
+ *  The topmost cell is only part filled, which is what turns the water into a smooth
+ *  ramp instead of a staircase of whole blocks. Shared with the code that follows the
+ *  weather, so a generated river and a river whose level has moved look the same. */
+export function fillRiverColumn(
+  surface: number,
+  ground: number,
+  put: (y: number, level: number) => void,
+): void {
+  const top = Math.floor(surface);
+  for (let y = ground + 1; y < top; y++) put(y, WATER_FULL);
+  const film = Math.round((surface - top) * WATER_FULL);
+  if (top > ground && film >= MIN_FILM) put(top, film);
+}
 const MAX_HEIGHT = CHUNK_HEIGHT - 12;
 
 /** Turns a seed into terrain. Every method is a pure function of the seed plus the
@@ -124,6 +148,24 @@ export class TerrainGenerator {
   /** Continentalness drives both the coastline and the height of every river. */
   private continentalness(x: number, z: number): number {
     return this.continent.fbm2(x * 0.0011, z * 0.0011, 4);
+  }
+
+  /** How far the world clock has run, in seconds. The weather upstream is a function of
+   *  this, and so is the height of every river. Tests leave it at zero, where the cycle
+   *  has not started and every river sits at its normal level. */
+  weatherSeconds = 0;
+
+  /** How far this column's water sits from its normal level right now. The weather
+   *  happens in the headwaters and takes minutes to run down, so two points on the same
+   *  river can be in different seasons. */
+  riverOffset(sample: RiverSample): number {
+    if (sample.strength <= 0) return 0;
+    return levelOffset(localWetness(this.seed, this.weatherSeconds, sample.inland));
+  }
+
+  /** Where the water's top face actually is at a column, weather included. */
+  riverSurfaceNow(sample: RiverSample): number {
+    return sample.surface + this.riverOffset(sample);
   }
 
   /** River channel at a column, or a dry sample outside one. Already clamped so the
@@ -345,17 +387,17 @@ export class TerrainGenerator {
         const river = this.riverSample(x, z, cont, this.baseHeight(x, z, cont));
         // Only the channel itself holds water; its banks are carved to stay above the
         // water line, so the two thresholds have to be the same one.
-        if (riverCovers(river, h)) {
-          // The topmost cell is only part filled, which is what turns the surface into
-          // a smooth ramp instead of a staircase of whole blocks.
-          const top = Math.floor(river.surface);
-          for (let y = h + 1; y < top; y++) setLocal(lx, y, lz, Block.WATER);
-          const film = Math.round((river.surface - top) * WATER_FULL);
-          if (top > h && film >= MIN_FILM) setLocal(lx, top, lz, Block.WATER, film);
-          if (this.rivers.isSpringSite(this.seed, x, z, river, cont)) {
-            setLocal(lx, h, lz, Block.SPRING);
-            springs.push({ x, y: h, z });
-          }
+        const offset = this.riverOffset(river);
+        if (riverCovers(river, h, offset)) {
+          fillRiverColumn(river.surface + offset, h, (y, level) =>
+            setLocal(lx, y, lz, Block.WATER, level),
+          );
+        }
+        // A spring is placed for the channel itself, not for whatever the weather is
+        // doing today, so a drought never moves one.
+        if (riverCovers(river, h) && this.rivers.isSpringSite(this.seed, x, z, river, cont)) {
+          setLocal(lx, h, lz, Block.SPRING);
+          springs.push({ x, y: h, z });
         }
       }
     }
