@@ -1151,6 +1151,8 @@ export class Game {
           delay: Math.round(forecast.delay),
           wetness: Number(forecast.wetness.toFixed(3)),
           seconds: Math.round(this.weatherSeconds),
+          /** Loaded chunks with a river in them, which are the ones being kept up to date. */
+          riverChunks: this.riverFlow.trackedCount,
         };
       },
       /** Jumps the clock to the middle of the next season of a kind, allowing for how

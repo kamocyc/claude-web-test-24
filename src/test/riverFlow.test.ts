@@ -137,6 +137,38 @@ describe('RiverFlow', () => {
     expect(surfaceAt(world, RIVER_X + 2, RIVER_Z)).not.toBeNull();
   });
 
+  it('picks a chunk back up where it left off after a trip out of range', () => {
+    // A chunk the player has edited keeps its water while it is unloaded, so it comes
+    // back holding the level of whatever season it left in. Registering it against the
+    // clock of the moment it returns would make it disagree with itself for ever, and
+    // it would sit out every season from then on.
+    const { world, flow, generator } = build();
+    const river = generator.riverAt(RIVER_X, RIVER_Z);
+    const chunk = world.getChunk(0, -1)!;
+    const before = surfaceAt(world, RIVER_X, RIVER_Z)!;
+    // One block placed anywhere in the chunk is enough to make its water worth keeping.
+    world.setBlock(RIVER_X + 6, 60, RIVER_Z, Block.COBBLESTONE, { record: true });
+
+    flow.forgetChunk(chunk.key);
+    world.removeChunk(0, -1);
+    expect(world.waterSnapshots.has(chunk.key)).toBe(true);
+
+    // It comes back mid drought: generated at today's level, then overwritten by the
+    // water it was carrying when it left.
+    flow.seconds = peakOf(3, river.inland);
+    generator.weatherSeconds = flow.seconds;
+    const regenerated = generator.generateChunk(0, -1);
+    const reloaded = new Chunk(0, -1, regenerated.blocks, regenerated.water);
+    reloaded.riverSurface = regenerated.riverSurface;
+    reloaded.syncWaterMarkers();
+    world.addChunk(reloaded);
+    flow.registerChunk(reloaded, regenerated.weatherSeconds);
+    expect(surfaceAt(world, RIVER_X, RIVER_Z)).toBe(before);
+
+    flow.sweepAll();
+    expect(surfaceAt(world, RIVER_X, RIVER_Z)!).toBeLessThan(before - 0.9);
+  });
+
   it('does the work a little at a time rather than all at once', () => {
     const { flow, generator } = build();
     const inland = inlandOfSurface(generator.riverAt(RIVER_X, RIVER_Z).surface);

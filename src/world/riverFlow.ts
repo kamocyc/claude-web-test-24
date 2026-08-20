@@ -38,6 +38,10 @@ interface Tracked {
 export class RiverFlow {
   /** Only chunks that actually contain a river are tracked. */
   private readonly tracked = new Map<string, Tracked>();
+  /** Clock the water of an unloaded chunk was written for. A chunk the player has
+   *  edited keeps its water while it is away, so it comes back holding the level of
+   *  whatever season it left in, however long ago that was. */
+  private readonly parked = new Map<string, number>();
   private timer = 0;
   private cursor = 0;
   /** World clock, in seconds. The game owns it; this follows. */
@@ -58,10 +62,21 @@ export class RiverFlow {
       count++;
     }
     if (count === 0) return;
-    this.tracked.set(chunk.key, { appliedAt: weatherSeconds, inland: total / count });
+    // Water restored from a snapshot is older than the chunk it arrived in.
+    const parked = this.world.waterSnapshots.has(chunk.key)
+      ? this.parked.get(chunk.key)
+      : undefined;
+    this.tracked.set(chunk.key, {
+      appliedAt: parked ?? weatherSeconds,
+      inland: total / count,
+    });
   }
 
   forgetChunk(key: string): void {
+    const entry = this.tracked.get(key);
+    // Only an edited chunk keeps its water across an unload; everything else is
+    // regenerated from the seed at the clock of the day it comes back.
+    if (entry && this.world.edits.has(key)) this.parked.set(key, entry.appliedAt);
     this.tracked.delete(key);
   }
 
