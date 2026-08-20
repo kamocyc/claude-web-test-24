@@ -1,4 +1,10 @@
-import { STEP_HEIGHT, SWIM_STEP_HEIGHT, type EntityBox, stepUpMove, sweepMove } from '../core/aabb';
+import {
+  PLAYER_STEP_HEIGHT,
+  SWIM_STEP_HEIGHT,
+  type EntityBox,
+  stepUpMove,
+  sweepMove,
+} from '../core/aabb';
 import { blockDef } from '../world/blocks';
 import { WATER_FULL } from '../world/water';
 import type { World } from '../world/world';
@@ -12,12 +18,16 @@ export const EYE_HEIGHT = 1.62;
 
 const GRAVITY = 28;
 const JUMP_SPEED = 8.4;
-const WALK_SPEED = 4.3;
-const SPRINT_SPEED = 5.6;
-const SNEAK_SPEED = 1.8;
-const SWIM_SPEED = 2.6;
-const GROUND_ACCEL = 45;
-const AIR_ACCEL = 8;
+/** Everything moves at twice the pace a voxel game usually does: the world is a fixed
+ *  island rather than an endless one, and crossing it should not be the game. The
+ *  accelerations are doubled with the speeds so it still takes the same moment to get
+ *  going. */
+const WALK_SPEED = 8.6;
+const SPRINT_SPEED = 11.2;
+const SNEAK_SPEED = 3.6;
+const SWIM_SPEED = 5.2;
+const GROUND_ACCEL = 90;
+const AIR_ACCEL = 16;
 const GROUND_FRICTION = 12;
 const WATER_FRICTION = 6;
 const TERMINAL_VELOCITY = 60;
@@ -38,6 +48,9 @@ const SWIM_UP_ACCEL = 22;
 const WATER_VERTICAL_DRAG = 5;
 /** Vertical speed water allows at all: a dive carries some way past the surface. */
 const MAX_WATER_FALL = 8;
+/** How far the camera may trail behind a step up, and how fast it catches up. */
+const MAX_STEP_SMOOTHING = PLAYER_STEP_HEIGHT;
+const STEP_SMOOTHING_RATE = 14;
 
 export interface PlayerInput {
   forward: boolean;
@@ -108,11 +121,21 @@ export class Player implements Damageable {
   readonly hunger = new Hunger();
   /** Set while the player is flying in creative-style free camera. */
   flying = false;
-  /** Walk up single block steps instead of having to jump every kerb. */
+  /** Walk up steps instead of having to jump every kerb. */
   autoStep = true;
+  /** How far the camera is still trailing the last step up, in blocks. */
+  stepSmoothing = 0;
 
   get eyeY(): number {
     return this.y + EYE_HEIGHT;
+  }
+
+  /** Where the camera sits: the eye, minus however much of the last step up it has not
+   *  caught up with yet. Everything else — what is under the crosshair, how far a block
+   *  can be reached — works from `eyeY`, so the smoothing is purely something to look
+   *  at and never changes what the player can do. */
+  get cameraY(): number {
+    return this.eyeY - this.stepSmoothing;
   }
 
   get isDead(): boolean {
@@ -141,6 +164,7 @@ export class Player implements Damageable {
   ): PlayerTickEvents {
     const events: PlayerTickEvents = { fellFrom: 0, tookDamage: 0, died: false };
     if (this.hurtCooldown > 0) this.hurtCooldown = Math.max(0, this.hurtCooldown - dt);
+    this.stepSmoothing = Math.max(0, this.stepSmoothing - STEP_SMOOTHING_RATE * dt);
     if (this.isDead) return events;
 
     this.waterLevel =
@@ -261,9 +285,12 @@ export class Player implements Damageable {
           wishX,
           wishZ,
           achieved,
-          swimmingOut ? SWIM_STEP_HEIGHT : STEP_HEIGHT,
+          swimmingOut ? SWIM_STEP_HEIGHT : PLAYER_STEP_HEIGHT,
         )
       ) {
+        // The camera lags the climb so a three block step reads as hauling yourself up
+        // rather than as teleporting.
+        this.stepSmoothing = Math.min(MAX_STEP_SMOOTHING, this.stepSmoothing + (box.y - this.y));
         this.x = box.x;
         this.y = box.y;
         this.z = box.z;

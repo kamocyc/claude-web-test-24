@@ -386,7 +386,7 @@ export class Game {
   }
 
   private render(dt: number): void {
-    this.camera.position.set(this.player.x, this.player.eyeY, this.player.z);
+    this.camera.position.set(this.player.x, this.player.cameraY, this.player.z);
     this.camera.rotation.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
     const wetness = wetnessAt(this.options.seed, this.weatherSeconds);
     this.sky.update(this.day, this.camera, this.renderer, wetness);
@@ -962,7 +962,13 @@ export class Game {
     this.screens.close();
     this.openContainerPos = null;
     document.body.classList.remove('screen-open');
-    if (!this.paused && !this.player.isDead) this.hud.setClickPrompt(!this.options.input.locked);
+    if (!this.paused && !this.player.isDead) {
+      // Take the mouse back straight away. Opening the screen let it go on purpose, so
+      // Escape here is not the browser breaking a lock and there is no cooldown to wait
+      // out — without this the player has to click the world again every single time.
+      this.options.input.requestLock();
+      this.hud.setClickPrompt(!this.options.input.locked);
+    }
   }
 
   /** Changing the view distance takes effect on the next streaming pass. */

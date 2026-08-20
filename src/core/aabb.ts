@@ -105,6 +105,12 @@ export function sweepMove(
 /** How high a single step an entity walks up without jumping. */
 export const STEP_HEIGHT = 1.02;
 
+/** How high the player walks up without jumping. Three blocks: the world is full of
+ *  one and two block ledges, and stopping dead at every one of them is what makes
+ *  walking about feel like work. Mobs keep to `STEP_HEIGHT`, because a cow scaling a
+ *  three block cliff looks like a bug. */
+export const PLAYER_STEP_HEIGHT = 3.02;
+
 /** How high a swimmer may haul themselves out of the water. A body floating at the
  *  surface sits a third of a block low, so clearing a bank that stands one block above
  *  the water needs more than a walker's step: without this the player bumps against

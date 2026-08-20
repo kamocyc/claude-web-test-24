@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import type { EntityBox } from '../core/aabb';
+import { PLAYER_STEP_HEIGHT, STEP_HEIGHT, canStepUp } from '../core/aabb';
 import { Block } from '../world/blocks';
 import { CHUNK_SIZE, Chunk } from '../world/chunk';
 import { World } from '../world/world';
@@ -36,13 +38,21 @@ function poolWithBank(): World {
   return world;
 }
 
-/** Flat ground with a one block kerb running along x = 3. */
-function worldWithStep(groundY = 20): World {
+/** Flat ground with a ledge `height` blocks tall running from x = 3 eastwards. */
+function worldWithWall(height: number, groundY = 20): World {
   const world = flatWorld(groundY);
   for (let z = -20; z < 20; z++) {
-    for (let x = 3; x < 8; x++) world.setBlock(x, groundY + 1, z, Block.STONE);
+    // Long enough that a player at full pace cannot run off the far end of it.
+    for (let x = 3; x < 60; x++) {
+      for (let y = groundY + 1; y <= groundY + height; y++) world.setBlock(x, y, z, Block.STONE);
+    }
   }
   return world;
+}
+
+/** Flat ground with a one block kerb running along x = 3. */
+function worldWithStep(groundY = 20): World {
+  return worldWithWall(1, groundY);
 }
 
 /** Walks east for a second and reports where the player ended up. */
@@ -214,14 +224,54 @@ describe('water', () => {
     expect(blocked.y).toBeCloseTo(21, 1);
   });
 
-  it('does not climb a two block wall', () => {
-    const world = worldWithStep();
-    for (let z = -20; z < 20; z++) {
-      for (let x = 3; x < 8; x++) world.setBlock(x, 22, z, Block.STONE);
+  it('walks up a three block ledge, which is as high as it goes', () => {
+    // The world is full of two and three block ledges and stopping dead at each one is
+    // what made walking about feel like work.
+    for (const height of [2, 3]) {
+      const climbed = walkEast(worldWithWall(height), true);
+      expect(climbed.x).toBeGreaterThan(4);
+      expect(climbed.y).toBeCloseTo(21 + height, 1);
+      expect(climbed.onGround).toBe(true);
     }
-    const player = walkEast(world, true);
+  });
+
+  it('does not climb a four block wall', () => {
+    const player = walkEast(worldWithWall(4), true);
     expect(player.x).toBeLessThan(3);
     expect(player.y).toBeCloseTo(21, 1);
+  });
+
+  it('leaves mobs on a one block step', () => {
+    // A cow scaling a three block cliff looks like a bug, so the default stays where it
+    // was and only the player gets the taller step.
+    expect(PLAYER_STEP_HEIGHT).toBeGreaterThan(3);
+    expect(STEP_HEIGHT).toBeLessThan(2);
+    const world = worldWithWall(2);
+    const box: EntityBox = { x: 2.7, y: 21, z: 0.5, width: 0.6, height: 1.8 };
+    expect(canStepUp(world, box, 1, 0)).toBe(false);
+    expect(canStepUp(world, box, 1, 0, PLAYER_STEP_HEIGHT)).toBe(true);
+  });
+
+  it('eases the camera up a step rather than snapping it', () => {
+    const world = worldWithWall(3);
+    const player = new Player();
+    player.x = 0.5;
+    player.y = 21;
+    player.z = 0.5;
+    player.yaw = -Math.PI / 2;
+    // Walk at the ledge until the feet arrive on top of it.
+    let lag = 0;
+    for (let i = 0; i < 90 && player.y < 23.5; i++) {
+      player.update(1 / 60, world, { ...NO_INPUT, forward: true });
+      lag = player.eyeY - player.cameraY;
+    }
+    expect(player.y).toBeCloseTo(24, 1);
+    // The feet jumped three blocks; the eyes are still on their way up.
+    expect(lag).toBeGreaterThan(1);
+    expect(lag).toBeLessThanOrEqual(PLAYER_STEP_HEIGHT);
+    // And they catch up in a fraction of a second, not over the next hillside.
+    for (let i = 0; i < 15; i++) player.update(1 / 60, world, NO_INPUT);
+    expect(player.cameraY).toBeCloseTo(player.eyeY, 6);
   });
 
   it('hauls itself onto a bank that stands a block above the water', () => {

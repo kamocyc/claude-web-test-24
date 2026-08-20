@@ -54,7 +54,10 @@ export class Input {
     window.addEventListener('wheel', (event) => {
       this.wheel += Math.sign(event.deltaY);
     }, { passive: true });
-    canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+    // On the document, not the canvas: the crafting and chest screens are DOM overlays
+    // sitting on top of it, and right clicking there is a normal part of moving a stack
+    // about, not a request for the browser's menu.
+    document.addEventListener('contextmenu', (event) => event.preventDefault());
 
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === canvas;
@@ -113,7 +116,10 @@ export class Input {
   }
 
   requestLock(): void {
-    void this.canvas.requestPointerLock();
+    // The browser refuses the lock while its own Escape cooldown is running, and a
+    // rejected promise nobody catches is reported as a page error.
+    const request = this.canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+    if (request && typeof request.catch === 'function') request.catch(() => {});
   }
 
   releaseLock(): void {
