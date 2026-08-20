@@ -34,6 +34,8 @@ import type { CompassMarker } from '../ui/compass';
 import type { Input } from '../ui/input';
 import type { Menus } from '../ui/menus';
 import { ScreenManager } from '../ui/screens';
+import { WarpDialog } from '../ui/warpDialog';
+import { clampWarpY, type WarpTarget } from './warp';
 import { createChest, createFurnace, isChest, isFurnace } from './blockEntities';
 import { applyDamage, applyKnockback } from './combat';
 import { DayCycle } from './daycycle';
@@ -128,6 +130,8 @@ export class Game {
   private readonly drops: DropManager;
   private readonly hud: Hud;
   private readonly screens: ScreenManager;
+  /** Debug jump box, opened with G. */
+  private readonly warpDialog = new WarpDialog();
   private readonly tickRng = mulberry32(0x71c4);
 
   private readonly populatedChunks = new Set<string>();
@@ -219,7 +223,11 @@ export class Game {
       (recipe, made) => this.hud.toast(`${itemLabel(recipe.result.id)} を ${made * recipe.result.count} 個作った`),
     );
 
-    document.body.append(this.hud.root, this.screens.layer);
+    document.body.append(this.hud.root, this.screens.layer, this.warpDialog.root);
+    this.warpDialog.bind(
+      (target) => this.warpTo(target),
+      () => this.closeWarpDialog(),
+    );
 
     this.pool = new ChunkWorkerPool(options.seed);
     this.pool.setHandler((message) => this.onChunkReady(message));
@@ -252,6 +260,7 @@ export class Game {
     this.hud.root.remove();
     this.screens.close();
     this.screens.layer.remove();
+    this.warpDialog.root.remove();
     this.renderer.dispose();
   }
 
@@ -299,7 +308,12 @@ export class Game {
     }
 
     if (this.paused || this.player.isDead) {
-      if (this.player.isDead) this.options.menus.showDeath(true);
+      if (this.player.isDead) {
+        this.options.menus.showDeath(true);
+        // However the pointer came to be locked, the cursor has to come back or the
+        // respawn button cannot be clicked.
+        this.options.input.releaseLock();
+      }
       this.hud.update(dt, this.player, this.debugInfo(), this.navigationInfo());
       return;
     }
@@ -314,7 +328,7 @@ export class Game {
 
     // Only mouse look needs pointer lock; keyboard and clicks keep working without it
     // so the game stays playable if the browser refuses to lock the cursor.
-    const screenOpen = this.screens.isOpen;
+    const screenOpen = this.uiOpen;
     if (!screenOpen && this.options.input.locked) this.updateLook();
     const input = screenOpen ? NO_INPUT : this.readMovement();
 
@@ -430,6 +444,7 @@ export class Game {
       showMinimap: this.options.settings.minimap,
       showForecast: this.options.settings.forecast,
       showRoutes: this.options.settings.routes,
+      showCoords: this.options.settings.coords,
       overlay: {
         markers,
         // Only the roads that could be on screen: the index holds every column the player
@@ -555,26 +570,32 @@ export class Game {
       if (!this.ready) return;
       switch (event.code) {
         case 'Escape':
-          if (this.screens.isOpen) {
-            this.closeScreen();
-          } else {
-            this.togglePause();
-          }
+          if (this.screens.isOpen) this.closeScreen();
+          else if (this.warpDialog.isOpen) this.closeWarpDialog();
+          else this.togglePause();
           break;
         case 'KeyE':
           if (this.paused || this.player.isDead) break;
-          if (this.screens.isOpen) this.closeScreen();
+          if (this.warpDialog.isOpen) this.closeWarpDialog();
+          else if (this.screens.isOpen) this.closeScreen();
           else this.openScreen(() => this.screens.openInventory());
           break;
         case 'F3':
           event.preventDefault();
           this.hud.toggleDebug();
           break;
+        case 'KeyG':
+          if (this.paused || this.player.isDead) break;
+          // Without this the same keypress types a "g" into the field that just took
+          // focus, wiping the coordinates it was prefilled with.
+          event.preventDefault();
+          this.toggleWarpDialog();
+          break;
         default:
           break;
       }
       const hotbar = /^Digit([1-9])$/.exec(event.code);
-      if (hotbar && !this.screens.isOpen) {
+      if (hotbar && !this.uiOpen) {
         this.player.inventory.selected = Number(hotbar[1]) - 1;
         this.hud.showHeldItem(this.player.inventory.held?.id ?? null);
       }
@@ -582,7 +603,7 @@ export class Game {
     input.onKey(this.keyHandler);
 
     this.options.canvas.addEventListener('mousedown', () => {
-      if (this.ready && !this.paused && !this.screens.isOpen && !this.player.isDead && !this.options.input.locked) {
+      if (this.ready && !this.paused && !this.uiOpen && !this.player.isDead && !this.options.input.locked) {
         this.options.input.requestLock();
       }
     });
@@ -590,11 +611,11 @@ export class Game {
       // A click that opens a container also asks for pointer lock, and the request can
       // land after the screen opened. Undo it, or the cursor stays trapped and the UI
       // becomes unclickable.
-      if (this.options.input.locked && (this.screens.isOpen || this.paused || this.player.isDead)) {
+      if (this.options.input.locked && (this.uiOpen || this.paused || this.player.isDead)) {
         this.options.input.releaseLock();
         return;
       }
-      this.hud.setClickPrompt(!this.options.input.locked && this.ready && !this.paused && !this.screens.isOpen);
+      this.hud.setClickPrompt(!this.options.input.locked && this.ready && !this.paused && !this.uiOpen);
     };
     document.addEventListener('pointerlockchange', this.lockHandler);
   }
@@ -1233,7 +1254,13 @@ export class Game {
 
   // --- screens and pausing ---------------------------------------------------
 
+  /** Anything that takes the mouse away from the world: a container, or the warp box. */
+  private get uiOpen(): boolean {
+    return this.screens.isOpen || this.warpDialog.isOpen;
+  }
+
   private openScreen(open: () => void): void {
+    this.warpDialog.hide();
     open();
     this.options.input.releaseLock();
     document.body.classList.add('screen-open');
@@ -1243,7 +1270,67 @@ export class Game {
     this.screens.close();
     this.openContainerPos = null;
     document.body.classList.remove('screen-open');
-    if (!this.paused && !this.player.isDead) this.hud.setClickPrompt(!this.options.input.locked);
+    this.relock();
+  }
+
+  /** Takes the pointer back after a screen closes. Escape only ever released the cursor
+   *  because the screen had released it; handing it straight back means the player is
+   *  looking around again without having to click. */
+  private relock(): void {
+    if (!this.ready || this.paused || this.player.isDead || this.uiOpen) return;
+    this.options.input.requestLock();
+    // The browser can refuse — the request rides on Escape, which is not a user gesture
+    // everywhere. Waiting a moment before putting the prompt back means the usual case,
+    // where the lock is granted, does not flash it up for a frame.
+    window.setTimeout(() => {
+      if (!this.running || this.paused || this.player.isDead || this.uiOpen) return;
+      this.hud.setClickPrompt(!this.options.input.locked);
+    }, 250);
+  }
+
+  // --- debug warping ---------------------------------------------------------
+
+  private toggleWarpDialog(): void {
+    if (this.warpDialog.isOpen) {
+      this.closeWarpDialog();
+      return;
+    }
+    // Any open screen goes without handing the pointer back, because the box wants it.
+    this.screens.close();
+    this.openContainerPos = null;
+    this.warpDialog.openAt(this.player);
+    this.options.input.releaseLock();
+    document.body.classList.add('screen-open');
+    this.hud.setClickPrompt(false);
+  }
+
+  private closeWarpDialog(): void {
+    if (!this.warpDialog.isOpen) return;
+    this.warpDialog.hide();
+    document.body.classList.remove('screen-open');
+    this.relock();
+  }
+
+  /** Jumps to a block column. Without a height the player lands just above the ground,
+   *  which the generator can answer for anywhere — loaded chunk or not. */
+  private jumpTo(x: number, z: number, y: number | null): void {
+    const bx = Math.floor(x);
+    const bz = Math.floor(z);
+    // unstick() lifts the player out of anything they land inside of.
+    this.player.teleportTo(
+      bx + 0.5,
+      y === null ? this.generator.height(bx, bz) + 2 : clampWarpY(y),
+      bz + 0.5,
+    );
+  }
+
+  /** The same jump, announced and with the box put away: what the G box and the console
+   *  helper both do. */
+  warpTo(target: WarpTarget): { x: number; y: number; z: number } {
+    this.jumpTo(target.x, target.z, target.y);
+    this.closeWarpDialog();
+    this.hud.toast(`X ${Math.floor(target.x)} / Y ${Math.round(this.player.y)} / Z ${Math.floor(target.z)} へ移動した`);
+    return { x: this.player.x, y: this.player.y, z: this.player.z };
   }
 
   /** Changing the view distance takes effect on the next streaming pass. */
@@ -1398,10 +1485,19 @@ export class Game {
       },
       toggleDayCycle: (): boolean => (this.day.running = !this.day.running),
       toggleFly: (): boolean => (this.player.flying = !this.player.flying),
-      teleport: (x: number, z: number): void => {
-        // Land just above the terrain; unstick() lifts the player out of any building.
-        this.player.teleportTo(x + 0.5, this.generator.height(Math.floor(x), Math.floor(z)) + 2, z + 0.5);
-      },
+      /** Lands just above the terrain, without the toast the G box shows. */
+      teleport: (x: number, z: number): void => this.jumpTo(x, z, null),
+      /** Where the player is standing, to the block. */
+      position: (): { x: number; y: number; z: number; chunkX: number; chunkZ: number } => ({
+        x: Math.round(this.player.x * 10) / 10,
+        y: Math.round(this.player.y * 10) / 10,
+        z: Math.round(this.player.z * 10) / 10,
+        chunkX: Math.floor(this.player.x / CHUNK_SIZE),
+        chunkZ: Math.floor(this.player.z / CHUNK_SIZE),
+      }),
+      /** The G box from the console: `warp(120, -340)` or `warp(120, -340, 80)`. */
+      warp: (x: number, z: number, y: number | null = null): { x: number; y: number; z: number } =>
+        this.warpTo({ x, z, y }),
       /** Jumps to the nearest generated village, which is otherwise a long walk. */
       gotoVillage: (): { x: number; z: number } | null => {
         const village = this.generator.findNearestVillage(this.player.x, this.player.z, 4);

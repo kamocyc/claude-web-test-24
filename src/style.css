@@ -958,3 +958,88 @@ body.screen-open #viewport {
   color: #06243b;
   font-weight: bold;
 }
+
+/* ---------- position readout and the debug warp box ---------- */
+.coords {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.42);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+}
+
+.coords-position {
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.coords-detail {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.warp-dialog {
+  position: fixed;
+  left: 50%;
+  top: 26%;
+  transform: translateX(-50%);
+  z-index: 25;
+  width: 260px;
+  padding: 14px 16px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(12, 16, 22, 0.94);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+}
+
+.warp-title {
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.warp-hint {
+  margin-top: 3px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.warp-input {
+  width: 100%;
+  margin-top: 9px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.45);
+  color: inherit;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+}
+
+.warp-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.warp-error {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #ff9d9d;
+}
+
+.warp-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.warp-buttons .menu-button {
+  flex: 1;
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 13px;
+}

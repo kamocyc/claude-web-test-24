@@ -581,6 +581,40 @@ const stillLocked = await page.locator('.recipe-row.locked', { hasText: 'ダイ�
 console.log('crafted wooden pickaxes:', crafted, '/ diamond pickaxe row locked:', stillLocked);
 await closeScreen();
 
+// --- position readout, the warp box and the cursor ---------------------------
+// The right mouse button is a game control, so the browser menu must stay away even
+// when the click lands on a screen that opened under the cursor.
+await evaluate(() => window.voxelcraft.openScreen('crafting'));
+await page.waitForTimeout(400);
+const contextMenuBlocked = await evaluate(() => {
+  const layer = document.querySelector('.screen-layer');
+  const node = layer?.firstElementChild ?? layer ?? document.body;
+  return !node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+});
+await page.keyboard.press('Escape');
+await page.waitForTimeout(400);
+console.log(
+  'context menu blocked:', contextMenuBlocked,
+  '/ screen closed:', await evaluate(() => document.body.classList.contains('screen-open') === false),
+);
+
+console.log('coords panel:', JSON.stringify((await page.locator('.coords-position').textContent())?.trim()));
+await page.keyboard.press('KeyG');
+await page.waitForTimeout(400);
+await shot('20-warp');
+const warpTarget = await evaluate(() => {
+  const here = window.voxelcraft.position();
+  return { x: Math.round(here.x) + 60, z: Math.round(here.z) - 40 };
+});
+await page.fill('.warp-input', `${warpTarget.x} ${warpTarget.z}`);
+await page.keyboard.press('Enter');
+await page.waitForTimeout(600);
+console.log(
+  'asked for:', JSON.stringify(warpTarget),
+  'landed on:', JSON.stringify(await evaluate(() => window.voxelcraft.position())),
+  '/ box closed:', await evaluate(() => document.querySelector('.warp-dialog').style.display === 'none'),
+);
+
 // --- water ------------------------------------------------------------------
 const shore = await evaluate(() => {
   const g = window.voxelcraft.game;

@@ -54,7 +54,10 @@ export class Input {
     window.addEventListener('wheel', (event) => {
       this.wheel += Math.sign(event.deltaY);
     }, { passive: true });
-    canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+    // The right mouse button is a game control everywhere, not just over the canvas:
+    // opening a container releases the pointer, and without this the browser menu pops
+    // up over the screen that just opened.
+    window.addEventListener('contextmenu', (event) => event.preventDefault());
 
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === canvas;
@@ -113,7 +116,12 @@ export class Input {
   }
 
   requestLock(): void {
-    void this.canvas.requestPointerLock();
+    // Browsers reject the request when it comes without a fresh user gesture (closing a
+    // screen with Escape is one such case). Nothing is broken by that: the click prompt
+    // stays up and the next click locks the pointer, so the rejection is swallowed
+    // rather than left to surface as an unhandled rejection.
+    const result: unknown = this.canvas.requestPointerLock();
+    if (result instanceof Promise) result.catch(() => {});
   }
 
   releaseLock(): void {

@@ -6,15 +6,16 @@ import {
 import { VERIFICATION_SEED_TEXT } from '../game/seeds';
 import { el, show } from './dom';
 
-type ToggleKey = 'compass' | 'minimap' | 'forecast' | 'routes' | 'autoTool' | 'autoStep';
+type ToggleKey = 'compass' | 'minimap' | 'forecast' | 'routes' | 'coords' | 'autoTool' | 'autoStep';
 
 const TOGGLE_LABELS: [ToggleKey, string][] = [
   ['compass', '方角コンパス'],
   ['minimap', 'ミニマップ'],
   ['forecast', '天候の予報'],
   ['routes', '目標と輸送路'],
+  ['coords', '座標の表示'],
   ['autoTool', '道具の自動切り替え'],
-  ['autoStep', '段差を自動で登る'],
+  ['autoStep', '段差を自動で登る（3 段まで）'],
 ];
 
 export interface TitleActions {
@@ -66,7 +67,8 @@ export class Menus {
     help.innerHTML = [
       '<b>WASD</b> 移動 / <b>Space</b> ジャンプ / <b>Shift</b> 忍び足 / <b>Ctrl</b> ダッシュ',
       '<b>左クリック</b> 採掘・攻撃 / <b>右クリック</b> 設置・使用・交易',
-      '<b>1-9</b> ホットバー / <b>E</b> 持ち物 / <b>F3</b> デバッグ / <b>Esc</b> ポーズ',
+      '<b>1-9</b> ホットバー / <b>E</b> 持ち物 / <b>Esc</b> ポーズ',
+      '<b>F3</b> デバッグ表示 / <b>G</b> 座標へワープ',
     ].join('<br>');
     this.verifyButton.title = '毎回まったく同じ地形で始まる、確認用の固定シード';
     this.title.append(

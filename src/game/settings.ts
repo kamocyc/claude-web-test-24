@@ -13,6 +13,8 @@ export interface Settings {
   forecast: boolean;
   /** Panel showing the current objective and whether each transport route is joined up. */
   routes: boolean;
+  /** Position readout in the bottom left corner. */
+  coords: boolean;
   /** Swap to the best tool in the hotbar for whatever is being mined. */
   autoTool: boolean;
   /** Walk up single block steps without jumping. */
@@ -28,6 +30,7 @@ export const DEFAULT_SETTINGS: Settings = {
   minimap: true,
   forecast: true,
   routes: true,
+  coords: true,
   autoTool: true,
   autoStep: true,
 };
@@ -59,6 +62,7 @@ export function loadSettings(): Settings {
       minimap: parsed.minimap ?? DEFAULT_SETTINGS.minimap,
       forecast: parsed.forecast ?? DEFAULT_SETTINGS.forecast,
       routes: parsed.routes ?? DEFAULT_SETTINGS.routes,
+      coords: parsed.coords ?? DEFAULT_SETTINGS.coords,
       autoTool: parsed.autoTool ?? DEFAULT_SETTINGS.autoTool,
       autoStep: parsed.autoStep ?? DEFAULT_SETTINGS.autoStep,
     };

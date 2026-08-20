@@ -7,6 +7,7 @@ import { Compass, type CompassMarker } from './compass';
 import { Minimap, type MinimapOverlay } from './minimap';
 import { ForecastPanel, type ForecastView } from './forecast';
 import { RoutePanel, type RoutePanelView } from './routePanel';
+import { CoordPanel } from './coords';
 import type { World } from '../world/world';
 import { renderSlot } from './containers';
 
@@ -31,6 +32,7 @@ export interface NavigationInfo {
   forecast: ForecastView;
   showRoutes: boolean;
   routes: RoutePanelView;
+  showCoords: boolean;
   overlay: MinimapOverlay;
 }
 
@@ -52,6 +54,7 @@ export class Hud {
   readonly minimap: Minimap;
   readonly forecast = new ForecastPanel();
   readonly routes = new RoutePanel();
+  readonly coords = new CoordPanel();
   private debugVisible = false;
   private heldLabelTimer = 0;
 
@@ -76,6 +79,7 @@ export class Hud {
       this.minimap.root,
       this.forecast.root,
       this.routes.root,
+      this.coords.root,
       bottom,
       this.debug,
       this.toasts,
@@ -133,6 +137,8 @@ export class Hud {
     if (navigation.showForecast) this.forecast.update(navigation.forecast);
     this.routes.setVisible(navigation.showRoutes);
     if (navigation.showRoutes) this.routes.update(navigation.routes);
+    this.coords.setVisible(navigation.showCoords);
+    if (navigation.showCoords) this.coords.update(player.x, player.y, player.z, player.yaw);
 
     this.renderBar(this.hearts, player.health, player.maxHealth, 'heart');
     this.renderBar(this.food, player.hunger.food, 20, 'drumstick');
