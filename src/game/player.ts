@@ -1,4 +1,4 @@
-import { type EntityBox, stepUpMove, sweepMove } from '../core/aabb';
+import { STEP_HEIGHT, SWIM_STEP_HEIGHT, type EntityBox, stepUpMove, sweepMove } from '../core/aabb';
 import { blockDef } from '../world/blocks';
 import { WATER_FULL } from '../world/water';
 import type { World } from '../world/world';
@@ -252,7 +252,18 @@ export class Player implements Damageable {
         height: PLAYER_HEIGHT,
       };
       const achieved = Math.hypot(this.x - beforeX, this.z - beforeZ);
-      if (stepUpMove(world, box, attemptedX, attemptedZ, wishX, wishZ, achieved)) {
+      if (
+        stepUpMove(
+          world,
+          box,
+          attemptedX,
+          attemptedZ,
+          wishX,
+          wishZ,
+          achieved,
+          swimmingOut ? SWIM_STEP_HEIGHT : STEP_HEIGHT,
+        )
+      ) {
         this.x = box.x;
         this.y = box.y;
         this.z = box.z;

@@ -224,6 +224,55 @@ describe('water', () => {
     expect(player.y).toBeCloseTo(21, 1);
   });
 
+  it('hauls itself onto a bank that stands a block above the water', () => {
+    // The commonest shape of coast there is: the water ends at a ledge one block clear
+    // of the surface. A floating body sits a third of a block low, so a walker's step
+    // is not enough to get over it and the player used to bump against every beach.
+    const world = flatWorld(20);
+    for (let z = -12; z < 12; z++) {
+      for (let x = 6; x < 40; x++) {
+        for (let y = 21; y <= 24; y++) world.setBlock(x, y, z, Block.STONE);
+      }
+      for (let x = -12; x < 6; x++) {
+        for (let y = 21; y <= 23; y++) world.setWater(x, y, z, WATER_FULL);
+      }
+    }
+    const player = new Player();
+    player.x = 1.5;
+    player.y = 24;
+    player.z = 0.5;
+    player.yaw = -Math.PI / 2;
+    for (let i = 0; i < 240; i++) {
+      const ashore = !player.inWater && player.y > 24.5;
+      player.update(1 / 60, world, { ...NO_INPUT, forward: !ashore, jump: !ashore });
+    }
+    expect(player.inWater).toBe(false);
+    expect(player.onGround).toBe(true);
+    expect(player.y).toBeCloseTo(25, 1);
+  });
+
+  it('is still stopped by a wall two blocks above the water', () => {
+    const world = flatWorld(20);
+    for (let z = -12; z < 12; z++) {
+      for (let x = 6; x < 40; x++) {
+        for (let y = 21; y <= 25; y++) world.setBlock(x, y, z, Block.STONE);
+      }
+      for (let x = -12; x < 6; x++) {
+        for (let y = 21; y <= 23; y++) world.setWater(x, y, z, WATER_FULL);
+      }
+    }
+    const player = new Player();
+    player.x = 1.5;
+    player.y = 24;
+    player.z = 0.5;
+    player.yaw = -Math.PI / 2;
+    for (let i = 0; i < 240; i++) {
+      player.update(1 / 60, world, { ...NO_INPUT, forward: true, jump: true });
+    }
+    expect(player.inWater).toBe(true);
+    expect(player.x).toBeLessThan(6);
+  });
+
   it('climbs out of the water onto the bank', () => {
     const world = poolWithBank();
     const player = new Player();

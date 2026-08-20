@@ -105,11 +105,23 @@ export function sweepMove(
 /** How high a single step an entity walks up without jumping. */
 export const STEP_HEIGHT = 1.02;
 
+/** How high a swimmer may haul themselves out of the water. A body floating at the
+ *  surface sits a third of a block low, so clearing a bank that stands one block above
+ *  the water needs more than a walker's step: without this the player bumps against
+ *  every beach in the world. */
+export const SWIM_STEP_HEIGHT = 1.6;
+
 /** Whether the entity can step up onto the block directly in front of it. */
-export function canStepUp(world: VoxelCollider, box: EntityBox, dirX: number, dirZ: number): boolean {
+export function canStepUp(
+  world: VoxelCollider,
+  box: EntityBox,
+  dirX: number,
+  dirZ: number,
+  height = STEP_HEIGHT,
+): boolean {
   const ahead: EntityBox = { ...box, x: box.x + dirX * 0.6, z: box.z + dirZ * 0.6 };
   if (!overlapsSolid(world, ahead)) return false;
-  const stepped: EntityBox = { ...ahead, y: box.y + STEP_HEIGHT + 0.03 };
+  const stepped: EntityBox = { ...ahead, y: box.y + height + 0.03 };
   return !overlapsSolid(world, stepped);
 }
 
@@ -127,16 +139,17 @@ export function stepUpMove(
   dirX: number,
   dirZ: number,
   achieved: number,
+  height = STEP_HEIGHT,
 ): boolean {
-  if (!canStepUp(world, box, dirX, dirZ)) return false;
+  if (!canStepUp(world, box, dirX, dirZ, height)) return false;
   const fromX = box.x;
   const fromZ = box.z;
-  const raised: EntityBox = { ...box, y: box.y + STEP_HEIGHT };
+  const raised: EntityBox = { ...box, y: box.y + height };
   if (overlapsSolid(world, raised)) return false;
   sweepMove(world, raised, dx, 0, dz);
   if (Math.hypot(raised.x - fromX, raised.z - fromZ) <= achieved + 0.001) return false;
   // Fall back onto the step so nothing is left hovering a block up.
-  sweepMove(world, raised, 0, -STEP_HEIGHT, 0);
+  sweepMove(world, raised, 0, -height, 0);
   box.x = raised.x;
   box.y = raised.y;
   box.z = raised.z;

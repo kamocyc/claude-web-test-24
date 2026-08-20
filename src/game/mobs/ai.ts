@@ -1,4 +1,4 @@
-import { type EntityBox, stepUpMove, sweepMove } from '../../core/aabb';
+import { SWIM_STEP_HEIGHT, type EntityBox, stepUpMove, sweepMove } from '../../core/aabb';
 import type { Rng } from '../../core/rng';
 import { WATER_FULL } from '../../world/water';
 import type { World } from '../../world/world';
@@ -273,7 +273,18 @@ export class Mob implements Damageable {
       };
       const speed = Math.hypot(attemptedX, attemptedZ) || 1;
       const achieved = Math.hypot(this.x - beforeX, this.z - beforeZ);
-      if (stepUpMove(world, from, attemptedX, attemptedZ, attemptedX / speed, attemptedZ / speed, achieved)) {
+      if (
+        stepUpMove(
+          world,
+          from,
+          attemptedX,
+          attemptedZ,
+          attemptedX / speed,
+          attemptedZ / speed,
+          achieved,
+          SWIM_STEP_HEIGHT,
+        )
+      ) {
         this.x = from.x;
         this.y = from.y;
         this.z = from.z;
