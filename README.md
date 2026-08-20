@@ -13,6 +13,8 @@ npm install
 npm run dev      # http://localhost:5173 を開く
 ```
 
+**公開版: https://kamocyc.github.io/claude-web-test-24/**（`main` に入ったものが自動で上がる）
+
 ## 遊び方
 
 | 操作 | 動作 |
@@ -318,6 +320,21 @@ npm run smoke       # Playwright で実際にブラウザを動かしてスク�
 npm run dev &
 npm run smoke -- http://localhost:5173/ screenshots
 ```
+
+### GitHub Pages への公開
+
+`main` に push すると `.github/workflows/pages.yml` が typecheck・lint・テスト・ビルドを通し、
+`dist/` をそのまま Pages へ上げる（壊れたビルドで動いているサイトを置き換えないため、
+CI と同じ検査を先に通す）。公開先は **https://kamocyc.github.io/claude-web-test-24/**。
+
+- リポジトリ設定をいじる必要はない。ワークフローの `configure-pages` が
+  `enablement: true` で Pages のソースを「GitHub Actions」に切り替える。
+- `base: './'`（`vite.config.ts`）なので、出力は**サブパスでもドメイン直下でも動く**。
+  リポジトリ名を設定に書かないので、名前を変えても壊れない。
+- ワーカー・テクスチャ・セーブはすべてブラウザ内で完結しており、サーバ側の処理は無い。
+  静的ファイルを置くだけで動く。
+- Actions タブから手動実行（`workflow_dispatch`）もできる。ただし手動実行のボタンは
+  **デフォルトブランチにこのファイルが入ってから**現れる、という GitHub の仕様に注意。
 
 ### デバッグ用コンソール API
 
