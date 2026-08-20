@@ -1,0 +1,76 @@
+import { Block, type BlockId, blockDef, cropAt } from '../world/blocks';
+import type { ItemStack } from './inventory';
+import { type ItemDef, itemDef } from './items';
+
+/** Base seconds to break a block with a bare hand, scaled by hardness. */
+const HARDNESS_TO_SECONDS = 1.5;
+/** Extra penalty for breaking a block without the tool it requires. */
+const WRONG_TOOL_PENALTY = 3.33;
+
+export function heldTool(item: ItemStack | null): ItemDef | undefined {
+  if (!item) return undefined;
+  const def = itemDef(item.id);
+  return def?.tool ? def : undefined;
+}
+
+/** True when the held tool is good enough for the block to drop anything. */
+export function canHarvest(block: BlockId, tool: ItemDef | undefined): boolean {
+  const def = blockDef(block);
+  if (def.tier === 0) return true;
+  const stats = tool?.tool;
+  if (!stats) return false;
+  return stats.kind === def.tool && stats.tier >= def.tier;
+}
+
+/** Seconds needed to break a block with the given tool. */
+export function miningTime(block: BlockId, tool: ItemDef | undefined): number {
+  const def = blockDef(block);
+  if (def.hardness < 0) return Infinity;
+  let seconds = def.hardness * HARDNESS_TO_SECONDS;
+  const stats = tool?.tool;
+  if (stats && stats.kind === def.tool) seconds /= stats.speed;
+  if (!canHarvest(block, tool)) seconds *= WRONG_TOOL_PENALTY;
+  return Math.max(0.05, seconds);
+}
+
+export interface DropContext {
+  /** 0..1 random source, injected so drops stay testable. */
+  random: () => number;
+}
+
+/** Items produced by breaking a block. */
+export function blockDrops(block: BlockId, tool: ItemDef | undefined, ctx: DropContext): ItemStack[] {
+  const def = blockDef(block);
+  if (def.hardness < 0) return [];
+
+  const crop = cropAt(block);
+  if (crop) {
+    if (crop.stage < crop.stages - 1) {
+      // Immature crops only give the seed back.
+      return crop.harvest === 'wheat' ? [{ id: 'wheat_seeds', count: 1 }] : [{ id: crop.harvest, count: 1 }];
+    }
+    const drops: ItemStack[] = [{ id: crop.harvest, count: 1 + Math.floor(ctx.random() * 2) }];
+    if (crop.bonus) drops.push({ id: crop.bonus, count: 1 + Math.floor(ctx.random() * 2) });
+    return drops;
+  }
+
+  if (block === Block.TALL_GRASS) {
+    return ctx.random() < 0.2 ? [{ id: 'wheat_seeds', count: 1 }] : [];
+  }
+  if (def.render === 'cube' && (block === Block.OAK_LEAVES || block === Block.BIRCH_LEAVES || block === Block.SPRUCE_LEAVES)) {
+    const drops: ItemStack[] = [];
+    if (ctx.random() < 0.04) drops.push({ id: 'apple', count: 1 });
+    if (ctx.random() < 0.08) drops.push({ id: 'stick', count: 1 });
+    return drops;
+  }
+
+  if (!canHarvest(block, tool)) return [];
+
+  const dropId = def.drop === undefined ? def.name : def.drop;
+  if (!dropId) return [];
+  if (!itemDef(dropId)) return [];
+  const min = def.dropMin ?? 1;
+  const max = def.dropMax ?? min;
+  const count = min + Math.floor(ctx.random() * (max - min + 1));
+  return count > 0 ? [{ id: dropId, count }] : [];
+}
