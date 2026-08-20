@@ -59,6 +59,11 @@ export class Mob implements Damageable {
   private jumpCooldown = 0;
   /** Seconds of burning left; hostile mobs catch fire in daylight. */
   burning = 0;
+  /** Route a porter is walking, in world coordinates, and how far along it is. There is
+   *  no pathfinder here: the points come from the surveyed road, and the swept move with
+   *  its one block auto-hop does the rest. */
+  route: { x: number; z: number }[] | null = null;
+  routeIndex = 0;
   /** Villager data. */
   profession: string | null = null;
   trades: Trade[] = [];
@@ -182,6 +187,14 @@ export class Mob implements Damageable {
         this.wanderX = Math.cos(angle);
         this.wanderZ = Math.sin(angle);
       }
+    }
+    if (this.kind === 'porter' && this.route) {
+      const waypoint = this.route[this.routeIndex];
+      if (waypoint) {
+        if (Math.hypot(this.x - waypoint.x, this.z - waypoint.z) < 1.4) this.routeIndex++;
+        else this.steerTowards(waypoint.x, waypoint.z, this.def.speed, dt);
+      }
+      return;
     }
     if (this.kind === 'villager') {
       const fromHome = Math.hypot(this.x - this.homeX, this.z - this.homeZ);

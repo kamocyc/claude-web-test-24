@@ -4,8 +4,9 @@ import type { Atlas } from '../render/textures';
 import { HOTBAR_SIZE } from '../game/inventory';
 import { clear, el } from './dom';
 import { Compass, type CompassMarker } from './compass';
-import { Minimap } from './minimap';
+import { Minimap, type MinimapOverlay } from './minimap';
 import { ForecastPanel, type ForecastView } from './forecast';
+import { RoutePanel, type RoutePanelView } from './routePanel';
 import type { World } from '../world/world';
 import { renderSlot } from './containers';
 
@@ -28,6 +29,9 @@ export interface NavigationInfo {
   showMinimap: boolean;
   showForecast: boolean;
   forecast: ForecastView;
+  showRoutes: boolean;
+  routes: RoutePanelView;
+  overlay: MinimapOverlay;
 }
 
 /** Health, hunger, hotbar, crosshair and the debug overlay. */
@@ -47,6 +51,7 @@ export class Hud {
   readonly compass = new Compass();
   readonly minimap: Minimap;
   readonly forecast = new ForecastPanel();
+  readonly routes = new RoutePanel();
   private debugVisible = false;
   private heldLabelTimer = 0;
 
@@ -70,6 +75,7 @@ export class Hud {
       this.compass.root,
       this.minimap.root,
       this.forecast.root,
+      this.routes.root,
       bottom,
       this.debug,
       this.toasts,
@@ -120,9 +126,13 @@ export class Hud {
     this.compass.setVisible(navigation.showCompass);
     if (navigation.showCompass) this.compass.update(player.yaw, player.x, player.z, navigation.markers);
     this.minimap.setVisible(navigation.showMinimap);
-    if (navigation.showMinimap) this.minimap.update(navigation.world, player.x, player.z, player.yaw);
+    if (navigation.showMinimap) {
+      this.minimap.update(navigation.world, player.x, player.z, player.yaw, navigation.overlay);
+    }
     this.forecast.setVisible(navigation.showForecast);
     if (navigation.showForecast) this.forecast.update(navigation.forecast);
+    this.routes.setVisible(navigation.showRoutes);
+    if (navigation.showRoutes) this.routes.update(navigation.routes);
 
     this.renderBar(this.hearts, player.health, player.maxHealth, 'heart');
     this.renderBar(this.food, player.hunger.food, 20, 'drumstick');

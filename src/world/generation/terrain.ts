@@ -18,6 +18,7 @@ import {
 import { localWetness } from '../weather';
 import {
   type ChestMarker,
+  type Footprint,
   type VillagePlan,
   type VillageSite,
   type VillageVariant,
@@ -44,6 +45,15 @@ export interface ChunkGenResult {
   springs: { x: number; y: number; z: number }[];
   villagers: VillagerMarker[];
   chests: ChestMarker[];
+}
+
+/** What the village registry needs to know about a village, before anything has happened
+ *  to it. Matches `VillageSeed` in `src/game/villages.ts`. */
+export interface VillageSeed {
+  x: number;
+  z: number;
+  baseY: number;
+  variant: VillageVariant;
 }
 
 interface VillageInfo {
@@ -335,23 +345,41 @@ export class TerrainGenerator {
     return plan;
   }
 
-  /** Nearest valid village centre, searched over the village grid around a position. */
-  findNearestVillage(x: number, z: number, cellRadius = 3): { x: number; z: number } | null {
+  /** Every valid village within `cellRadius` cells. Cheap: deciding a village exists is a
+   *  hash of its grid cell, and validating one is cached, so this is a grid walk. */
+  villagesAround(x: number, z: number, cellRadius = 2): VillageSeed[] {
     const cellX = Math.floor(x / VILLAGE_CELL);
     const cellZ = Math.floor(z / VILLAGE_CELL);
-    let best: { x: number; z: number } | null = null;
-    let bestDist = Infinity;
+    const out: VillageSeed[] = [];
     for (let dz = -cellRadius; dz <= cellRadius; dz++) {
       for (let dx = -cellRadius; dx <= cellRadius; dx++) {
         const site = villageInCell(this.seed, cellX + dx, cellZ + dz);
         if (!site) continue;
         const info = this.villageInfo(site);
         if (!info.valid) continue;
-        const dist = Math.hypot(site.x - x, site.z - z);
-        if (dist < bestDist) {
-          bestDist = dist;
-          best = { x: site.x, z: site.z };
-        }
+        out.push({ x: site.x, z: site.z, baseY: info.baseY, variant: info.variant });
+      }
+    }
+    return out;
+  }
+
+  /** Footprints of a village's original houses, so growth can avoid them. */
+  villageBuildings(x: number, z: number): Footprint[] {
+    const site = { cellX: Math.floor(x / VILLAGE_CELL), cellZ: Math.floor(z / VILLAGE_CELL), x, z };
+    const info = this.villageInfo(site);
+    if (!info.valid) return [];
+    return this.villagePlan(info).buildings;
+  }
+
+  /** Nearest valid village centre, searched over the village grid around a position. */
+  findNearestVillage(x: number, z: number, cellRadius = 3): { x: number; z: number } | null {
+    let best: { x: number; z: number } | null = null;
+    let bestDist = Infinity;
+    for (const village of this.villagesAround(x, z, cellRadius)) {
+      const dist = Math.hypot(village.x - x, village.z - z);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = { x: village.x, z: village.z };
       }
     }
     return best;

@@ -17,7 +17,7 @@ function setup() {
 
 function route(connected: boolean, missing = 0): Route {
   return {
-    from: ID_A, to: ID_B, good: 'wheat', connected,
+    from: ID_A, to: ID_B, good: 'wheat', surveyed: true, connected,
     waypoints: [], cumulative: [], length: 100, missing,
     gapFrom: missing > 0 ? { x: 60, z: 0, y: 60 } : null,
     gapTo: missing > 0 ? { x: 200, z: 0, y: 60 } : null,
@@ -58,6 +58,14 @@ describe('questline', () => {
     quest.onVillageDiscovered(registry.get(ID_A)!);
     expect(quest.onVillageDiscovered(registry.get(ID_B)!)).toBeNull();
     expect(quest.originId).toBe(ID_A);
+  });
+
+  it('picks a target even when the trade screen was never opened', () => {
+    const { registry, quest } = setup();
+    quest.onVillageDiscovered(registry.get(ID_A)!);
+    expect(quest.complete('accept', registry)).not.toBeNull();
+    expect(quest.targetId).toBe(ID_B);
+    expect(quest.step).toBe('deliver_by_hand');
   });
 
   it('offers the haul at the origin and picks the nearest neighbour as the target', () => {

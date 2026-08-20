@@ -82,6 +82,20 @@ const MODELS: Record<MobKind, ModelPart[]> = {
     { size: [0.2, 0.7, 0.2], offset: [-0.14, 0.35, 0], color: 0x4a3423, role: 'legFrontLeft' },
     { size: [0.2, 0.7, 0.2], offset: [0.14, 0.35, 0], color: 0x4a3423, role: 'legFrontRight' },
   ],
+  // A villager in working clothes with a crate roped to their back. It has to read as
+  // "carrying something somewhere" from across a field.
+  porter: [
+    { size: [0.5, 0.5, 0.5], offset: [0, 1.66, 0], color: 0xc9a882, role: 'head' },
+    { size: [0.12, 0.16, 0.16], offset: [0, 1.6, -0.31], color: 0xb08d68, role: 'head' },
+    { size: [0.56, 0.75, 0.3], offset: [0, 1.03, 0], color: 0x3f5a74, role: 'body' },
+    { size: [0.5, 0.35, 0.34], offset: [0, 1.2, 0], color: 0x54748f, role: 'body' },
+    { size: [0.16, 0.5, 0.16], offset: [-0.35, 1.1, 0], color: 0xc9a882, role: 'armLeft' },
+    { size: [0.16, 0.5, 0.16], offset: [0.35, 1.1, 0], color: 0xc9a882, role: 'armRight' },
+    { size: [0.2, 0.7, 0.2], offset: [-0.14, 0.35, 0], color: 0x33465c, role: 'legFrontLeft' },
+    { size: [0.2, 0.7, 0.2], offset: [0.14, 0.35, 0], color: 0x33465c, role: 'legFrontRight' },
+    { size: [0.52, 0.52, 0.34], offset: [0, 1.32, 0.3], color: 0x8a6a3a, role: 'body' },
+    { size: [0.56, 0.1, 0.05], offset: [0, 1.32, 0.48], color: 0x5f4826, role: 'body' },
+  ],
 };
 
 export function modelFor(kind: MobKind): ModelPart[] {

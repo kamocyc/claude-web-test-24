@@ -218,6 +218,54 @@ const tradeResult = await evaluate(() => {
 console.log('trade screen open:', tradeOpen, JSON.stringify(tradeResult));
 await closeScreen();
 
+// --- villages, roads and transport -------------------------------------------
+// The village the player is standing in is found the moment they walk onto its plateau.
+const home = await evaluate(() => window.voxelcraft.village());
+console.log('village economy:', JSON.stringify({ name: home?.name, produces: home?.produces, discovered: home?.discovered }));
+console.log('quest:', JSON.stringify(await evaluate(() => window.voxelcraft.quest())));
+await shot('07v-village-quest');
+console.log('objective panel:', JSON.stringify(await page.locator('.route-panel').innerText()));
+
+// Take the haul, hand it over, and hear about roads. Walking it is the player's job.
+console.log('found nearby:', await evaluate(() => window.voxelcraft.discoverNearby(2)));
+console.log('accepted:', await evaluate(() => window.voxelcraft.questStep('accept')));
+await page.waitForTimeout(2500);
+const unpaved = await evaluate(() => window.voxelcraft.routes());
+console.log('route before any road:', JSON.stringify(unpaved));
+// The whole point of allowing a dashed road is that the player is told where the gap is.
+console.log('unfinished panel:', JSON.stringify(await page.locator('.route-row').innerText()));
+await shot('07w-route-gap');
+
+console.log('delivered:', await evaluate(() => window.voxelcraft.questStep('deliver')));
+console.log('learned:', await evaluate(() => window.voxelcraft.questStep('learn')));
+
+// Lay the road. By hand this is a few hundred blocks, which is a walk, not a smoke test.
+console.log('road blocks laid:', await evaluate(() => window.voxelcraft.buildRoad()));
+await page.waitForFunction(() => window.voxelcraft.routes()[0]?.connected === true, null, { timeout: 30000 });
+console.log('route once paved:', JSON.stringify(await evaluate(() => window.voxelcraft.routes())));
+console.log('linked panel:', JSON.stringify(await page.locator('.route-row').innerText()));
+await shot('07x-route-linked');
+
+// Run the goods through until the far village earns a building.
+await evaluate(() => window.voxelcraft.advanceTransport(4000));
+await page.waitForTimeout(1000);
+const grown = await evaluate(() => window.voxelcraft.villages().find((v) => v.stage > 0));
+console.log('grown village:', JSON.stringify(grown));
+if (grown) {
+  await evaluate((v) => window.voxelcraft.teleport(v.x, v.z), grown);
+  await page.waitForFunction(() => window.voxelcraft.pending() === 0, null, { timeout: 90000 });
+  await page.waitForTimeout(3000);
+  await evaluate(() => {
+    window.voxelcraft.setTime(0.25);
+    window.voxelcraft.player.pitch = -0.12;
+  });
+  await page.waitForTimeout(1200);
+  await shot('07y-village-grown');
+}
+console.log('porters walking:', await evaluate(() => window.voxelcraft.porters()));
+console.log('quest at the end:', JSON.stringify(await evaluate(() => window.voxelcraft.quest())));
+await closeScreen();
+
 // --- farming and eating ------------------------------------------------------
 const farm = await evaluate(() => {
   const g = window.voxelcraft.game;
@@ -628,6 +676,12 @@ const before = await evaluate(() => {
   g.save(false);
   return { x: +g.player.x.toFixed(2), z: +g.player.z.toFixed(2), torches: g.player.inventory.count('torch') };
 });
+const economyBefore = await evaluate(() => ({
+  villages: window.voxelcraft.villages().filter((v) => v.discovered).length,
+  stages: window.voxelcraft.villages().map((v) => v.stage).join(','),
+  routes: window.voxelcraft.routes().length,
+  quest: window.voxelcraft.quest().step,
+}));
 await page.reload({ waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(1200);
 await page.click('.menu-button:has-text("続きから")');
@@ -638,6 +692,17 @@ const after = await evaluate(() => {
   return { x: +g.player.x.toFixed(2), z: +g.player.z.toFixed(2), torches: g.player.inventory.count('torch'), seed: g.world.seed };
 });
 console.log('saved:', JSON.stringify(before), 'loaded:', JSON.stringify(after));
+// The road lives in the block edits and the villages in their own save block, so a
+// reloaded world re-surveys its routes rather than storing their geometry.
+await page.waitForTimeout(8000);
+const economyAfter = await evaluate(() => ({
+  villages: window.voxelcraft.villages().filter((v) => v.discovered).length,
+  stages: window.voxelcraft.villages().map((v) => v.stage).join(','),
+  routes: window.voxelcraft.routes().length,
+  quest: window.voxelcraft.quest().step,
+  connected: window.voxelcraft.routes().filter((r) => r.connected).length,
+}));
+console.log('economy saved:', JSON.stringify(economyBefore), 'loaded:', JSON.stringify(economyAfter));
 await shot('10-reloaded');
 
 // --- the pause screen names the seed so a world can be found again ----------

@@ -11,6 +11,8 @@ export interface Settings {
   minimap: boolean;
   /** Panel showing the season, and how long before the weather upstream arrives. */
   forecast: boolean;
+  /** Panel showing the current objective and whether each transport route is joined up. */
+  routes: boolean;
   /** Swap to the best tool in the hotbar for whatever is being mined. */
   autoTool: boolean;
   /** Walk up single block steps without jumping. */
@@ -25,6 +27,7 @@ export const DEFAULT_SETTINGS: Settings = {
   compass: true,
   minimap: true,
   forecast: true,
+  routes: true,
   autoTool: true,
   autoStep: true,
 };
@@ -55,6 +58,7 @@ export function loadSettings(): Settings {
       compass: parsed.compass ?? DEFAULT_SETTINGS.compass,
       minimap: parsed.minimap ?? DEFAULT_SETTINGS.minimap,
       forecast: parsed.forecast ?? DEFAULT_SETTINGS.forecast,
+      routes: parsed.routes ?? DEFAULT_SETTINGS.routes,
       autoTool: parsed.autoTool ?? DEFAULT_SETTINGS.autoTool,
       autoStep: parsed.autoStep ?? DEFAULT_SETTINGS.autoStep,
     };

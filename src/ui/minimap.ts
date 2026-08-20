@@ -12,6 +12,23 @@ const SCALE = 2;
 /** Rows redrawn per frame. A full pass takes SIZE / ROWS_PER_FRAME frames. */
 const ROWS_PER_FRAME = 28;
 
+/** Places and roads drawn on top of the terrain. */
+export interface MinimapOverlay {
+  markers: { kind: string; x: number; z: number }[];
+  roads: { x: number; z: number }[];
+  /** The stretch of road that is still missing, if the player is building one. */
+  gap: { from: { x: number; z: number }; to: { x: number; z: number } } | null;
+}
+
+const EMPTY_OVERLAY: MinimapOverlay = { markers: [], roads: [], gap: null };
+
+const MARKER_COLORS: Record<string, string> = {
+  spawn: '#8fd0ff',
+  death: '#ff6b6b',
+  village: '#ffd479',
+  gap: '#ff9b53',
+};
+
 /** Overhead map of the loaded world around the player. Redrawn a few rows at a time
  *  so a full refresh costs a fraction of a frame. */
 export class Minimap {
@@ -77,7 +94,13 @@ export class Minimap {
     return color;
   }
 
-  update(world: World, playerX: number, playerZ: number, yaw: number): void {
+  update(
+    world: World,
+    playerX: number,
+    playerZ: number,
+    yaw: number,
+    overlay: MinimapOverlay = EMPTY_OVERLAY,
+  ): void {
     if (this.row === 0) {
       this.originX = Math.floor(playerX) - (SIZE / 2) * SCALE;
       this.originZ = Math.floor(playerZ) - (SIZE / 2) * SCALE;
@@ -93,7 +116,56 @@ export class Minimap {
     this.row = end >= SIZE ? 0 : end;
 
     this.ctx.putImageData(this.image, 0, 0);
+    this.drawRoads(overlay);
+    this.drawMarkers(overlay);
     this.drawPlayer(yaw);
+  }
+
+  /** World coordinates to canvas pixels, or null when they fall off the map. */
+  private project(x: number, z: number): { px: number; py: number } | null {
+    const px = (x - this.originX) / SCALE;
+    const py = (z - this.originZ) / SCALE;
+    if (px < 0 || px >= SIZE || py < 0 || py >= SIZE) return null;
+    return { px, py };
+  }
+
+  /** The roads the player has laid, so it is visible at a glance where one stops. */
+  private drawRoads(overlay: MinimapOverlay): void {
+    const ctx = this.ctx;
+    ctx.fillStyle = 'rgba(226, 200, 142, 0.9)';
+    for (const point of overlay.roads) {
+      const at = this.project(point.x, point.z);
+      if (at) ctx.fillRect(at.px - 0.5, at.py - 0.5, 1.5, 1.5);
+    }
+    if (!overlay.gap) return;
+    // The unfinished stretch, drawn as the dashed line it wants to become.
+    const a = this.project(overlay.gap.from.x, overlay.gap.from.z);
+    const b = this.project(overlay.gap.to.x, overlay.gap.to.z);
+    if (!a || !b) return;
+    ctx.save();
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = '#ff9b53';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(a.px, a.py);
+    ctx.lineTo(b.px, b.py);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  private drawMarkers(overlay: MinimapOverlay): void {
+    const ctx = this.ctx;
+    for (const marker of overlay.markers) {
+      const at = this.project(marker.x, marker.z);
+      if (!at) continue;
+      ctx.fillStyle = MARKER_COLORS[marker.kind] ?? '#ffffff';
+      ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.rect(at.px - 2, at.py - 2, 4, 4);
+      ctx.fill();
+      ctx.stroke();
+    }
   }
 
   private paint(world: World, px: number, py: number, x: number, z: number): void {

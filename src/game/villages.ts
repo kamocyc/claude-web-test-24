@@ -114,6 +114,9 @@ export function goodLabel(good: GoodId): string {
 /** Every village the player has been near, and what has happened to it. */
 export class VillageRegistry {
   readonly byId = new Map<VillageId, VillageRecord>();
+  /** Saved state for villages that have not been re-derived from the seed yet. The player
+   *  may be nowhere near them, and they are only rebuilt on approach. */
+  private readonly pending = new Map<string, SavedVillage>();
 
   constructor(
     private readonly seed: number,
@@ -219,7 +222,7 @@ export class VillageRegistry {
   }
 
   toJSON(): SavedVillage[] {
-    return [...this.byId.values()].map((v) => ({
+    const out = [...this.byId.values()].map((v) => ({
       id: v.id,
       produces: v.produces,
       stage: v.stage,
@@ -228,6 +231,13 @@ export class VillageRegistry {
       discovered: v.discovered,
       spawnedStage: v.spawnedStage,
     }));
+    // A village the player has not been back to since loading is still only in `pending`.
+    // Writing just the re-derived ones would quietly throw away everything earned
+    // anywhere the player has not revisited this session.
+    for (const [id, saved] of this.pending) {
+      if (!this.byId.has(id)) out.push(saved);
+    }
+    return out;
   }
 
   /** Restores what the player earned. Position, variant and name are re-derived from the
@@ -240,9 +250,6 @@ export class VillageRegistry {
     }
     for (const record of this.byId.values()) this.applyPending(record);
   }
-
-  /** Saved state for villages that have not been re-derived from the seed yet. */
-  private readonly pending = new Map<string, SavedVillage>();
 
   private applyPending(record: VillageRecord): void {
     const saved = this.pending.get(record.id);

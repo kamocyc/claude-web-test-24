@@ -1,6 +1,6 @@
 import { el } from './dom';
 
-export type MarkerKind = 'spawn' | 'death' | 'village';
+export type MarkerKind = 'spawn' | 'death' | 'village' | 'gap';
 
 export interface CompassMarker {
   kind: MarkerKind;
@@ -12,12 +12,14 @@ const MARKER_ICON: Record<MarkerKind, string> = {
   spawn: '⌂',
   death: '✖',
   village: '⌗',
+  gap: '⋯',
 };
 
 const MARKER_LABEL: Record<MarkerKind, string> = {
   spawn: '出発地点',
   death: '死亡地点',
   village: '村',
+  gap: '道のとぎれ',
 };
 
 const CARDINALS: { angle: number; label: string }[] = [
@@ -45,23 +47,14 @@ export class Compass {
   readonly root = el('div', 'compass');
   private readonly strip = el('div', 'compass-strip');
   private readonly ticks: Tick[] = [];
-  private readonly markerNodes = new Map<MarkerKind, { node: HTMLElement; label: HTMLElement }>();
+  /** Pooled, because several villages can be on screen at once now. */
+  private readonly markerNodes: { node: HTMLElement; label: HTMLElement; kind: MarkerKind }[] = [];
 
   constructor() {
     for (const cardinal of CARDINALS) {
       const node = el('div', cardinal.label ? 'compass-tick major' : 'compass-tick', cardinal.label);
       this.strip.appendChild(node);
       this.ticks.push({ node, bearing: cardinal.angle });
-    }
-    for (const kind of ['spawn', 'death', 'village'] as MarkerKind[]) {
-      const node = el('div', `compass-marker ${kind}`);
-      const icon = el('span', 'compass-icon', MARKER_ICON[kind]);
-      const label = el('span', 'compass-distance');
-      node.append(icon, label);
-      node.title = MARKER_LABEL[kind];
-      node.style.display = 'none';
-      this.strip.appendChild(node);
-      this.markerNodes.set(kind, { node, label });
     }
     this.root.appendChild(this.strip);
   }
@@ -74,20 +67,40 @@ export class Compass {
     const heading = ((-yaw * 180) / Math.PI + 360) % 360;
     for (const tick of this.ticks) this.place(tick.node, tick.bearing - heading, null);
 
-    const seen = new Set<MarkerKind>();
-    for (const marker of markers) {
-      const entry = this.markerNodes.get(marker.kind);
-      if (!entry) continue;
-      seen.add(marker.kind);
+    for (let i = 0; i < markers.length; i++) {
+      const marker = markers[i];
+      const entry = this.markerAt(i, marker.kind);
       const dx = marker.x - x;
       const dz = marker.z - z;
       const bearing = ((Math.atan2(dx, -dz) * 180) / Math.PI + 360) % 360;
       const distance = Math.round(Math.hypot(dx, dz));
       this.place(entry.node, bearing - heading, entry.label, distance);
     }
-    for (const [kind, entry] of this.markerNodes) {
-      if (!seen.has(kind)) entry.node.style.display = 'none';
+    for (let i = markers.length; i < this.markerNodes.length; i++) {
+      this.markerNodes[i].node.style.display = 'none';
     }
+  }
+
+  /** Nodes are made as they are needed and re-labelled in place, so a strip showing four
+   *  villages does not churn the DOM every frame. */
+  private markerAt(index: number, kind: MarkerKind): { node: HTMLElement; label: HTMLElement } {
+    let entry = this.markerNodes[index];
+    if (!entry) {
+      const node = el('div', `compass-marker ${kind}`);
+      const icon = el('span', 'compass-icon', MARKER_ICON[kind]);
+      const label = el('span', 'compass-distance');
+      node.append(icon, label);
+      this.strip.appendChild(node);
+      entry = { node, label, kind };
+      this.markerNodes[index] = entry;
+    }
+    if (entry.kind !== kind) {
+      entry.kind = kind;
+      entry.node.className = `compass-marker ${kind}`;
+      (entry.node.firstChild as HTMLElement).textContent = MARKER_ICON[kind];
+    }
+    entry.node.title = MARKER_LABEL[kind];
+    return entry;
   }
 
   /** Positions one element on the strip, hiding it when it falls outside the span. */

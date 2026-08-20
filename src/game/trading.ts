@@ -65,8 +65,18 @@ export function professionLabel(profession: string): string {
   }
 }
 
-/** Deterministic per villager, so reloading the world keeps the same offers. */
-export function generateTrades(seed: number, profession: string, x: number, z: number): Trade[] {
+/** Deterministic per villager, so reloading the world keeps the same offers.
+ *
+ *  `stage` is the development of the village the villager lives in: a village that goods
+ *  actually reach stocks more, asks for less, and puts more on the table. Defaulting it
+ *  to 0 keeps every existing caller — and the offers in every existing save — unchanged. */
+export function generateTrades(
+  seed: number,
+  profession: string,
+  x: number,
+  z: number,
+  stage = 0,
+): Trade[] {
   const table = TABLES[profession] ?? TABLES.farmer;
   const rng = mulberry32(hashInts(seed ^ 0x74ade, Math.round(x), Math.round(z)));
   const pool = [...table];
@@ -76,14 +86,25 @@ export function generateTrades(seed: number, profession: string, x: number, z: n
     pool[i] = pool[j];
     pool[j] = tmp;
   }
-  const count = Math.min(pool.length, 3 + Math.floor(rng() * 3));
+  const count = Math.min(pool.length, 3 + Math.floor(rng() * 3) + stage);
+  const discount = 1 - 0.08 * stage;
   return pool.slice(0, count).map((template) => {
     const jitter = template.jitter ?? 0;
     const give = template.give.map((side, index) => ({
       id: side.id,
-      count: Math.max(1, side.count + (index === 0 && jitter > 0 ? randInt(rng, -jitter, jitter) : 0)),
+      count: Math.max(
+        1,
+        Math.round(
+          (side.count + (index === 0 && jitter > 0 ? randInt(rng, -jitter, jitter) : 0)) * discount,
+        ),
+      ),
     }));
-    return { give, get: { ...template.get }, maxUses: 4 + Math.floor(rng() * 5), uses: 0 };
+    return {
+      give,
+      get: { ...template.get },
+      maxUses: 4 + Math.floor(rng() * 5) + stage * 2,
+      uses: 0,
+    };
   });
 }
 

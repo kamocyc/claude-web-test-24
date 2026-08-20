@@ -63,5 +63,20 @@ describe('seeds', () => {
         expect(generator.height(village.x + dx, village.z + dz)).toBe(center);
       }
     });
+
+    /** The transport tutorial needs somewhere to transport to. Without this the slice
+     *  could quietly become unplayable in the very world CI and the smoke test use. */
+    it('has a second village close enough to link with a road', () => {
+      const village = generator.findNearestVillage(spawn.x, spawn.z, 3);
+      expect(village).not.toBeNull();
+      if (!village) return;
+      const neighbours = generator
+        .villagesAround(village.x, village.z, 2)
+        .filter((other) => other.x !== village.x || other.z !== village.z)
+        .map((other) => Math.hypot(other.x - village.x, other.z - village.z))
+        .sort((a, b) => a - b);
+      expect(neighbours.length).toBeGreaterThan(0);
+      expect(neighbours[0]).toBeLessThan(700);
+    });
   });
 });

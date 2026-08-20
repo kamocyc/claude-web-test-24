@@ -60,10 +60,10 @@ export class MobManager {
     return mob;
   }
 
-  addVillager(x: number, y: number, z: number, profession: string): Mob {
+  addVillager(x: number, y: number, z: number, profession: string, stage = 0): Mob {
     const mob = new Mob('villager', x, y, z);
     mob.profession = profession;
-    mob.trades = generateTrades(this.seed, profession, x, z);
+    mob.trades = generateTrades(this.seed, profession, x, z, stage);
     return this.add(mob);
   }
 
@@ -104,6 +104,8 @@ export class MobManager {
         this.mobs.splice(i, 1);
         continue;
       }
+      // Porters are owned by the transport network, which notices when one disappears
+      // and carries the shipment on abstractly, so the ordinary distance rule applies.
       if (mob.distanceTo(ctx.player.x, ctx.player.y, ctx.player.z) > DESPAWN_DISTANCE && mob.kind !== 'villager') {
         this.mobs.splice(i, 1);
       }

@@ -208,6 +208,29 @@ describe('transport routes', () => {
     expect(transport.routes).toHaveLength(1);
   });
 
+  it('keeps trying to survey a route whose villages are not known yet', () => {
+    const world = new FakeWorld();
+    for (let x = 50; x <= 190; x += MAX_LINK) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world, TERRAIN);
+    roads.seedFromEdits();
+    // A save restores routes before the player has walked near enough for the villages
+    // to be re-derived from the seed.
+    const registry = new VillageRegistry(1, { villagesAround: () => [] });
+    const transport = new TransportNetwork(roads, registry);
+    transport.loadJSON([{ from: ID_A, to: ID_B }]);
+    run(transport, 6);
+    expect(transport.routes[0].connected).toBe(false);
+
+    // Once they are known, the very next sweep must pick the route up without anybody
+    // having to touch a road block.
+    const late = new VillageRegistry(1, SOURCE);
+    late.ensureNear(0, 0);
+    const revived = new TransportNetwork(roads, late);
+    revived.loadJSON([{ from: ID_A, to: ID_B }]);
+    run(revived, 6);
+    expect(revived.routes[0].connected).toBe(true);
+  });
+
   it('ignores a missing or malformed save', () => {
     const { transport } = build();
     transport.loadJSON(undefined);

@@ -18,6 +18,15 @@ import { clear, el } from './dom';
 
 export type ScreenKind = 'inventory' | 'crafting' | 'furnace' | 'chest' | 'trade';
 
+/** One tutorial step, rendered above a villager's offers. */
+export interface QuestRow {
+  kind: 'accept' | 'deliver' | 'learn';
+  label: string;
+  detail: string;
+  ready: boolean;
+  run(): void;
+}
+
 interface OpenScreen {
   kind: ScreenKind;
   container: Container;
@@ -183,7 +192,9 @@ export class ScreenManager {
     this.mount({ kind: 'chest', container, refresh: () => container.refresh() });
   }
 
-  openTrade(villager: Mob, onTraded: () => void): void {
+  /** `quest` adds one row above the offers: the tutorial's "carry this there" and "hand
+   *  it over" both happen through the same widget the player already knows. */
+  openTrade(villager: Mob, onTraded: () => void, quest?: QuestRow): void {
     const container = new Container({
       title: `${professionLabel(villager.profession ?? 'villager')}との取引`,
       atlas: this.atlas,
@@ -192,6 +203,21 @@ export class ScreenManager {
     const list = el('div', 'trade-list');
     container.addSection(list);
     this.addPlayerInventory(container);
+
+    let questButton: HTMLButtonElement | null = null;
+    if (quest) {
+      const row = el('div', 'trade-row quest-row');
+      const text = el('div', 'quest-text');
+      text.append(el('div', 'quest-label', quest.label), el('div', 'quest-detail', quest.detail));
+      questButton = el('button', 'trade-button quest-button', quest.kind === 'learn' ? '聞く' : '引き受ける');
+      if (quest.kind === 'deliver') questButton.textContent = '納める';
+      questButton.addEventListener('click', () => {
+        quest.run();
+        this.close();
+      });
+      row.append(text, questButton);
+      list.appendChild(row);
+    }
 
     const rows: { node: HTMLElement; trade: Trade; button: HTMLButtonElement }[] = [];
     for (const trade of villager.trades) {
@@ -217,6 +243,7 @@ export class ScreenManager {
       container,
       refresh: () => {
         container.refresh();
+        if (questButton && quest) questButton.disabled = !quest.ready;
         for (const row of rows) {
           const affordable = canAfford(this.player.inventory, row.trade);
           row.button.disabled = !affordable;

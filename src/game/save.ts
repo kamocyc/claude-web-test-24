@@ -39,6 +39,33 @@ export interface SavedVillager {
   trades: unknown;
 }
 
+/** What has happened to a village. Where it is, what it makes and what it is called are
+ *  all re-derived from the seed, so only the earned part is stored. */
+export interface SavedVillage {
+  id: string;
+  produces: string;
+  stage: number;
+  points: number;
+  stock: number;
+  discovered: boolean;
+  spawnedStage: number;
+}
+
+/** Only the pair. The road itself is already in `edits`, so a route surveys itself again
+ *  on load rather than storing its geometry twice. */
+export interface SavedRoute {
+  from: string;
+  to: string;
+}
+
+export interface SavedQuest {
+  step: string;
+  originId?: string;
+  targetId?: string;
+  good?: string;
+  count?: number;
+}
+
 export interface SaveData {
   version: number;
   seed: number;
@@ -57,6 +84,14 @@ export interface SaveData {
   villagers: SavedVillager[];
   /** Chunks whose village villagers have already been spawned. */
   populatedChunks: string[];
+  /** The village economy. Optional, like `weatherSeconds`: a save written before it
+   *  existed opens with no villages found yet and the tutorial at its first step, which
+   *  is exactly right. Bumping SAVE_VERSION instead would throw every world away. */
+  villages?: SavedVillage[];
+  routes?: SavedRoute[];
+  quest?: SavedQuest;
+  /** Villagers a village earned by growing while their chunk was unloaded. */
+  pendingVillagers?: { x: number; y: number; z: number; profession: string }[];
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

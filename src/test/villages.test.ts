@@ -130,6 +130,29 @@ describe('village registry', () => {
     expect(after.toJSON()).toEqual(before.toJSON());
   });
 
+  it('keeps the progress of villages the player has not been back to', () => {
+    const before = new VillageRegistry(1, source(A, B));
+    before.ensureNear(0, 0);
+    before.discover(villageId(0, 0));
+    before.discover(villageId(400, 0));
+    before.addPoints(villageId(400, 0), 4);
+
+    // A session that only ever goes near A must not drop what B earned.
+    const away = new VillageRegistry(1, source(A));
+    away.loadJSON(before.toJSON());
+    away.ensureNear(0, 0);
+    expect(away.byId.has(villageId(400, 0))).toBe(false);
+
+    const saved = away.toJSON();
+    expect(saved.find((v) => v.id === villageId(400, 0))?.points).toBe(4);
+
+    const back = new VillageRegistry(1, source(A, B));
+    back.loadJSON(saved);
+    back.ensureNear(0, 0);
+    expect(back.get(villageId(400, 0))?.points).toBe(4);
+    expect(back.get(villageId(400, 0))?.discovered).toBe(true);
+  });
+
   it('ignores a missing or malformed save', () => {
     const registry = new VillageRegistry(1, source(A));
     registry.loadJSON(undefined);

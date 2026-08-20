@@ -44,6 +44,14 @@ export interface ChestMarker {
   loot: Profession;
 }
 
+/** Footprint of one house, so village growth can tell which street slots are taken. */
+export interface Footprint {
+  x0: number;
+  z0: number;
+  w: number;
+  d: number;
+}
+
 export interface VillagePlan {
   site: VillageSite;
   baseY: number;
@@ -51,6 +59,8 @@ export interface VillagePlan {
   byChunk: Map<string, Placement[]>;
   villagers: VillagerMarker[];
   chests: ChestMarker[];
+  /** Where the houses stand. Growth adds to a village without landing on them. */
+  buildings: Footprint[];
 }
 
 /** Returns the village centre inside a grid cell, or null when the cell has none. */
@@ -116,6 +126,7 @@ export function planVillage(
     byChunk: new Map(),
     villagers: [],
     chests: [],
+    buildings: [],
   };
 
   const palette = paletteFor(variant);
@@ -157,7 +168,10 @@ export function planVillage(
 
   // --- buildings along the streets ------------------------------------------
   const buildings = layoutBuildings(rng, site);
-  for (const b of buildings) buildHouse(put, plan, b, baseY, palette);
+  for (const b of buildings) {
+    buildHouse(put, plan, b, baseY, palette);
+    plan.buildings.push({ x0: b.x0, z0: b.z0, w: b.w, d: b.d });
+  }
 
   // --- farm plots -----------------------------------------------------------
   const farmCount = 2 + Math.floor(rng() * 2);
@@ -226,10 +240,17 @@ function putRoad(put: PutFn, x: number, baseY: number, z: number, path: BlockId)
   for (let h = 1; h <= 5; h++) put(x, baseY + h, z, Block.AIR);
 }
 
-function layoutBuildings(rng: Rng, site: VillageSite): Building[] {
-  const buildings: Building[] = [];
-  const slots: { x: number; z: number; facing: 0 | 1 | 2 | 3 }[] = [];
-  // Slots sit on both sides of each street, spaced so houses never overlap.
+export interface Slot {
+  x: number;
+  z: number;
+  facing: 0 | 1 | 2 | 3;
+}
+
+/** Every place a house could stand, on both sides of each street, spaced so houses never
+ *  overlap. Pure geometry and no randomness, so village growth can ask for the same slots
+ *  later without borrowing the plan's random stream. */
+export function streetSlots(site: VillageSite): Slot[] {
+  const slots: Slot[] = [];
   for (let t = 10; t <= VILLAGE_RADIUS - 14; t += 11) {
     slots.push({ x: site.x + t, z: site.z - 4, facing: 3 });
     slots.push({ x: site.x + t, z: site.z + 4, facing: 1 });
@@ -240,6 +261,27 @@ function layoutBuildings(rng: Rng, site: VillageSite): Building[] {
     slots.push({ x: site.x - 4, z: site.z - t, facing: 0 });
     slots.push({ x: site.x + 4, z: site.z - t, facing: 2 });
   }
+  return slots;
+}
+
+/** Grows a footprint away from the street its slot belongs to. */
+export function footprintFor(slot: Slot, w: number, d: number): Footprint {
+  let x0 = slot.x - (w >> 1);
+  let z0 = slot.z - (d >> 1);
+  if (slot.facing === 1) z0 = slot.z;
+  if (slot.facing === 3) z0 = slot.z - d + 1;
+  if (slot.facing === 2) x0 = slot.x;
+  if (slot.facing === 0) x0 = slot.x - w + 1;
+  return { x0, z0, w, d };
+}
+
+export function overlaps(a: Footprint, b: Footprint): boolean {
+  return a.x0 < b.x0 + b.w + 1 && a.x0 + a.w + 1 > b.x0 && a.z0 < b.z0 + b.d + 1 && a.z0 + a.d + 1 > b.z0;
+}
+
+function layoutBuildings(rng: Rng, site: VillageSite): Building[] {
+  const buildings: Building[] = [];
+  const slots = streetSlots(site);
   // Shuffle then take a handful, so villages differ from each other.
   for (let i = slots.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
@@ -253,17 +295,8 @@ function layoutBuildings(rng: Rng, site: VillageSite): Building[] {
     const w = 5 + Math.floor(rng() * 3);
     const d = 5 + Math.floor(rng() * 3);
     const profession = PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)];
-    // Grow the footprint away from the street the slot belongs to.
-    let x0 = slot.x - (w >> 1);
-    let z0 = slot.z - (d >> 1);
-    if (slot.facing === 1) z0 = slot.z;
-    if (slot.facing === 3) z0 = slot.z - d + 1;
-    if (slot.facing === 2) x0 = slot.x;
-    if (slot.facing === 0) x0 = slot.x - w + 1;
-    const overlaps = buildings.some(
-      (b) => x0 < b.x0 + b.w + 1 && x0 + w + 1 > b.x0 && z0 < b.z0 + b.d + 1 && z0 + d + 1 > b.z0,
-    );
-    if (overlaps) continue;
+    const { x0, z0 } = footprintFor(slot, w, d);
+    if (buildings.some((b) => overlaps({ x0, z0, w, d }, b))) continue;
     buildings.push({
       x0,
       z0,
@@ -277,7 +310,10 @@ function layoutBuildings(rng: Rng, site: VillageSite): Building[] {
   return buildings;
 }
 
-function buildHouse(put: PutFn, plan: VillagePlan, b: Building, baseY: number, palette: Palette): void {
+/** Only the two lists are needed, so village growth can hand in its own. */
+type HouseSink = Pick<VillagePlan, 'villagers' | 'chests'>;
+
+function buildHouse(put: PutFn, plan: HouseSink, b: Building, baseY: number, palette: Palette): void {
   const { x0, z0, w, d } = b;
   const x1 = x0 + w - 1;
   const z1 = z0 + d - 1;
@@ -381,4 +417,84 @@ function buildFarm(put: PutFn, rng: Rng, cx: number, cz: number, baseY: number):
       }
     }
   }
+}
+
+/** Houses and farms a village gains at each development stage.
+ *
+ *  This deliberately uses its own random stream rather than `planVillage`'s. Drawing even
+ *  one extra number from that one would shift everything after it — the professions of
+ *  the villagers by the well, for a start — and the fixed verification seed pins the
+ *  village layout exactly. Growth is therefore always a pure addition to stage 0, never a
+ *  reshuffle of it. */
+export const HOUSES_PER_STAGE = 2;
+export const FARMS_PER_STAGE = 1;
+
+export interface GrowthPlan {
+  placements: Placement[];
+  villagers: VillagerMarker[];
+  chests: ChestMarker[];
+}
+
+export function planGrowth(
+  seed: number,
+  site: VillageSite,
+  baseY: number,
+  variant: VillageVariant,
+  stage: number,
+  occupied: readonly Footprint[],
+): GrowthPlan {
+  const plan: GrowthPlan = { placements: [], villagers: [], chests: [] };
+  if (stage <= 0) return plan;
+
+  const rng = mulberry32(hashInts(seed ^ 0x9a0f, site.x, site.z, stage));
+  const palette = paletteFor(variant);
+  const put = (x: number, y: number, z: number, b: BlockId): void => {
+    plan.placements.push({ x, y, z, b });
+  };
+  // `buildHouse` reports its villager and chest through the object it is handed; growth
+  // collects them the same way a fresh village does.
+  const sink: HouseSink = { villagers: plan.villagers, chests: plan.chests };
+
+  const slots = streetSlots(site);
+  for (let i = slots.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = slots[i];
+    slots[i] = slots[j];
+    slots[j] = tmp;
+  }
+
+  const taken: Footprint[] = [...occupied];
+  let built = 0;
+  for (const slot of slots) {
+    if (built >= HOUSES_PER_STAGE) break;
+    const w = 5 + Math.floor(rng() * 3);
+    const d = 5 + Math.floor(rng() * 3);
+    const footprint = footprintFor(slot, w, d);
+    if (taken.some((b) => overlaps(footprint, b))) continue;
+    taken.push(footprint);
+    built++;
+    buildHouse(
+      put,
+      sink,
+      {
+        ...footprint,
+        facing: slot.facing,
+        profession: PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)],
+        hasChest: true,
+      },
+      baseY,
+      palette,
+    );
+  }
+
+  for (let i = 0; i < FARMS_PER_STAGE; i++) {
+    const angle = rng() * Math.PI * 2;
+    const dist = 20 + rng() * 10;
+    const fx = site.x + Math.round(Math.cos(angle) * dist);
+    const fz = site.z + Math.round(Math.sin(angle) * dist);
+    if (taken.some((b) => overlaps({ x0: fx - 3, z0: fz - 4, w: 7, d: 9 }, b))) continue;
+    buildFarm(put, rng, fx, fz, baseY);
+  }
+
+  return plan;
 }

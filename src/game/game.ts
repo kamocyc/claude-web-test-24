@@ -15,8 +15,10 @@ import {
   CHUNK_VOLUME,
   Chunk,
   SEA_LEVEL,
+  blockIndex,
   chunkKey,
   toChunkCoord,
+  toLocalCoord,
 } from '../world/chunk';
 import { TerrainGenerator } from '../world/generation/terrain';
 import { LightEngine } from '../world/lighting';
@@ -57,7 +59,13 @@ import {
 import { findSpawn } from './seeds';
 import type { Settings } from './settings';
 import { tickFurnace } from './smelting';
-import { tradesFromJSON, tradesToJSON } from './trading';
+import { generateTrades, restockTrades, tradesFromJSON, tradesToJSON } from './trading';
+import { VILLAGE_RADIUS } from '../world/generation/village';
+import { RoadNetwork, type RoadPoint } from './roads';
+import { TransportNetwork, type Route } from './transport';
+import { VillageRegistry, type VillageRecord } from './villages';
+import { applyGrowth, growthChunks } from './villageGrowth';
+import { Questline, type QuestInteraction } from './questline';
 import { biomeDef } from '../world/generation/biome';
 import { riverCovers } from '../world/generation/rivers';
 import { RiverFlow } from '../world/riverFlow';
@@ -75,6 +83,11 @@ const UNLOAD_MARGIN = 2;
 const REACH = 5;
 const ATTACK_REACH = 3.6;
 const AUTOSAVE_SECONDS = 30;
+/** Half the span the minimap covers, so only nearby roads are handed to it. */
+const MINIMAP_REACH = 130;
+/** Blocks of height a debug road may gain or lose per step, matching what a walker can
+ *  manage on a paved slope. */
+const ROAD_GRADE = 2;
 /** Chunk meshes rebuilt per frame; higher values load faster but stutter more. */
 const MESH_BUDGET = 3;
 /** Water-only rebuilds are much cheaper, so more of them fit in a frame. */
@@ -138,6 +151,16 @@ export class Game {
   private deathPoint: { x: number; z: number } | null = null;
   private nearestVillage: { x: number; z: number } | null = null;
   private villageSearchTimer = 0;
+  /** The village economy: who makes what, which roads link them, and what the tutorial
+   *  is currently asking for. */
+  private readonly villages: VillageRegistry;
+  private readonly roads: RoadNetwork;
+  private readonly transport: TransportNetwork;
+  private readonly questline = new Questline();
+  /** Villagers a village earned by growing whose chunk was not loaded at the time. */
+  private readonly pendingVillagers: { x: number; y: number; z: number; profession: string }[] = [];
+  /** Porter mobs by the id transport knows them under. */
+  private readonly porterMobs = new Map<number, Mob>();
 
   constructor(private readonly options: GameOptions) {
     this.world = new World(options.seed);
@@ -145,9 +168,12 @@ export class Game {
     this.light = new LightEngine(this.world);
     this.water = new WaterSimulator(this.world);
     this.riverFlow = new RiverFlow(this.world);
+    this.villages = new VillageRegistry(options.seed, this.generator);
+    this.roads = new RoadNetwork(this.world, this.generator);
     this.world.onBlockChange((x, y, z, previous, next) => {
       this.light.onBlockChanged(x, y, z, previous, next);
       this.water.onBlockChanged(x, y, z, previous, next);
+      this.roads.onBlockChanged(x, y, z, previous, next);
       this.onBlockChanged(x, y, z, previous, next);
     });
 
@@ -167,6 +193,24 @@ export class Game {
 
     this.mobs = new MobManager(this.world, options.seed);
     this.drops = new DropManager(this.world);
+    this.transport = new TransportNetwork(
+      this.roads,
+      this.villages,
+      {
+        onConnected: (route) => this.onRouteConnected(route),
+        onDisconnected: (route) => this.announceRoute(route, 'とぎれた'),
+        onArrival: (route, good, count) => this.onShipmentArrived(route, good, count),
+        onStageUp: (id, stage) => this.onVillageGrew(id, stage),
+      },
+      {
+        spawnPorter: (point, waypoints, startIndex) => this.spawnPorter(point, waypoints, startIndex),
+        porterPosition: (id) => {
+          const mob = this.porterMobs.get(id);
+          return mob && !mob.isDead ? { x: mob.x, z: mob.z } : null;
+        },
+        removePorter: (id) => this.removePorter(id),
+      },
+    );
     this.hud = new Hud(this.atlas);
     this.screens = new ScreenManager(
       this.player,
@@ -290,6 +334,7 @@ export class Game {
     this.updateDrops(dt);
     this.updateTicks(dt);
     this.updateFurnaces(dt);
+    this.updateVillages(dt);
     this.checkOpenContainer();
 
     this.hud.setUnderwater(
@@ -304,6 +349,9 @@ export class Game {
     this.villageSearchTimer -= dt;
     if (this.villageSearchTimer <= 0) {
       this.villageSearchTimer = 2;
+      // Registering is what makes a village *knowable*; walking into it is what makes it
+      // discovered. Both ride the same timer because both walk the same village grid.
+      this.villages.ensureNear(this.player.x, this.player.z, 2);
       this.nearestVillage = this.generator.findNearestVillage(this.player.x, this.player.z, 2);
     }
 
@@ -360,8 +408,19 @@ export class Game {
   private navigationInfo(): NavigationInfo {
     const markers: CompassMarker[] = [{ kind: 'spawn', x: this.spawnPoint.x, z: this.spawnPoint.z }];
     if (this.deathPoint) markers.push({ kind: 'death', x: this.deathPoint.x, z: this.deathPoint.z });
-    if (this.nearestVillage) {
+    const found = this.villages.discovered();
+    for (const village of found) markers.push({ kind: 'village', x: village.x, z: village.z });
+    // A village the player has not walked into yet still gets the old single marker, so
+    // there is always something to head towards.
+    if (found.length === 0 && this.nearestVillage) {
       markers.push({ kind: 'village', x: this.nearestVillage.x, z: this.nearestVillage.z });
+    }
+    const questRoute = this.questRoute();
+    const objective = this.questline.objective(this.villages, questRoute);
+    // The gap marker points at where the road stops, not at the destination: the player
+    // needs to know which stretch to go and fix.
+    if (objective?.marker?.kind === 'gap') {
+      markers.push({ kind: 'gap', x: objective.marker.x, z: objective.marker.z });
     }
     const forecast = this.forecast();
     return {
@@ -370,6 +429,34 @@ export class Game {
       showCompass: this.options.settings.compass,
       showMinimap: this.options.settings.minimap,
       showForecast: this.options.settings.forecast,
+      showRoutes: this.options.settings.routes,
+      overlay: {
+        markers,
+        // Only the roads that could be on screen: the index holds every column the player
+        // ever laid, and the map covers a couple of hundred blocks.
+        roads: this.roads.columnsIn(
+          this.player.x - MINIMAP_REACH,
+          this.player.z - MINIMAP_REACH,
+          this.player.x + MINIMAP_REACH,
+          this.player.z + MINIMAP_REACH,
+        ),
+        gap:
+          questRoute?.gapFrom && questRoute.gapTo
+            ? { from: questRoute.gapFrom, to: questRoute.gapTo }
+            : null,
+      },
+      routes: {
+        quest: objective,
+        routes: this.transport.routes.map((route) => ({
+          from: this.villages.get(route.from)?.name ?? '?',
+          to: this.villages.get(route.to)?.name ?? '?',
+          surveyed: route.surveyed,
+          connected: route.connected,
+          length: route.length,
+          missing: route.missing,
+          porters: route.porters.length,
+        })),
+      },
       forecast: {
         here: forecast.here.kind,
         endsIn: forecast.here.endsIn,
@@ -430,6 +517,14 @@ export class Game {
     chunk.generated = true;
     if (message.riverSurface) chunk.riverSurface = message.riverSurface;
     this.world.addChunk(chunk);
+    // Before lighting is seeded, so a village that grew while this chunk was away has its
+    // new walls in place when the light is baked against them.
+    for (const village of this.villages.byId.values()) {
+      if (village.stage <= 0) continue;
+      if (Math.abs(village.x - chunk.originX) > VILLAGE_RADIUS + CHUNK_SIZE) continue;
+      if (Math.abs(village.z - chunk.originZ) > VILLAGE_RADIUS + CHUNK_SIZE) continue;
+      this.buildGrowth(village, chunk);
+    }
     this.light.seedChunk(chunk);
     this.water.registerChunk(chunk, message.springs ?? []);
     this.riverFlow.registerChunk(chunk, message.weatherSeconds ?? 0);
@@ -549,7 +644,10 @@ export class Game {
     if (input.buttonJustPressed(2)) {
       const mob = this.mobUnderCrosshair(eye, look);
       if (mob && mob.kind === 'villager') {
-        this.openScreen(() => this.screens.openTrade(mob, () => this.hud.toast('取引が成立した')));
+        const quest = this.questInteractionFor(mob);
+        this.openScreen(() =>
+          this.screens.openTrade(mob, () => this.hud.toast('取引が成立した'), quest ?? undefined),
+        );
         return;
       }
       this.useItem(hit);
@@ -687,6 +785,16 @@ export class Game {
       const target = this.world.getBlock(hit.x, hit.y, hit.z);
       if ((target === Block.GRASS || target === Block.DIRT) && this.world.getBlock(hit.x, hit.y + 1, hit.z) === Block.AIR) {
         this.world.setBlock(hit.x, hit.y, hit.z, Block.FARMLAND);
+        return;
+      }
+    }
+
+    // Paving a road with a shovel. Same gesture as tilling soil, and it is what makes a
+    // road between two villages something a player will actually finish.
+    if (def.tool?.kind === 'shovel') {
+      const target = this.world.getBlock(hit.x, hit.y, hit.z);
+      if ((target === Block.GRASS || target === Block.DIRT) && this.world.getBlock(hit.x, hit.y + 1, hit.z) === Block.AIR) {
+        this.world.setBlock(hit.x, hit.y, hit.z, Block.DIRT_PATH);
         return;
       }
     }
@@ -905,6 +1013,224 @@ export class Game {
     this.drops.spawn(this.player.x, this.player.y + 1, this.player.z, stack);
   }
 
+
+  // --- villages, roads and transport -----------------------------------------
+
+  private updateVillages(dt: number): void {
+    const here = this.villages.at(this.player.x, this.player.z);
+    if (here && this.villages.discover(here.id)) {
+      this.hud.toast(`${here.name}に着いた`);
+      this.toast(this.questline.onVillageDiscovered(here));
+      this.linkQuestVillages();
+    }
+    this.villages.produce(dt);
+    this.transport.update(dt, this.player.x, this.player.z);
+    this.drainPendingVillagers();
+  }
+
+  /** Once the tutorial knows both ends, transport starts watching that pair so the panel
+   *  can report how much road is still missing. */
+  private linkQuestVillages(): void {
+    const { originId, targetId } = this.questline;
+    if (originId && targetId) this.transport.requestRoute(originId, targetId);
+  }
+
+  private questRoute(): Route | undefined {
+    const { originId, targetId } = this.questline;
+    if (!originId || !targetId) return undefined;
+    return this.transport.find(originId, targetId);
+  }
+
+  private toast(message: string | null): void {
+    if (message) this.hud.toast(message);
+  }
+
+  private announceRoute(route: Route, what: string): void {
+    const from = this.villages.get(route.from);
+    const to = this.villages.get(route.to);
+    if (from && to) this.hud.toast(`${from.name} と ${to.name} の道が${what}`);
+  }
+
+  private onRouteConnected(route: Route): void {
+    this.announceRoute(route, `つながった（${Math.round(route.length)}m）`);
+    this.toast(this.questline.onRouteEstablished(route));
+  }
+
+  private onShipmentArrived(route: Route, good: string, count: number): void {
+    const to = this.villages.get(route.to);
+    if (to) this.hud.toast(`${to.name}に${itemLabel(good)}が ${count} 個届いた`);
+    // Deliveries are what keep a village's offers worth walking to.
+    for (const mob of this.mobs.mobs) {
+      if (mob.kind !== 'villager' || !to) continue;
+      if (Math.hypot(mob.homeX - to.x, mob.homeZ - to.z) > VILLAGE_RADIUS) continue;
+      restockTrades(mob.trades);
+    }
+    this.toast(this.questline.onArrival(route));
+  }
+
+  /** A village earned a new building. Everything loaded is built now; the rest builds
+   *  itself when the player next walks into it, because applying growth is idempotent. */
+  private onVillageGrew(id: string, stage: number): void {
+    const village = this.villages.get(id);
+    if (!village) return;
+    this.hud.toast(`${village.name}が発展した（段階 ${stage}）`);
+    const occupied = this.generator.villageBuildings(village.x, village.z);
+    for (const { cx, cz } of growthChunks(this.options.seed, village, occupied)) {
+      const chunk = this.world.getChunk(cx, cz);
+      if (chunk) this.buildGrowth(village, chunk);
+    }
+    this.refreshVillageTrades(village);
+  }
+
+  /** Builds whatever growth this village owes into one loaded chunk, and moves its new
+   *  villagers in. */
+  private buildGrowth(village: VillageRecord, chunk: Chunk): void {
+    const occupied = this.generator.villageBuildings(village.x, village.z);
+    const result = applyGrowth(this.world, this.options.seed, village, chunk, occupied);
+    for (const chest of result.chests) {
+      if (this.world.getBlockEntity(chest.x, chest.y, chest.z)) continue;
+      this.world.setBlockEntity(
+        chest.x,
+        chest.y,
+        chest.z,
+        createChest(fillVillageChest(this.options.seed, chest.x, chest.y, chest.z, chest.loot)),
+      );
+    }
+    // `populatedChunks` records "ever populated" forever, so it cannot be reused here:
+    // clearing it would spawn the village's original villagers a second time. The village
+    // remembers how far it has staffed itself instead.
+    if (village.spawnedStage >= village.stage) return;
+    for (const villager of result.villagers) {
+      this.spawnOrQueueVillager(villager.x, villager.y, villager.z, villager.profession, village.stage);
+    }
+    village.spawnedStage = village.stage;
+  }
+
+  private spawnOrQueueVillager(x: number, y: number, z: number, profession: string, stage: number): void {
+    if (this.world.hasChunk(toChunkCoord(x), toChunkCoord(z))) {
+      this.mobs.addVillager(x + 0.5, y, z + 0.5, profession, stage);
+      return;
+    }
+    this.pendingVillagers.push({ x, y, z, profession });
+  }
+
+  private drainPendingVillagers(): void {
+    for (let i = this.pendingVillagers.length - 1; i >= 0; i--) {
+      const pending = this.pendingVillagers[i];
+      if (!this.world.hasChunk(toChunkCoord(pending.x), toChunkCoord(pending.z))) continue;
+      this.mobs.addVillager(pending.x + 0.5, pending.y, pending.z + 0.5, pending.profession, 1);
+      this.pendingVillagers.splice(i, 1);
+    }
+  }
+
+  /** Re-rolls the offers of everyone living in a village that just grew. */
+  private refreshVillageTrades(village: VillageRecord): void {
+    for (const mob of this.mobs.mobs) {
+      if (mob.kind !== 'villager' || !mob.profession) continue;
+      if (Math.hypot(mob.homeX - village.x, mob.homeZ - village.z) > VILLAGE_RADIUS) continue;
+      mob.trades = generateTrades(this.options.seed, mob.profession, mob.homeX, mob.homeZ, village.stage);
+    }
+  }
+
+  private spawnPorter(point: RoadPoint, waypoints: RoadPoint[], startIndex: number): number | null {
+    if (!this.world.hasChunk(toChunkCoord(point.x), toChunkCoord(point.z))) return null;
+    const mob = new Mob('porter', point.x + 0.5, point.y + 1, point.z + 0.5);
+    mob.route = waypoints.map((w) => ({ x: w.x + 0.5, z: w.z + 0.5 }));
+    mob.routeIndex = Math.min(startIndex, Math.max(0, mob.route.length - 1));
+    this.mobs.add(mob);
+    this.porterMobs.set(mob.id, mob);
+    return mob.id;
+  }
+
+  private removePorter(id: number): void {
+    const mob = this.porterMobs.get(id);
+    this.porterMobs.delete(id);
+    if (!mob) return;
+    const index = this.mobs.mobs.indexOf(mob);
+    if (index >= 0) this.mobs.mobs.splice(index, 1);
+  }
+
+  /** What the villager in front of the player has to say about the tutorial, if anything. */
+  private questInteractionFor(mob: Mob): (QuestInteraction & { ready: boolean; run(): void }) | null {
+    const village = this.villages.at(mob.homeX, mob.homeZ);
+    if (!village) return null;
+    const interaction = this.questline.interactionFor(village, this.villages);
+    if (!interaction) return null;
+    const ready =
+      interaction.good === null ||
+      this.player.inventory.count(interaction.good) >= interaction.count;
+    return {
+      ...interaction,
+      ready,
+      run: () => {
+        if (!ready) return;
+        if (interaction.kind === 'deliver' && interaction.good) {
+          this.player.inventory.remove(interaction.good, interaction.count);
+          this.villages.addPoints(village.id, interaction.count);
+          this.player.inventory.add({ id: 'emerald', count: 2 });
+        }
+        this.toast(this.questline.complete(interaction.kind, this.villages));
+        this.linkQuestVillages();
+      },
+    };
+  }
+
+
+  /** Lays a dirt path from one village's street to the other's, following the ground.
+   *  Debug only: it writes recorded edits exactly as a player's shovel would, so the road
+   *  index picks it up through the ordinary block-change hook. */
+  private debugBuildRoad(fromId?: string, toId?: string): number {
+    const from = this.villages.get(fromId ?? this.questline.originId ?? '');
+    const to = this.villages.get(toId ?? this.questline.targetId ?? '');
+    if (!from || !to) return 0;
+    const steps = Math.ceil(Math.hypot(to.x - from.x, to.z - from.z));
+    let laid = 0;
+    let y = from.baseY;
+    for (let i = 0; i <= steps; i++) {
+      const x = Math.round(from.x + ((to.x - from.x) * i) / steps);
+      const z = Math.round(from.z + ((to.z - from.z) * i) / steps);
+      // A road a player would actually build: it follows the ground but never steps more
+      // than a walker can climb, and it stays above the water rather than diving into it,
+      // which is what a bridge is.
+      const ground = this.groundHeightAt(x, z);
+      const wanted = Math.max(ground, SEA_LEVEL + 1);
+      y = Math.max(y - ROAD_GRADE, Math.min(y + ROAD_GRADE, wanted));
+      this.layDebugRoad(x, y, z);
+      laid++;
+    }
+    return laid;
+  }
+
+  private groundHeightAt(x: number, z: number): number {
+    if (this.world.hasChunk(toChunkCoord(x), toChunkCoord(z))) {
+      const top = this.world.heightAt(x, z);
+      if (top >= 0) return top;
+    }
+    return this.generator.height(x, z);
+  }
+
+  /** Writes one road column plus the headroom above it. Chunks nobody has visited get the
+   *  edit recorded directly — which is what a shovel would have left behind anyway, and
+   *  what the road index reads. */
+  private layDebugRoad(x: number, y: number, z: number): void {
+    if (this.world.hasChunk(toChunkCoord(x), toChunkCoord(z))) {
+      this.world.setBlock(x, y, z, Block.DIRT_PATH);
+      for (let h = 1; h <= 2; h++) this.world.setBlock(x, y + h, z, Block.AIR);
+      return;
+    }
+    const key = chunkKey(toChunkCoord(x), toChunkCoord(z));
+    let edits = this.world.edits.get(key);
+    if (!edits) {
+      edits = new Map();
+      this.world.edits.set(key, edits);
+    }
+    edits.set(blockIndex(toLocalCoord(x), y, toLocalCoord(z)), Block.DIRT_PATH);
+    for (let h = 1; h <= 2; h++) {
+      edits.set(blockIndex(toLocalCoord(x), y + h, toLocalCoord(z)), Block.AIR);
+    }
+    this.roads.onBlockChanged(x, y, z, Block.GRASS, Block.DIRT_PATH);
+  }
+
   // --- screens and pausing ---------------------------------------------------
 
   private openScreen(open: () => void): void {
@@ -1036,6 +1362,10 @@ export class Game {
           trades: tradesToJSON(mob.trades),
         })),
       populatedChunks: [...this.populatedChunks],
+      villages: this.villages.toJSON(),
+      routes: this.transport.toJSON(),
+      quest: this.questline.toJSON(),
+      pendingVillagers: [...this.pendingVillagers],
     };
     const ok = writeSave(data);
     if (announce) this.hud.toast(ok ? 'セーブしました' : 'セーブに失敗しました');
@@ -1077,6 +1407,77 @@ export class Game {
         const village = this.generator.findNearestVillage(this.player.x, this.player.z, 4);
         if (village) this.debug.teleport(village.x, village.z);
         return village;
+      },
+      // --- villages, roads and transport ---------------------------------
+      villages: () =>
+        [...this.villages.byId.values()].map((v) => ({
+          id: v.id, name: v.name, x: v.x, z: v.z, produces: v.produces,
+          stage: v.stage, points: v.points, stock: v.stock, discovered: v.discovered,
+        })),
+      /** The village the player is standing in, or the nearest known one. */
+      village: (): VillageRecord | null => {
+        const here = this.villages.at(this.player.x, this.player.z);
+        if (here) return here;
+        let best: VillageRecord | null = null;
+        let bestDistance = Infinity;
+        for (const village of this.villages.byId.values()) {
+          const distance = Math.hypot(village.x - this.player.x, village.z - this.player.z);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            best = village;
+          }
+        }
+        return best;
+      },
+      /** Registers and reveals everything nearby, skipping the walk. */
+      discoverNearby: (cellRadius = 2): number => {
+        let found = 0;
+        for (const village of this.villages.ensureNear(this.player.x, this.player.z, cellRadius)) {
+          if (this.villages.discover(village.id)) found++;
+        }
+        return found;
+      },
+      quest: () => ({
+        step: this.questline.step,
+        origin: this.questline.originId,
+        target: this.questline.targetId,
+        cargo: this.questline.cargo,
+      }),
+      /** Skips a tutorial step from the console when there is no villager to hand. */
+      questStep: (kind: 'accept' | 'deliver' | 'learn'): string | null => {
+        const message = this.questline.complete(kind, this.villages);
+        this.linkQuestVillages();
+        return message;
+      },
+      gotoQuestTarget: (): { x: number; z: number } | null => {
+        const objective = this.questline.objective(this.villages, this.questRoute());
+        if (!objective?.marker) return null;
+        this.debug.teleport(objective.marker.x, objective.marker.z);
+        return { x: objective.marker.x, z: objective.marker.z };
+      },
+      routes: () =>
+        this.transport.routes.map((route) => ({
+          from: route.from, to: route.to, good: route.good,
+          connected: route.connected, length: route.length, missing: route.missing,
+          porters: route.porters.length,
+        })),
+      porters: () => this.mobs.mobs.filter((mob) => mob.kind === 'porter').length,
+      /** State of the road index, for working out why a road is not joining up. */
+      roadIndex: () => ({ columns: this.roads.columns.size, revision: this.roads.revision }),
+      /** Lays a road between the quest's two villages. Building 300 blocks of it by hand
+       *  is the player's job, not the smoke test's. */
+      buildRoad: (fromId?: string, toId?: string): number => this.debugBuildRoad(fromId, toId),
+      /** Runs the transport clock forward, the way setWeatherSeconds does for weather.
+       *  Nothing is drawn while it runs, so it deliberately reports the player as far
+       *  away: a visible porter is driven by its mob, which cannot walk inside a
+       *  synchronous loop. */
+      advanceTransport: (seconds: number): void => {
+        const step = 0.5;
+        const away = 1e7;
+        for (let t = 0; t < seconds; t += step) {
+          this.villages.produce(step);
+          this.transport.update(step, away, away);
+        }
       },
       /** Opens a container screen without having to place and click the block. */
       openScreen: (kind: 'inventory' | 'crafting' | 'furnace' | 'chest'): void => {
@@ -1245,6 +1646,13 @@ export class Game {
       entity.cookProgress = furnace.cookProgress;
       this.world.setBlockEntity(furnace.pos[0], furnace.pos[1], furnace.pos[2], entity);
     }
+    // After the edits are in place: the road index is built from them, not from the
+    // world, which is what lets a road be surveyed while its chunks are still unloaded.
+    this.villages.loadJSON(data.villages);
+    this.roads.seedFromEdits();
+    this.transport.loadJSON(data.routes);
+    this.questline.loadJSON(data.quest);
+    for (const pending of data.pendingVillagers ?? []) this.pendingVillagers.push(pending);
     for (const key of data.populatedChunks) this.populatedChunks.add(key);
     for (const villager of data.villagers) {
       const mob = this.mobs.addVillager(villager.x, villager.y, villager.z, villager.profession);

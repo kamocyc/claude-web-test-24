@@ -33,6 +33,9 @@ export interface Route {
   from: VillageId;
   to: VillageId;
   good: GoodId;
+  /** False until the road has been walked once, so nothing reports a distance it has not
+   *  measured yet. */
+  surveyed: boolean;
   connected: boolean;
   /** Trimmed to the corners, so a porter is not handed a point per block. */
   waypoints: RoadPoint[];
@@ -99,18 +102,21 @@ export class TransportNetwork {
       from,
       to,
       good: this.registry.get(from)?.produces ?? '',
+      surveyed: false,
       connected: false,
       waypoints: [],
       cumulative: [],
       length: 0,
-      missing: Infinity,
+      missing: 0,
       gapFrom: null,
       gapTo: null,
       porters: [],
     };
     this.routes.push(route);
-    // Survey straight away so the panel has something true to show this frame.
+    // Survey on the very next update, so the panel never shows a stale or invented
+    // distance for a route the player just started caring about.
     this.surveyedRevision = -1;
+    this.surveyTimer = 0;
     return route;
   }
 
@@ -125,21 +131,29 @@ export class TransportNetwork {
     if (this.surveyTimer <= 0) {
       this.surveyTimer = RESURVEY_INTERVAL;
       if (this.surveyedRevision !== this.roads.revision) {
-        this.surveyedRevision = this.roads.revision;
-        for (const route of this.routes) this.resurvey(route);
+        let complete = true;
+        for (const route of this.routes) {
+          if (!this.resurvey(route)) complete = false;
+        }
+        // A route restored from a save is surveyed before the player has walked near
+        // enough for its villages to be re-derived from the seed. Marking the revision
+        // done there would leave the route stuck until somebody moved a road block, so
+        // the attempt only counts once every route could actually be walked.
+        if (complete) this.surveyedRevision = this.roads.revision;
       }
     }
     for (const route of this.routes) this.advance(route, dt, playerX, playerZ);
   }
 
-  /** Re-walks a route's road. Only called when the road actually changed. */
-  private resurvey(route: Route): void {
+  /** Re-walks a route's road. Returns false when its villages are not known yet. */
+  private resurvey(route: Route): boolean {
     const from = this.registry.get(route.from);
     const to = this.registry.get(route.to);
-    if (!from || !to) return;
+    if (!from || !to) return false;
     route.good = from.produces;
     const result: SurveyResult = this.roads.survey(from, to);
     const was = route.connected;
+    route.surveyed = true;
     if (result.connected) {
       route.connected = true;
       route.waypoints = toWaypoints(result.waypoints);
@@ -150,7 +164,7 @@ export class TransportNetwork {
       route.gapFrom = null;
       route.gapTo = null;
       if (!was) this.events.onConnected?.(route);
-      return;
+      return true;
     }
     route.connected = false;
     route.missing = result.missing;
@@ -168,6 +182,7 @@ export class TransportNetwork {
       route.cumulative = [];
       this.events.onDisconnected?.(route);
     }
+    return true;
   }
 
   private advance(route: Route, dt: number, playerX: number, playerZ: number): void {
@@ -232,19 +247,28 @@ export class TransportNetwork {
     return route.waypoints.length - 1;
   }
 
-  /** Progress of a world position along the route, by nearest waypoint. */
+  /** Progress of a world position along the route.
+   *
+   *  This projects onto the segments rather than snapping to the nearest waypoint: the
+   *  waypoints are only the corners, so a porter walking a straight road would otherwise
+   *  read as 0 until it passed the midpoint and then jump to 1. */
   private progressOf(route: Route, x: number, z: number): number {
-    let best = 0;
+    if (route.length === 0) return 0;
     let bestDistance = Infinity;
-    for (let i = 0; i < route.waypoints.length; i++) {
-      const w = route.waypoints[i];
-      const distance = Math.hypot(w.x - x, w.z - z);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        best = i;
-      }
+    let bestAlong = 0;
+    for (let i = 1; i < route.waypoints.length; i++) {
+      const a = route.waypoints[i - 1];
+      const b = route.waypoints[i];
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const span = dx * dx + dz * dz;
+      const f = span === 0 ? 0 : Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / span));
+      const distance = Math.hypot(a.x + dx * f - x, a.z + dz * f - z);
+      if (distance >= bestDistance) continue;
+      bestDistance = distance;
+      bestAlong = route.cumulative[i - 1] + (route.cumulative[i] - route.cumulative[i - 1]) * f;
     }
-    return route.length === 0 ? 0 : route.cumulative[best] / route.length;
+    return Math.max(0, Math.min(1, bestAlong / route.length));
   }
 
   /** Brings the visible porter into existence near the player, and retires it when the

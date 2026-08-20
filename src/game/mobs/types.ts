@@ -6,7 +6,8 @@ export type MobKind =
   | 'cow'
   | 'chicken'
   | 'sheep'
-  | 'villager';
+  | 'villager'
+  | 'porter';
 
 export interface MobDrop {
   id: string;
@@ -91,6 +92,12 @@ const DEFS: Record<MobKind, MobDef> = {
   villager: {
     kind: 'villager', label: '村人', hostile: false, maxHealth: 20,
     width: 0.6, height: 1.95, speed: 1.4, attackDamage: 0, attackRange: 0,
+    attackCooldown: 0, sightRange: 12, burnsInDaylight: false, ranged: false,
+    drops: [],
+  },
+  porter: {
+    kind: 'porter', label: '荷運び', hostile: false, maxHealth: 20,
+    width: 0.6, height: 1.95, speed: 1.9, attackDamage: 0, attackRange: 0,
     attackCooldown: 0, sightRange: 12, burnsInDaylight: false, ranged: false,
     drops: [],
   },

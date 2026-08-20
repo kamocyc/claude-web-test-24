@@ -103,8 +103,11 @@ export class Questline {
   complete(kind: QuestInteraction['kind'], registry: VillageRegistry): string | null {
     if (kind === 'accept' && this.step === 'accept_haul') {
       const origin = this.originId ? registry.get(this.originId) : undefined;
-      const target = this.targetId ? registry.get(this.targetId) : undefined;
-      if (!origin || !target) return null;
+      if (!origin) return null;
+      // Pick the neighbour here rather than relying on `interactionFor` having been
+      // called first: the step should not depend on the screen having been opened.
+      const target = this.pickTarget(origin, registry);
+      if (!target) return null;
       this.cargo = { good: origin.produces, count: HAUL_COUNT };
       this.step = 'deliver_by_hand';
       return `${target.name}へ${labelOf(origin)}を運ぼう`;
