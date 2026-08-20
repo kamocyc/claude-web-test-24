@@ -36,7 +36,7 @@ import { DayCycle } from './daycycle';
 import { DropManager } from './drops';
 import { EXHAUSTION } from './hunger';
 import { Inventory, type ItemStack } from './inventory';
-import { itemDef } from './items';
+import { itemDef, itemLabel } from './items';
 import { fillVillageChest } from './loot';
 import { blockDrops, heldTool, miningTime } from './mining';
 import { Mob } from './mobs/ai';
@@ -142,7 +142,12 @@ export class Game {
     this.mobs = new MobManager(this.world, options.seed);
     this.drops = new DropManager(this.world);
     this.hud = new Hud(this.atlas);
-    this.screens = new ScreenManager(this.player, this.atlas, (stack) => this.dropAtPlayer(stack));
+    this.screens = new ScreenManager(
+      this.player,
+      this.atlas,
+      (stack) => this.dropAtPlayer(stack),
+      (recipe, made) => this.hud.toast(`${itemLabel(recipe.result.id)} を ${made * recipe.result.count} 個作った`),
+    );
 
     document.body.append(this.hud.root, this.screens.layer);
 

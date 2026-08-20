@@ -1,4 +1,4 @@
-import { craftingResult, consumeGrid } from '../game/crafting';
+import type { Recipe } from '../game/crafting';
 import { Inventory, type ItemStack } from '../game/inventory';
 import { ARMOR_SLOTS, itemDef, itemLabel } from '../game/items';
 import type { Player } from '../game/player';
@@ -12,7 +12,8 @@ import {
 import { canAfford, performTrade, professionLabel, tradeAvailable, type Trade } from '../game/trading';
 import type { Mob } from '../game/mobs/ai';
 import type { Atlas } from '../render/textures';
-import { ArraySlots, Container, renderSlot } from './containers';
+import { Container, renderSlot } from './containers';
+import { RecipePanel } from './recipePanel';
 import { clear, el } from './dom';
 
 export type ScreenKind = 'inventory' | 'crafting' | 'furnace' | 'chest' | 'trade';
@@ -20,8 +21,6 @@ export type ScreenKind = 'inventory' | 'crafting' | 'furnace' | 'chest' | 'trade
 interface OpenScreen {
   kind: ScreenKind;
   container: Container;
-  /** Items that must go back to the player when the screen closes. */
-  spillGrid: (ItemStack | null)[] | null;
   refresh(): void;
 }
 
@@ -34,6 +33,7 @@ export class ScreenManager {
     private readonly player: Player,
     private readonly atlas: Atlas,
     private readonly onDrop: (stack: ItemStack) => void,
+    private readonly onCrafted: (recipe: Recipe, made: number) => void = () => {},
   ) {
     this.layer.style.display = 'none';
   }
@@ -54,9 +54,6 @@ export class ScreenManager {
     if (!this.open) return;
     const leftover = this.open.container.takeCursor();
     if (leftover) this.give(leftover);
-    if (this.open.spillGrid) {
-      for (const cell of this.open.spillGrid) if (cell) this.give(cell);
-    }
     this.open.container.dispose();
     clear(this.layer);
     this.layer.style.display = 'none';
@@ -84,56 +81,55 @@ export class ScreenManager {
   }
 
   openInventory(): void {
-    const grid: (ItemStack | null)[] = new Array(4).fill(null);
-    const slots = new ArraySlots(grid);
     const container = new Container({
       title: '持ち物',
       atlas: this.atlas,
       playerInventory: this.player.inventory,
-      onResultTaken: () => consumeGrid(grid),
       onChanged: () => container.refresh(),
     });
-    container.setResultProvider(() => craftingResult(grid, 2));
+    const panel = new RecipePanel(this.player.inventory, 'hand', this.atlas, this.onCrafted);
 
     const top = el('div', 'panel-row');
     const armor = el('div', 'sub-panel');
-    const craft = el('div', 'sub-panel');
-    top.append(armor, craft);
+    top.append(armor, panel.root);
     container.addSection(top);
-    const armorGrid = container.addGrid(this.player.inventory.armor, 0, 4, 1, {
-      label: '防具',
-      armorSlots: [...ARMOR_SLOTS],
-    });
-    armor.appendChild(armorGrid);
-    const craftGrid = container.addGrid(slots, 0, 4, 2, { label: 'クラフト 2x2' });
-    const resultGrid = container.addGrid(slots, 0, 1, 1, { label: '完成品', result: true, className: 'result' });
-    craft.append(craftGrid, resultGrid);
+    armor.appendChild(
+      container.addGrid(this.player.inventory.armor, 0, 4, 1, {
+        label: '防具',
+        armorSlots: [...ARMOR_SLOTS],
+      }),
+    );
     this.addPlayerInventory(container);
 
-    this.mount({ kind: 'inventory', container, spillGrid: grid, refresh: () => container.refresh() });
+    this.mount({
+      kind: 'inventory',
+      container,
+      refresh: () => {
+        container.refresh();
+        panel.refresh();
+      },
+    });
   }
 
   openCraftingTable(): void {
-    const grid: (ItemStack | null)[] = new Array(9).fill(null);
-    const slots = new ArraySlots(grid);
     const container = new Container({
       title: '作業台',
       atlas: this.atlas,
       playerInventory: this.player.inventory,
-      onResultTaken: () => consumeGrid(grid),
       onChanged: () => container.refresh(),
     });
-    container.setResultProvider(() => craftingResult(grid, 3));
-
-    const row = el('div', 'panel-row');
-    container.addSection(row);
-    row.append(
-      container.addGrid(slots, 0, 9, 3, { label: 'クラフト 3x3' }),
-      container.addGrid(slots, 0, 1, 1, { label: '完成品', result: true, className: 'result' }),
-    );
+    const panel = new RecipePanel(this.player.inventory, 'table', this.atlas, this.onCrafted);
+    container.addSection(panel.root);
     this.addPlayerInventory(container);
 
-    this.mount({ kind: 'crafting', container, spillGrid: grid, refresh: () => container.refresh() });
+    this.mount({
+      kind: 'crafting',
+      container,
+      refresh: () => {
+        container.refresh();
+        panel.refresh();
+      },
+    });
   }
 
   openFurnace(furnace: FurnaceEntity): void {
@@ -165,7 +161,6 @@ export class ScreenManager {
     this.mount({
       kind: 'furnace',
       container,
-      spillGrid: null,
       refresh: () => {
         container.refresh();
         const burn = furnace.burnTotal > 0 ? furnace.burnLeft / furnace.burnTotal : 0;
@@ -185,7 +180,7 @@ export class ScreenManager {
     });
     container.addGrid(chest, 0, chest.size, 9, { label: '収納' });
     this.addPlayerInventory(container);
-    this.mount({ kind: 'chest', container, spillGrid: null, refresh: () => container.refresh() });
+    this.mount({ kind: 'chest', container, refresh: () => container.refresh() });
   }
 
   openTrade(villager: Mob, onTraded: () => void): void {
@@ -220,7 +215,6 @@ export class ScreenManager {
     this.mount({
       kind: 'trade',
       container,
-      spillGrid: null,
       refresh: () => {
         container.refresh();
         for (const row of rows) {

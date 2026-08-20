@@ -1,59 +1,91 @@
-import type { ItemStack } from './inventory';
-import { TIERS } from './items';
+import { Inventory, type ItemStack } from './inventory';
+import { itemLabel, TIERS } from './items';
 
-export interface ShapedRecipe {
-  type: 'shaped';
-  /** Rows of single-character keys; a space means "must be empty". */
-  pattern: string[];
-  keys: Record<string, string>;
-  result: ItemStack;
+/** Where a recipe can be made. Everything basic enough to need in the field is
+ *  available bare handed; the rest is unlocked by standing at a crafting table. */
+export type Station = 'hand' | 'table';
+
+export type RecipeCategory = 'basics' | 'blocks' | 'tools' | 'armor' | 'water' | 'food';
+
+export interface Ingredient {
+  id: string;
+  count: number;
 }
 
-export interface ShapelessRecipe {
-  type: 'shapeless';
-  ingredients: string[];
+export interface Recipe {
+  /** Stable identifier, used as the DOM key of a row and in saves of nothing else. */
+  id: string;
   result: ItemStack;
+  ingredients: Ingredient[];
+  station: Station;
+  category: RecipeCategory;
 }
 
-export type Recipe = ShapedRecipe | ShapelessRecipe;
+export const CATEGORY_LABELS: Record<RecipeCategory, string> = {
+  basics: '基本',
+  blocks: '建材',
+  tools: '道具',
+  armor: '防具',
+  water: '水利',
+  food: '食料',
+};
 
 export const RECIPES: Recipe[] = [];
 
-function shaped(pattern: string[], keys: Record<string, string>, result: ItemStack): void {
-  RECIPES.push({ type: 'shaped', pattern, keys, result });
-}
-
-function shapeless(ingredients: string[], result: ItemStack): void {
-  RECIPES.push({ type: 'shapeless', ingredients, result });
+function recipe(
+  category: RecipeCategory,
+  station: Station,
+  result: ItemStack,
+  ingredients: Ingredient[],
+): void {
+  // Two recipes can share a result (there is only one per result today, but tools
+  // repeat per tier), so the id carries the ingredients as well.
+  const id = `${result.id}:${ingredients.map((i) => `${i.id}x${i.count}`).join('+')}`;
+  RECIPES.push({ id, result, ingredients, station, category });
 }
 
 // --- basics ------------------------------------------------------------------
-shapeless(['oak_log'], { id: 'oak_planks', count: 4 });
-shaped(['P', 'P'], { P: 'oak_planks' }, { id: 'stick', count: 4 });
-shaped(['PP', 'PP'], { P: 'oak_planks' }, { id: 'crafting_table', count: 1 });
-shaped(['CCC', 'C C', 'CCC'], { C: 'cobblestone' }, { id: 'furnace', count: 1 });
-shaped(['PPP', 'P P', 'PPP'], { P: 'oak_planks' }, { id: 'chest', count: 1 });
-shaped(['C', 'S'], { C: 'coal', S: 'stick' }, { id: 'torch', count: 4 });
-shaped(['SS', 'SS'], { S: 'stone' }, { id: 'stone_bricks', count: 4 });
-shaped(['SS', 'SS'], { S: 'sand' }, { id: 'sandstone', count: 1 });
-shaped(['WWW'], { W: 'wheat' }, { id: 'bread', count: 1 });
+recipe('basics', 'hand', { id: 'oak_planks', count: 4 }, [{ id: 'oak_log', count: 1 }]);
+recipe('basics', 'hand', { id: 'stick', count: 4 }, [{ id: 'oak_planks', count: 2 }]);
+recipe('basics', 'hand', { id: 'crafting_table', count: 1 }, [{ id: 'oak_planks', count: 4 }]);
+recipe('basics', 'hand', { id: 'torch', count: 4 }, [
+  { id: 'coal', count: 1 },
+  { id: 'stick', count: 1 },
+]);
+recipe('basics', 'table', { id: 'furnace', count: 1 }, [{ id: 'cobblestone', count: 8 }]);
+recipe('basics', 'table', { id: 'chest', count: 1 }, [{ id: 'oak_planks', count: 8 }]);
+
+// --- building blocks ----------------------------------------------------------
+recipe('blocks', 'table', { id: 'stone_bricks', count: 4 }, [{ id: 'stone', count: 4 }]);
+recipe('blocks', 'table', { id: 'sandstone', count: 1 }, [{ id: 'sand', count: 4 }]);
+
+// --- food ---------------------------------------------------------------------
+recipe('food', 'hand', { id: 'bread', count: 1 }, [{ id: 'wheat', count: 3 }]);
 
 // --- water works --------------------------------------------------------------
-shaped(['I I', ' I '], { I: 'iron_ingot' }, { id: 'bucket', count: 1 });
-shaped(['PPP', 'III', 'PPP'], { P: 'oak_planks', I: 'iron_ingot' }, { id: 'floodgate', count: 2 });
-shaped([' I ', 'ICI', ' I '], { I: 'iron_ingot', C: 'cobblestone' }, { id: 'pump', count: 1 });
-shaped(['CIC', 'C C', 'CCC'], { C: 'cobblestone', I: 'iron_ingot' }, { id: 'drain', count: 1 });
+recipe('water', 'table', { id: 'bucket', count: 1 }, [{ id: 'iron_ingot', count: 3 }]);
+recipe('water', 'table', { id: 'floodgate', count: 2 }, [
+  { id: 'oak_planks', count: 6 },
+  { id: 'iron_ingot', count: 3 },
+]);
+recipe('water', 'table', { id: 'pump', count: 1 }, [
+  { id: 'iron_ingot', count: 4 },
+  { id: 'cobblestone', count: 1 },
+]);
+recipe('water', 'table', { id: 'drain', count: 1 }, [
+  { id: 'cobblestone', count: 7 },
+  { id: 'iron_ingot', count: 1 },
+]);
 
 // --- tools, one set per material ---------------------------------------------
 for (const tier of TIERS) {
-  const keys = { M: tier.material, S: 'stick' };
-  shaped(['MMM', ' S ', ' S '], keys, { id: `${tier.name}_pickaxe`, count: 1 });
-  shaped(['MM', 'MS', ' S'], keys, { id: `${tier.name}_axe`, count: 1 });
-  shaped(['MM', 'SM', 'S '], keys, { id: `${tier.name}_axe`, count: 1 });
-  shaped(['M', 'S', 'S'], keys, { id: `${tier.name}_shovel`, count: 1 });
-  shaped(['MM', ' S', ' S'], keys, { id: `${tier.name}_hoe`, count: 1 });
-  shaped(['MM', 'S ', 'S '], keys, { id: `${tier.name}_hoe`, count: 1 });
-  shaped(['M', 'M', 'S'], keys, { id: `${tier.name}_sword`, count: 1 });
+  const head = (count: number): Ingredient => ({ id: tier.material, count });
+  const handle = (count: number): Ingredient => ({ id: 'stick', count });
+  recipe('tools', 'table', { id: `${tier.name}_pickaxe`, count: 1 }, [head(3), handle(2)]);
+  recipe('tools', 'table', { id: `${tier.name}_axe`, count: 1 }, [head(3), handle(2)]);
+  recipe('tools', 'table', { id: `${tier.name}_shovel`, count: 1 }, [head(1), handle(2)]);
+  recipe('tools', 'table', { id: `${tier.name}_hoe`, count: 1 }, [head(2), handle(2)]);
+  recipe('tools', 'table', { id: `${tier.name}_sword`, count: 1 }, [head(2), handle(1)]);
 }
 
 // --- armour -------------------------------------------------------------------
@@ -61,99 +93,57 @@ for (const set of [
   { name: 'leather', material: 'leather' },
   { name: 'iron', material: 'iron_ingot' },
 ]) {
-  const keys = { M: set.material };
-  shaped(['MMM', 'M M'], keys, { id: `${set.name}_helmet`, count: 1 });
-  shaped(['M M', 'MMM', 'MMM'], keys, { id: `${set.name}_chestplate`, count: 1 });
-  shaped(['MMM', 'M M', 'M M'], keys, { id: `${set.name}_leggings`, count: 1 });
-  shaped(['M M', 'M M'], keys, { id: `${set.name}_boots`, count: 1 });
+  const piece = (count: number): Ingredient[] => [{ id: set.material, count }];
+  recipe('armor', 'table', { id: `${set.name}_helmet`, count: 1 }, piece(5));
+  recipe('armor', 'table', { id: `${set.name}_chestplate`, count: 1 }, piece(8));
+  recipe('armor', 'table', { id: `${set.name}_leggings`, count: 1 }, piece(7));
+  recipe('armor', 'table', { id: `${set.name}_boots`, count: 1 }, piece(4));
 }
 
-interface Bounds {
-  x0: number;
-  y0: number;
-  width: number;
-  height: number;
+/** Recipes a station can make. A crafting table can make everything, so the list a
+ *  player sees only ever grows. */
+export function recipesFor(station: Station): Recipe[] {
+  return station === 'table' ? RECIPES : RECIPES.filter((r) => r.station === 'hand');
 }
 
-/** Smallest rectangle containing every filled cell, or null when the grid is empty. */
-function boundsOf(grid: (ItemStack | null)[], size: number): Bounds | null {
-  let x0 = size;
-  let y0 = size;
-  let x1 = -1;
-  let y1 = -1;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      if (!grid[y * size + x]) continue;
-      if (x < x0) x0 = x;
-      if (y < y0) y0 = y;
-      if (x > x1) x1 = x;
-      if (y > y1) y1 = y;
-    }
+export function findRecipe(id: string): Recipe | undefined {
+  return RECIPES.find((r) => r.id === id);
+}
+
+/** How many times a recipe could be made from what is in the inventory, ignoring
+ *  whether the results would fit. */
+export function craftableCount(inventory: Inventory, recipe: Recipe): number {
+  let times = Infinity;
+  for (const ingredient of recipe.ingredients) {
+    times = Math.min(times, Math.floor(inventory.count(ingredient.id) / ingredient.count));
   }
-  if (x1 < 0) return null;
-  return { x0, y0, width: x1 - x0 + 1, height: y1 - y0 + 1 };
+  return Number.isFinite(times) ? times : 0;
 }
 
-function matchesShaped(recipe: ShapedRecipe, grid: (ItemStack | null)[], size: number): boolean {
-  const bounds = boundsOf(grid, size);
-  if (!bounds) return false;
-  const height = recipe.pattern.length;
-  const width = Math.max(...recipe.pattern.map((row) => row.length));
-  if (bounds.width !== width || bounds.height !== height) return false;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const key = recipe.pattern[y][x] ?? ' ';
-      const cell = grid[(bounds.y0 + y) * size + (bounds.x0 + x)];
-      if (key === ' ') {
-        if (cell) return false;
-      } else {
-        const expected = recipe.keys[key];
-        if (!cell || cell.id !== expected) return false;
-      }
-    }
-  }
+export function canCraft(inventory: Inventory, recipe: Recipe): boolean {
+  return craftableCount(inventory, recipe) > 0 && inventory.roomFor(recipe.result.id) >= recipe.result.count;
+}
+
+/** Takes the ingredients out of the inventory and puts the result in. Returns false
+ *  and changes nothing when the materials or the space are not there. */
+export function craft(inventory: Inventory, recipe: Recipe): boolean {
+  if (!canCraft(inventory, recipe)) return false;
+  for (const ingredient of recipe.ingredients) inventory.remove(ingredient.id, ingredient.count);
+  inventory.add({ ...recipe.result });
   return true;
 }
 
-function matchesShapeless(recipe: ShapelessRecipe, grid: (ItemStack | null)[]): boolean {
-  const present = grid.filter((c): c is ItemStack => c !== null).map((c) => c.id);
-  if (present.length !== recipe.ingredients.length) return false;
-  const pool = [...recipe.ingredients];
-  for (const id of present) {
-    const index = pool.indexOf(id);
-    if (index < 0) return false;
-    pool.splice(index, 1);
-  }
-  return pool.length === 0;
+/** Crafts as many as the materials and the free space allow. Returns how many were
+ *  made, which is what a shift-click reports back to the player. */
+export function craftAll(inventory: Inventory, recipe: Recipe, limit = 512): number {
+  let made = 0;
+  while (made < limit && craft(inventory, recipe)) made++;
+  return made;
 }
 
-/** Finds what a crafting grid produces. `size` is 2 for the inventory grid and 3 for
- *  a crafting table; recipes larger than the grid simply never match. */
-export function findRecipe(grid: (ItemStack | null)[], size: number): Recipe | null {
-  for (const recipe of RECIPES) {
-    if (recipe.type === 'shaped') {
-      const height = recipe.pattern.length;
-      const width = Math.max(...recipe.pattern.map((row) => row.length));
-      if (width > size || height > size) continue;
-      if (matchesShaped(recipe, grid, size)) return recipe;
-    } else if (matchesShapeless(recipe, grid)) {
-      return recipe;
-    }
-  }
-  return null;
-}
-
-export function craftingResult(grid: (ItemStack | null)[], size: number): ItemStack | null {
-  const recipe = findRecipe(grid, size);
-  return recipe ? { ...recipe.result } : null;
-}
-
-/** Removes one of each ingredient after a craft. */
-export function consumeGrid(grid: (ItemStack | null)[]): void {
-  for (let i = 0; i < grid.length; i++) {
-    const cell = grid[i];
-    if (!cell) continue;
-    cell.count -= 1;
-    if (cell.count <= 0) grid[i] = null;
-  }
+/** Ingredients written out for the tooltip and the recipe row. */
+export function ingredientSummary(inventory: Inventory, recipe: Recipe): string {
+  return recipe.ingredients
+    .map((i) => `${itemLabel(i.id)} ${inventory.count(i.id)}/${i.count}`)
+    .join('、');
 }

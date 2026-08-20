@@ -16,29 +16,10 @@ export interface SlotSource {
   set(index: number, value: ItemStack | null): void;
 }
 
-/** Adapter so a plain array (a crafting grid) can be used like an Inventory. */
-export class ArraySlots implements SlotSource {
-  constructor(readonly cells: (ItemStack | null)[]) {}
-
-  get size(): number {
-    return this.cells.length;
-  }
-
-  get(index: number): ItemStack | null {
-    return this.cells[index] ?? null;
-  }
-
-  set(index: number, value: ItemStack | null): void {
-    this.cells[index] = value && value.count > 0 ? value : null;
-  }
-}
-
 interface SlotBinding {
   element: HTMLElement;
   source: SlotSource;
   index: number;
-  /** Result slots can only be taken from, and taking consumes the recipe. */
-  result: boolean;
   /** Slots that only accept a matching armour piece. */
   armorSlot?: string;
 }
@@ -50,7 +31,6 @@ export interface ContainerOptions {
   playerInventory: Inventory;
   /** The other container on screen (chest, furnace); shift-click moves between the two. */
   storage?: Inventory;
-  onResultTaken?: () => void;
   onChanged?: () => void;
 }
 
@@ -63,7 +43,6 @@ export class Container {
   private readonly cursorEl = el('div', 'cursor-stack');
   private readonly bindings: SlotBinding[] = [];
   private readonly options: ContainerOptions;
-  private resultProvider: (() => ItemStack | null) | null = null;
 
   constructor(options: ContainerOptions) {
     this.options = options;
@@ -83,7 +62,7 @@ export class Container {
     from: number,
     count: number,
     columns: number,
-    options: { label?: string; className?: string; result?: boolean; armorSlots?: string[] } = {},
+    options: { label?: string; className?: string; armorSlots?: string[] } = {},
   ): HTMLElement {
     const wrapper = el('div', `slot-grid ${options.className ?? ''}`);
     if (options.label) wrapper.appendChild(el('div', 'slot-label', options.label));
@@ -97,7 +76,6 @@ export class Container {
         element: slot,
         source,
         index,
-        result: options.result ?? false,
         armorSlot: options.armorSlots?.[i],
       };
       this.bindings.push(binding);
@@ -115,38 +93,9 @@ export class Container {
     this.body.appendChild(node);
   }
 
-  /** Registers the recipe output slot; the provider is polled on every refresh. */
-  setResultProvider(provider: () => ItemStack | null): void {
-    this.resultProvider = provider;
-  }
-
   private handleClick(binding: SlotBinding, event: MouseEvent): void {
     const right = event.button === 2;
     const shift = event.shiftKey;
-
-    if (binding.result) {
-      const result = this.resultProvider?.() ?? null;
-      if (!result) return;
-      if (shift) {
-        // Craft straight into the inventory, repeatedly while the recipe holds.
-        let guard = 0;
-        while (guard++ < 64) {
-          const next = this.resultProvider?.();
-          if (!next) break;
-          if (this.options.playerInventory.add({ ...next }) !== 0) break;
-          this.options.onResultTaken?.();
-        }
-      } else if (!this.cursor) {
-        this.cursor = { ...result };
-        this.options.onResultTaken?.();
-      } else if (this.cursor.id === result.id) {
-        this.cursor.count += result.count;
-        this.options.onResultTaken?.();
-      }
-      this.refresh();
-      this.options.onChanged?.();
-      return;
-    }
 
     if (shift) {
       const current = binding.source.get(binding.index);
@@ -185,7 +134,7 @@ export class Container {
 
   refresh(): void {
     for (const binding of this.bindings) {
-      const stack = binding.result ? this.resultProvider?.() ?? null : binding.source.get(binding.index);
+      const stack = binding.source.get(binding.index);
       renderSlot(binding.element, stack, this.options.atlas);
     }
     if (this.cursor) {

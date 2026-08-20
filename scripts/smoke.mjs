@@ -64,15 +64,46 @@ const mined = await evaluate(() => window.voxelcraft.player.inventory.slots.filt
 console.log('after mining:', JSON.stringify(mined));
 await shot('03-mining');
 
-// --- crafting: logs -> planks -> sticks -> pickaxe ---------------------------
+// --- crafting: click recipes out of the list, no grid to lay out -------------
 await evaluate(() => {
   window.voxelcraft.give('oak_log', 8);
   window.voxelcraft.give('cobblestone', 8);
 });
 await page.keyboard.press('KeyE');
-await page.waitForTimeout(400);
+await page.waitForTimeout(500);
 await shot('04-inventory');
+
+const plankRow = page.locator('.recipe-row', { hasText: '木材' }).first();
+await plankRow.click({ modifiers: ['Shift'] });
+await page.waitForTimeout(300);
+const stickRow = page.locator('.recipe-row', { hasText: '棒' }).first();
+await stickRow.click();
+await page.waitForTimeout(300);
+const tableRow = page.locator('.recipe-row', { hasText: '作業台' }).first();
+await tableRow.click();
+await page.waitForTimeout(300);
+const handCrafted = await evaluate(() => {
+  const inv = window.voxelcraft.player.inventory;
+  return { planks: inv.count('oak_planks'), sticks: inv.count('stick'), tables: inv.count('crafting_table') };
+});
+console.log('hand crafted from the recipe list:', JSON.stringify(handCrafted));
+// A crafting table is needed before any tool shows up in the list.
+const toolBeforeTable = await page.locator('.recipe-row', { hasText: '石のツルハシ' }).count();
 await page.keyboard.press('Escape');
+
+await evaluate(() => window.voxelcraft.openScreen('crafting'));
+await page.waitForTimeout(500);
+await page.fill('.recipe-search', 'ツルハシ');
+await page.waitForTimeout(300);
+await shot('04b-recipes');
+await page.locator('.recipe-row', { hasText: '石のツルハシ' }).first().click();
+await page.waitForTimeout(300);
+const tableCrafted = await evaluate(() => {
+  const inv = window.voxelcraft.player.inventory;
+  return { pickaxe: inv.count('stone_pickaxe'), cobble: inv.count('cobblestone'), sticks: inv.count('stick') };
+});
+console.log('tool recipes hidden without a table:', toolBeforeTable, '/ crafted at the table:', JSON.stringify(tableCrafted));
+await closeScreen();
 
 // --- night and hostile mobs --------------------------------------------------
 await evaluate(() => {
@@ -404,29 +435,15 @@ await evaluate(() => {
 });
 await page.waitForTimeout(500);
 
-// Lay out a wooden pickaxe by clicking slots, exactly as a player would.
-const slots = page.locator('.panel .slot');
-const GRID = 0;
-const RESULT = 9;
-// DOM order inside the panel: 3x3 grid, result, 27 backpack slots, 9 hotbar slots.
-const domSlot = (inventoryIndex) => (inventoryIndex < 9 ? 37 + inventoryIndex : 10 + inventoryIndex - 9);
-const planksSlot = domSlot(await evaluate(() => window.voxelcraft.player.inventory.find('oak_planks')));
-const sticksSlot = domSlot(await evaluate(() => window.voxelcraft.player.inventory.find('stick')));
-
-await slots.nth(planksSlot).click();
-for (const cell of [0, 1, 2]) await slots.nth(GRID + cell).click({ button: 'right' });
-await slots.nth(planksSlot).click();
-await slots.nth(sticksSlot).click();
-for (const cell of [4, 7]) await slots.nth(GRID + cell).click({ button: 'right' });
-await slots.nth(sticksSlot).click();
+// One click on the recipe row is the whole interaction now.
+await page.fill('.recipe-search', 'ツルハシ');
 await page.waitForTimeout(300);
 await shot('09-crafting');
-
-await slots.nth(RESULT).click();
-await slots.nth(10).click();
+await page.locator('.recipe-row', { hasText: '木のツルハシ' }).first().click();
 await page.waitForTimeout(300);
 const crafted = await evaluate(() => window.voxelcraft.player.inventory.count('wooden_pickaxe'));
-console.log('crafted wooden pickaxes:', crafted);
+const stillLocked = await page.locator('.recipe-row.locked', { hasText: 'ダイヤのツルハシ' }).count();
+console.log('crafted wooden pickaxes:', crafted, '/ diamond pickaxe row locked:', stillLocked);
 await closeScreen();
 
 // --- water ------------------------------------------------------------------

@@ -119,6 +119,19 @@ export class Inventory {
     if (slot.count <= 0) this.slots[index] = null;
   }
 
+  /** How many more of an item would fit, counting partial stacks and empty slots.
+   *  Crafting checks this before consuming anything so a full pack never eats the
+   *  materials and drops the result on the floor. */
+  roomFor(id: string): number {
+    const max = maxStackOf(id);
+    let room = 0;
+    for (const slot of this.slots) {
+      if (!slot) room += max;
+      else if (slot.id === id) room += Math.max(0, max - slot.count);
+    }
+    return room;
+  }
+
   /** Index of the first slot holding the item, or -1. */
   find(id: string): number {
     return this.slots.findIndex((s) => s?.id === id);
