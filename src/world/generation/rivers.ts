@@ -26,34 +26,11 @@ export const CHANNEL_CORE = 0.25;
 const RIVER_DEPTH = 3;
 /** Furthest the centre line search may step, in blocks. */
 const CENTER_REACH = 14;
-/** How far heavy rain lifts the water. The bank is carved down to `ceil(surface)`, so
- *  its top face is a full block above the normal water line: anything under 1 fills the
- *  channel to the brim without spilling over it. */
-export const RIVER_FLOOD = 0.8;
-/** How far a drought drops it. The channel is three to five blocks deep, so the flow
- *  narrows to a thread between drying banks rather than disappearing altogether. */
-export const RIVER_DROUGHT = 1.8;
-
-/** Where the water sits relative to its normal level, for a wetness of -1 to +1.
- *  Droughts bite deeper than rain lifts, which is what makes them the interesting half
- *  of the cycle. */
-export function levelOffset(wetness: number): number {
-  return wetness >= 0 ? wetness * RIVER_FLOOD : wetness * RIVER_DROUGHT;
-}
-
-/** Where a river's water sits this season. Never below the sea, which does not have
- *  seasons: that also tapers the drop away to nothing as the river nears its mouth,
- *  instead of leaving a step where the two meet. */
-export function seasonalSurface(base: number, wetness: number): number {
-  return Math.max(SEA_LEVEL + 1, base + levelOffset(wetness));
-}
-
-/** Recovers how far inland a column is from the height of its river. The two are tied
- *  together by `surfaceLevel`, so a chunk only has to remember the one number. */
-export function inlandOfSurface(surface: number): number {
-  return clamp((surface - SEA_LEVEL - 1) / RIVER_CLIMB, 0, 1);
-}
-
+/** How far inland a column has to be to count as headwater. */
+const SPRING_INLAND = 0.55;
+/** Chance an eligible headwater column carries a spring. Tuned to give a few dozen
+ *  across the island, so no river system is left without one. */
+const SPRING_CHANCE = 0.03;
 export interface RiverSample {
   /** 0 outside the river, 1 in the middle of the channel. */
   strength: number;
@@ -75,6 +52,10 @@ export interface RiverSample {
 export function riverCovers(sample: RiverSample, height: number, offset = 0): boolean {
   return sample.strength >= CHANNEL_CORE && sample.surface + offset > height + 1;
 }
+
+/** How far below its normal level a channel still holds water. The generator only lays
+ *  the river down once; from then on the simulation decides where the water is. */
+export const RIVER_DEPTH_BELOW_SURFACE = 5;
 
 export class RiverField {
   private readonly path: Noise;
@@ -143,12 +124,14 @@ export class RiverField {
     return SEA_LEVEL + 1 + inland * RIVER_CLIMB;
   }
 
-  /** True where a spring should bubble up: the far upstream end of a channel. */
-  isSpringSite(seed: number, x: number, z: number, sample: RiverSample, continentalness: number): boolean {
-    if (sample.strength < 0.75) return false;
-    // Only near the head of the river, where it is highest above the sea.
-    if (continentalness < 0.32) return false;
-    return hashFloat(seed ^ 0x5210, x, z) < 0.008;
+  /** True where a spring should bubble up. Every river now lives or dies by its
+   *  springs, so they are far commoner than they were when the generator simply filled
+   *  the channel in: a valley without one dries out for good. */
+  isSpringSite(seed: number, x: number, z: number, sample: RiverSample): boolean {
+    if (sample.strength < 0.8) return false;
+    // Only in the headwaters, where the channel is highest above the sea.
+    if (sample.inland < SPRING_INLAND) return false;
+    return hashFloat(seed ^ 0x5210, x, z) < SPRING_CHANCE;
   }
 }
 

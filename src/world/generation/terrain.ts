@@ -10,12 +10,9 @@ import {
   RIVER_CLIMB,
   RiverField,
   type RiverSample,
-  inlandOfSurface,
   inlandness,
   riverCovers,
-  seasonalSurface,
 } from './rivers';
-import { localWetness } from '../weather';
 import {
   type ChestMarker,
   type VillagePlan,
@@ -34,12 +31,9 @@ export interface ChunkGenResult {
   blocks: Uint16Array;
   /** Fill level per voxel, matching the WATER blocks in `blocks`. */
   water: Uint8Array;
-  /** Per column, the height of the river's water in a normal season, or 0 where there
-   *  is no river. The weather moves the water up and down from here without the
-   *  terrain having to be worked out all over again. */
-  riverSurface: Float32Array;
-  /** World clock the water in `water` was filled for. */
-  weatherSeconds: number;
+  /** Per column, 1 where the ground is below sea level. The ocean is bigger than the
+   *  map, so whatever a river delivers into it drains away instead of raising it. */
+  seaColumn: Uint8Array;
   /** Positions of generated spring blocks. */
   springs: { x: number; y: number; z: number }[];
   villagers: VillagerMarker[];
@@ -186,28 +180,6 @@ export class TerrainGenerator {
   /** Continentalness decides land from sea, and how the coastline winds. */
   private continentalness(x: number, z: number): number {
     return this.continent.fbm2(x * 0.0011, z * 0.0011, 4);
-  }
-
-  /** How far the world clock has run, in seconds. The weather upstream is a function of
-   *  this, and so is the height of every river. Tests leave it at zero, where the cycle
-   *  has not started and every river sits at its normal level. */
-  weatherSeconds = 0;
-
-  /** How far this column's water sits from its normal level right now. The weather
-   *  happens in the headwaters and takes minutes to run down, so two points on the same
-   *  river can be in different seasons. */
-  riverOffset(sample: RiverSample): number {
-    if (sample.strength <= 0) return 0;
-    return this.riverSurfaceNow(sample) - sample.surface;
-  }
-
-  /** Where the water's top face actually is at a column, weather included. */
-  riverSurfaceNow(sample: RiverSample): number {
-    if (sample.strength <= 0) return sample.surface;
-    return seasonalSurface(
-      sample.surface,
-      localWetness(this.seed, this.weatherSeconds, sample.inland),
-    );
   }
 
   /** River channel at a column, or a dry sample outside one. Already clamped so the
@@ -374,7 +346,7 @@ export class TerrainGenerator {
   generateChunk(cx: number, cz: number): ChunkGenResult {
     const blocks = new Uint16Array(CHUNK_VOLUME);
     const water = new Uint8Array(CHUNK_VOLUME);
-    const riverSurface = new Float32Array(CHUNK_SIZE * CHUNK_SIZE);
+    const seaColumn = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
     const springs: { x: number; y: number; z: number }[] = [];
     const originX = cx * CHUNK_SIZE;
     const originZ = cz * CHUNK_SIZE;
@@ -423,6 +395,7 @@ export class TerrainGenerator {
           setLocal(lx, h - 1, lz, Block.SAND);
         }
         for (let y = h + 1; y <= SEA_LEVEL; y++) setLocal(lx, y, lz, Block.WATER);
+        if (h < SEA_LEVEL) seaColumn[lz * CHUNK_SIZE + lx] = 1;
         if (h < SEA_LEVEL && isSnowy(biome)) setLocal(lx, SEA_LEVEL, lz, Block.ICE);
 
         // Rivers run above sea level, so they are filled from their own surface.
@@ -430,23 +403,14 @@ export class TerrainGenerator {
         const river = this.riverSample(x, z, cont, this.baseHeight(x, z, cont));
         // Only the channel itself holds water; its banks are carved to stay above the
         // water line, so the two thresholds have to be the same one.
-        if (river.strength >= CHANNEL_CORE) {
-          // Stored at single precision and read straight back, so the code that later
-          // follows the weather works from exactly the same number and can tell its own
-          // water apart from anything the player has changed.
-          riverSurface[lz * CHUNK_SIZE + lx] = river.surface;
-          const base = riverSurface[lz * CHUNK_SIZE + lx];
-          const surface = seasonalSurface(
-            base,
-            localWetness(this.seed, this.weatherSeconds, inlandOfSurface(base)),
-          );
-          if (surface > h + 1) {
-            fillRiverColumn(surface, h, (y, level) => setLocal(lx, y, lz, Block.WATER, level));
-          }
+        // The river is laid down once, as the level water would have found after a
+        // thousand years of running. From then on the simulation owns it.
+        if (riverCovers(river, h)) {
+          fillRiverColumn(river.surface, h, (y, level) => setLocal(lx, y, lz, Block.WATER, level));
         }
         // A spring is placed for the channel itself, not for whatever the weather is
         // doing today, so a drought never moves one.
-        if (riverCovers(river, h) && this.rivers.isSpringSite(this.seed, x, z, river, cont)) {
+        if (riverCovers(river, h) && this.rivers.isSpringSite(this.seed, x, z, river)) {
           setLocal(lx, h, lz, Block.SPRING);
           springs.push({ x, y: h, z });
         }
@@ -515,7 +479,7 @@ export class TerrainGenerator {
       }
     }
 
-    return { blocks, water, riverSurface, weatherSeconds: this.weatherSeconds, springs, villagers, chests };
+    return { blocks, water, seaColumn, springs, villagers, chests };
   }
 
   /** Villages whose block list can reach into this chunk (plateau radius plus slack). */

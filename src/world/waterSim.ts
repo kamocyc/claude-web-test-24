@@ -1,18 +1,23 @@
 import { Block, blocksWater, isWaterSink } from './blocks';
-import { CHUNK_HEIGHT, CHUNK_SIZE, type Chunk } from './chunk';
+import { CHUNK_HEIGHT, CHUNK_SIZE, SEA_LEVEL, type Chunk } from './chunk';
 import { WATER_EPSILON, WATER_FULL, WATER_MAX, WATER_MIN } from './water';
 import type { World } from './world';
 
 /** Seconds between simulation steps. */
 export const WATER_TICK_SECONDS = 0.1;
-/** Cells processed per step; anything over this is carried to the next step. */
-const MAX_CELLS_PER_TICK = 20000;
+/** Cells processed per step; anything over this is carried to the next step. A live
+ *  river keeps thousands of cells moving for as long as it runs, so this is the ceiling
+ *  on what the water may cost a frame: past it the water simply flows more slowly
+ *  instead of the frame rate falling. */
+const MAX_CELLS_PER_TICK = 8000;
 /** Steps allowed in a single frame, so a slow frame cannot spiral. */
-const MAX_TICKS_PER_FRAME = 2;
+const MAX_TICKS_PER_FRAME = 1;
 /** Most a single cell can give away per step. */
 const MAX_FLOW = WATER_FULL;
-/** Water added by a spring each step. */
-export const SPRING_RATE = 24;
+/** Water added by a spring each step. Every river now lives on what its springs give
+ *  it, so this is what holds them at their level: too little and they run shallow, too
+ *  much and they climb their banks. */
+export const SPRING_RATE = 32;
 /** Water a pump lifts each step. */
 export const PUMP_RATE = 70;
 
@@ -126,25 +131,24 @@ export class WaterSimulator {
       }
     }
 
-    // Wake the water along the seams so it can spill into the new chunk. Chunks that
-    // nobody has touched are skipped: generated rivers already hold the water the
-    // generator meant them to, and waking them would let the simulator level a sloping
-    // channel into one flat pond that creeps up the banks and never settles.
-    if (this.wasTouched(chunk) || this.touchesEditedChunk(chunk)) this.wakeSeams(chunk);
+    // Wake the water along the seams so it can flow into the new chunk.
+    this.wakeSeams(chunk);
   }
 
-  /** True when the player has changed a chunk, which is the only reason its water can
-   *  disagree with what the generator produced. */
-  private wasTouched(chunk: Chunk): boolean {
-    return this.world.edits.has(chunk.key);
-  }
-
-  private touchesEditedChunk(chunk: Chunk): boolean {
-    for (const [dx, dz] of NEIGHBORS) {
-      const neighbor = this.world.getChunk(chunk.cx + dx, chunk.cz + dz);
-      if (neighbor && this.world.edits.has(neighbor.key)) return true;
+  /** Wakes every drop of river water in a chunk, which is how the generated rivers are
+   *  handed over to the simulation at the start of a world. The sea is left alone: it is
+   *  flat and already at rest, and waking a quarter of a million cells to prove it would
+   *  cost far more than it is worth. */
+  wakeRivers(chunk: Chunk): void {
+    for (let y = SEA_LEVEL + 1; y < CHUNK_HEIGHT; y++) {
+      for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+        for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+          if (chunk.getWater(lx, y, lz) > 0) {
+            this.activate(chunk.originX + lx, y, chunk.originZ + lz);
+          }
+        }
+      }
     }
-    return false;
   }
 
   /** Wakes water along a chunk seam, but only where the two sides disagree. Waking
@@ -283,6 +287,18 @@ export class WaterSimulator {
     const z = unpackZ(key);
     let remaining = this.world.getWater(x, y, z);
     if (remaining <= 0) return;
+    // Whatever a river delivers to the ocean is gone. The real ocean is far bigger than
+    // this island, so it neither rises nor gives anything back.
+    if (y >= SEA_LEVEL && this.world.isSea(x, z)) {
+      const keep = y > SEA_LEVEL ? 0 : WATER_FULL;
+      if (remaining > keep) {
+        this.drained += remaining - keep;
+        remaining = keep;
+        this.world.setWater(x, y, z, remaining);
+        this.activateAround(x, y, z);
+        if (remaining <= 0) return;
+      }
+    }
     // A block was placed into this cell: the water is gone with it.
     if (blocksWater(this.world.getBlock(x, y, z))) {
       this.world.setWater(x, y, z, 0);

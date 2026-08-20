@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Block } from '../world/blocks';
-import { CHUNK_SIZE, Chunk } from '../world/chunk';
+import { CHUNK_SIZE, Chunk, SEA_LEVEL } from '../world/chunk';
 import { WATER_FULL, WATER_MAX } from '../world/water';
 import { WaterSimulator } from '../world/waterSim';
 import { World } from '../world/world';
@@ -241,17 +241,83 @@ describe('loading a chunk', () => {
     return { world, sim, loaded: right };
   }
 
-  it('leaves untouched generated water exactly as it was made', () => {
-    const { sim, loaded } = pair();
-    sim.registerChunk(loaded, []);
-    expect(sim.activeCount).toBe(0);
-  });
-
-  it('wakes the water when the player has changed one of the chunks', () => {
+  it('wakes the water along the seam so it can flow into the new ground', () => {
     const { world, sim, loaded } = pair();
-    // Any recorded edit means the water may no longer match the generator.
-    world.setBlock(-3, 12, 3, Block.COBBLESTONE);
     sim.registerChunk(loaded, []);
     expect(sim.activeCount).toBeGreaterThan(0);
+    for (let i = 0; i < 200; i++) sim.step();
+    // The pool has spread across the seam onto the ground next door.
+    expect(world.getWater(2, 11, 3)).toBeGreaterThan(0);
+  });
+
+  it('hands the generated rivers to the simulation without waking the sea', () => {
+    const world = new World(1);
+    const sim = new WaterSimulator(world);
+    const chunk = new Chunk(0, 0);
+    world.addChunk(chunk);
+    for (let z = 0; z < CHUNK_SIZE; z++) {
+      for (let x = 0; x < CHUNK_SIZE; x++) {
+        chunk.setWater(x, SEA_LEVEL, z, WATER_FULL);
+        chunk.setWater(x, SEA_LEVEL + 4, z, WATER_FULL);
+      }
+    }
+    chunk.syncWaterMarkers();
+    sim.wakeRivers(chunk);
+    // Only the river cells: the sea is flat, already at rest, and there are hundreds of
+    // thousands of it.
+    expect(sim.activeCount).toBe(CHUNK_SIZE * CHUNK_SIZE);
+  });
+});
+
+/** Every drop in the world, wherever it is. */
+function totalWater(world: World): number {
+  let total = 0;
+  for (const chunk of world.chunks.values()) {
+    for (const level of chunk.water) total += level;
+  }
+  return total;
+}
+
+describe('the sea', () => {
+  /** An ocean column with a river pouring onto it. */
+  function ocean(): { world: World; sim: WaterSimulator } {
+    const world = new World(1);
+    const sim = new WaterSimulator(world);
+    const chunk = new Chunk(0, 0);
+    world.addChunk(chunk);
+    for (let z = 0; z < CHUNK_SIZE; z++) {
+      for (let x = 0; x < CHUNK_SIZE; x++) {
+        chunk.set(x, 4, z, Block.STONE);
+        chunk.seaColumn[z * CHUNK_SIZE + x] = 1;
+        for (let y = 5; y <= SEA_LEVEL; y++) chunk.setWater(x, y, z, WATER_FULL);
+      }
+    }
+    chunk.syncWaterMarkers();
+    return { world, sim };
+  }
+
+  it('swallows whatever a river delivers instead of rising', () => {
+    const { world, sim } = ocean();
+    const before = totalWater(world);
+    for (let i = 0; i < 60; i++) {
+      sim.pour(3, SEA_LEVEL + 1, 3, WATER_FULL * 4);
+      sim.step();
+    }
+    for (let i = 0; i < 200; i++) sim.step();
+    // Nothing stands above the surface, and the surface itself has not moved.
+    expect(world.getWater(3, SEA_LEVEL + 1, 3)).toBe(0);
+    expect(world.getWater(3, SEA_LEVEL, 3)).toBe(WATER_FULL);
+    expect(totalWater(world)).toBe(before);
+    expect(sim.drained).toBeGreaterThan(0);
+  });
+
+  it('does not drain itself', () => {
+    const { world, sim } = ocean();
+    const before = totalWater(world);
+    for (let z = 0; z < CHUNK_SIZE; z++) {
+      for (let x = 0; x < CHUNK_SIZE; x++) sim.activate(x, SEA_LEVEL, z);
+    }
+    for (let i = 0; i < 200; i++) sim.step();
+    expect(totalWater(world)).toBe(before);
   });
 });

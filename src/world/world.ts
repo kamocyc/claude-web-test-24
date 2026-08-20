@@ -151,6 +151,14 @@ export class World {
     this.dirtyChunks.add(key);
   }
 
+  /** True where the ground is below sea level, so the ocean stands over it. Water that
+   *  reaches the sea is gone: the real ocean is far bigger than this map. */
+  isSea(x: number, z: number): boolean {
+    const chunk = this.getChunk(toChunkCoord(x), toChunkCoord(z));
+    if (!chunk) return false;
+    return chunk.seaColumn[toLocalCoord(z) * CHUNK_SIZE + toLocalCoord(x)] === 1;
+  }
+
   /** Fill level of a cell, 0 when dry or out of the loaded world. */
   getWater(x: number, y: number, z: number): number {
     if (y < 0 || y >= CHUNK_HEIGHT) return 0;

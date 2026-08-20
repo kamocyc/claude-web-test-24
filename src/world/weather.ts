@@ -1,10 +1,13 @@
 import { clamp, smoothstep } from '../core/noise';
 import { hashFloat } from '../core/rng';
 
-/** The weather happens in the headwaters, far off the map, and reaches the player only
- *  once the water has run down to them. Everything here is a pure function of the world
- *  seed and the elapsed time, so two machines running the same world always agree and a
- *  save only has to store one number. */
+/** The seasons. They do exactly one thing: decide how hard the springs are running.
+ *  Everything the player sees — the river falling, the shallows appearing, the water
+ *  taking minutes to arrive downstream — comes out of the water simulation reacting to
+ *  that, not out of any formula here.
+ *
+ *  It is a pure function of the world seed and the elapsed time, so two machines running
+ *  the same world always agree and a save only has to store one number. */
 
 export type Season = 'normal' | 'rain' | 'drought';
 
@@ -21,11 +24,6 @@ export const CYCLE_LENGTH_SECONDS = SEASON_LENGTH_SECONDS * CYCLE.length;
  *  at its full strength in between. */
 const RAMP = 0.35;
 
-/** How long the water takes to run from the headwaters down to the sea. This is the
- *  whole point of the system: a drought that starts now reaches the river mouth four
- *  minutes later, and the player has that long to fill their reservoir. */
-export const MAX_TRAVEL_SECONDS = 4 * 60;
-
 export interface SeasonInfo {
   kind: Season;
   /** Season number since the world began. Negative before it started. */
@@ -36,11 +34,6 @@ export interface SeasonInfo {
   progress: number;
   /** Seconds until the next season begins. */
   endsIn: number;
-}
-
-/** How long news from the headwaters takes to reach a column. */
-export function travelDelay(inland: number): number {
-  return (1 - clamp(inland, 0, 1)) * MAX_TRAVEL_SECONDS;
 }
 
 /** Seasons are fixed in order but not in severity, so no two droughts feel the same. */
@@ -65,8 +58,8 @@ export function seasonAt(seed: number, seconds: number): SeasonInfo {
   };
 }
 
-/** How wet the headwaters are: -1 in the worst of a drought, 0 in a normal season, +1
- *  in the heaviest rain. A season swells to its full strength and recedes again, so the
+/** How wet the springs are: -1 in the worst of a drought, 0 in a normal season, +1 in
+ *  the heaviest rain. A season swells to its full strength and recedes again, so the
  *  value is always continuous and always passes through 0 at a season boundary. */
 export function wetnessAt(seed: number, seconds: number): number {
   if (seconds <= 0) return 0;
@@ -77,33 +70,26 @@ export function wetnessAt(seed: number, seconds: number): number {
   return (season.kind === 'rain' ? 1 : -1) * season.intensity * swell;
 }
 
-/** The wetness that has actually arrived at a column, which is what the headwaters were
- *  doing a while ago. */
-export function localWetness(seed: number, seconds: number, inland: number): number {
-  return wetnessAt(seed, seconds - travelDelay(inland));
+/** How hard a spring runs at a given wetness, as a multiple of its normal output. A
+ *  drought shuts them off altogether: what happens to the rivers after that is the
+ *  simulation's business. */
+export function springFlow(wetness: number): number {
+  return clamp(1 + wetness, 0, 2);
 }
 
 export interface Forecast {
-  /** What the water at this column is doing now. */
-  here: SeasonInfo;
-  /** What follows it here. */
+  season: SeasonInfo;
+  /** What follows it. */
   next: Season;
-  /** What the headwaters are doing, which is what will arrive here later. */
-  upstream: Season;
-  /** How far behind the headwaters this column runs. */
-  delay: number;
-  /** Local wetness, -1 to +1. */
-  wetness: number;
+  /** How hard the springs are running now, 0 to 2. */
+  flow: number;
 }
 
-export function forecastAt(seed: number, seconds: number, inland: number): Forecast {
-  const delay = travelDelay(inland);
-  const here = seasonAt(seed, seconds - delay);
+export function forecastAt(seed: number, seconds: number): Forecast {
+  const season = seasonAt(seed, seconds);
   return {
-    here,
-    next: kindOf(here.index + 1),
-    upstream: seasonAt(seed, seconds).kind,
-    delay,
-    wetness: localWetness(seed, seconds, inland),
+    season,
+    next: kindOf(season.index + 1),
+    flow: springFlow(wetnessAt(seed, seconds)),
   };
 }
