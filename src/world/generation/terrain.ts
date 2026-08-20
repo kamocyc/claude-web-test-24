@@ -5,7 +5,7 @@ import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey
 import { WATER_FULL } from '../water';
 import { Biome, type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
 import { ORES, placeCactus, placeSugarCane, placeTree, treeCandidates } from './features';
-import { CHANNEL_CORE, RIVER_CLIMB, RiverField, type RiverSample, inlandness } from './rivers';
+import { CHANNEL_CORE, RIVER_CLIMB, RiverField, type RiverSample, inlandness, riverCovers } from './rivers';
 import {
   type ChestMarker,
   type VillagePlan,
@@ -38,6 +38,9 @@ interface VillageInfo {
 }
 
 const MIN_HEIGHT = 4;
+/** Thinnest film the generator will lay as a river's topmost cell. Anything shallower
+ *  is invisible, so the surface is left flush with the block boundary instead. */
+const MIN_FILM = 10;
 const MAX_HEIGHT = CHUNK_HEIGHT - 12;
 
 /** Turns a seed into terrain. Every method is a pure function of the seed plus the
@@ -67,7 +70,7 @@ export class TerrainGenerator {
     this.cave1 = new Noise(seed ^ 0x7007);
     this.cave2 = new Noise(seed ^ 0x8008);
     this.cavern = new Noise(seed ^ 0x9009);
-    this.rivers = new RiverField(seed);
+    this.rivers = new RiverField(seed, (x, z) => this.continentalness(x, z));
   }
 
   /** Terrain height before villages flatten anything. */
@@ -153,7 +156,7 @@ export class TerrainGenerator {
     // Outside the channel the land is only eased down to a lip one block clear of the
     // water. Letting the bank dip below the water line left a one block film of water
     // lying on every terrace of the slope, which read as the river climbing the hill.
-    const lip = Math.max(river.surface + 1, bed);
+    const lip = Math.max(Math.ceil(river.surface), bed);
     return lerp(height, Math.min(height, lip), river.strength / CHANNEL_CORE);
   }
 
@@ -293,12 +296,12 @@ export class TerrainGenerator {
     const heights = new Int16Array(CHUNK_SIZE * CHUNK_SIZE);
     const biomes = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
 
-    const setLocal = (lx: number, y: number, lz: number, id: BlockId): void => {
+    const setLocal = (lx: number, y: number, lz: number, id: BlockId, level = WATER_FULL): void => {
       if (y < 0 || y >= CHUNK_HEIGHT || lx < 0 || lx >= CHUNK_SIZE || lz < 0 || lz >= CHUNK_SIZE) return;
       const index = blockIndex(lx, y, lz);
       blocks[index] = id;
       // Generated water starts out full; anything else placed over it dries the cell.
-      water[index] = id === Block.WATER ? WATER_FULL : 0;
+      water[index] = id === Block.WATER ? level : 0;
     };
     /** World-space setter that silently drops anything outside this chunk. */
     const put = (x: number, y: number, z: number, id: BlockId): void => {
@@ -342,8 +345,13 @@ export class TerrainGenerator {
         const river = this.riverSample(x, z, cont, this.baseHeight(x, z, cont));
         // Only the channel itself holds water; its banks are carved to stay above the
         // water line, so the two thresholds have to be the same one.
-        if (river.strength >= CHANNEL_CORE && h < river.surface) {
-          for (let y = h + 1; y <= river.surface; y++) setLocal(lx, y, lz, Block.WATER);
+        if (riverCovers(river, h)) {
+          // The topmost cell is only part filled, which is what turns the surface into
+          // a smooth ramp instead of a staircase of whole blocks.
+          const top = Math.floor(river.surface);
+          for (let y = h + 1; y < top; y++) setLocal(lx, y, lz, Block.WATER);
+          const film = Math.round((river.surface - top) * WATER_FULL);
+          if (top > h && film >= MIN_FILM) setLocal(lx, top, lz, Block.WATER, film);
           if (this.rivers.isSpringSite(this.seed, x, z, river, cont)) {
             setLocal(lx, h, lz, Block.SPRING);
             springs.push({ x, y: h, z });

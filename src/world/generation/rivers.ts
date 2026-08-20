@@ -24,23 +24,62 @@ const RIVER_WIDTH = 0.055;
 export const CHANNEL_CORE = 0.25;
 /** Deepest part of the channel below its surface. */
 const RIVER_DEPTH = 3;
+/** Furthest the centre line search may step, in blocks. */
+const CENTER_REACH = 14;
 
 export interface RiverSample {
   /** 0 outside the river, 1 in the middle of the channel. */
   strength: number;
-  /** Y of the water surface in this column. */
+  /** World height of the water's top face, as a fraction rather than a whole block.
+   *  Quantising it to whole blocks turned every river into a flight of one block
+   *  terraces, because the surface crosses a block boundary every few metres; the
+   *  generator instead part fills the topmost cell so the sheet slopes smoothly. */
   surface: number;
   /** Y the channel floor is cut down to. */
   floor: number;
+}
+
+/** True when the river covers a column of ground `height` blocks high. A column is
+ *  covered only inside the channel itself: the banks are carved to stay clear of the
+ *  water line. */
+export function riverCovers(sample: RiverSample, height: number): boolean {
+  return sample.strength >= CHANNEL_CORE && sample.surface > height + 1;
 }
 
 export class RiverField {
   private readonly path: Noise;
   private readonly warp: Noise;
 
-  constructor(seed: number) {
+  /** @param contAt continentalness at a column, which is where the river's height
+   *  comes from. The field samples it away from the column it was asked about, so it
+   *  has to be able to ask for it anywhere. */
+  constructor(seed: number, private readonly contAt: (x: number, z: number) => number) {
     this.path = new Noise(seed ^ 0x21e7);
     this.warp = new Noise(seed ^ 0x33a2b);
+  }
+
+  /** The winding field whose zero crossing is the middle of a channel. */
+  private pathValue(x: number, z: number): number {
+    // Warping the lookup makes the channel wind instead of running straight.
+    const warpX = this.warp.noise2(x * 0.0007, z * 0.0007) * 0.9;
+    const warpZ = this.warp.noise2(x * 0.0007 + 71.3, z * 0.0007 - 19.7) * 0.9;
+    return this.path.noise2(x * 0.0013 + warpX, z * 0.0013 + warpZ);
+  }
+
+  /** Continentalness in the middle of the channel this column belongs to, found with a
+   *  single Newton step down the path field. Taking the river's height at the column
+   *  itself tilted the water by up to three blocks from one bank to the other, because
+   *  continentalness changes across the stream as well as along it. */
+  private centerCont(x: number, z: number, value: number): number {
+    const step = 2;
+    const gx = (this.pathValue(x + step, z) - value) / step;
+    const gz = (this.pathValue(x, z + step) - value) / step;
+    const grad = gx * gx + gz * gz;
+    if (grad < 1e-12) return this.contAt(x, z);
+    // Clamped because a flat spot in the field would otherwise throw the sample
+    // clear across the map.
+    const t = Math.max(-CENTER_REACH, Math.min(CENTER_REACH, -value / Math.sqrt(grad)));
+    return this.contAt(x + (gx / Math.sqrt(grad)) * t, z + (gz / Math.sqrt(grad)) * t);
   }
 
   /** Samples the river at a column. The surface comes from continentalness alone, and
@@ -51,26 +90,24 @@ export class RiverField {
     const land = smoothstep(-0.12, 0.06, continentalness + 0.16);
     if (land <= 0) return DRY;
 
-    // Warping the lookup makes the channel wind instead of running straight.
-    const warpX = this.warp.noise2(x * 0.0007, z * 0.0007) * 0.9;
-    const warpZ = this.warp.noise2(x * 0.0007 + 71.3, z * 0.0007 - 19.7) * 0.9;
-    const value = this.path.noise2(x * 0.0013 + warpX, z * 0.0013 + warpZ);
+    const value = this.pathValue(x, z);
     const band = 1 - smoothstep(0, RIVER_WIDTH, Math.abs(value));
     const strength = band * land;
     if (strength <= 0.02) return DRY;
 
-    const surface = this.surfaceLevel(continentalness);
+    const surface = this.surfaceLevel(this.centerCont(x, z, value));
     return {
       strength,
       surface,
-      floor: surface - 1 - Math.round(strength * RIVER_DEPTH),
+      floor: Math.floor(surface) - 2 - Math.round(strength * RIVER_DEPTH),
     };
   }
 
-  /** Water surface of the river: three blocks below the base height of the land, which
-   *  leaves room for banks even where the terrain detail dips. */
+  /** Top face of the river's water. It climbs inland with continentalness and is left
+   *  as a fraction, so the surface is a smooth ramp rather than a staircase. At the
+   *  coast it meets the top face of the sea exactly. */
   surfaceLevel(continentalness: number): number {
-    return SEA_LEVEL + Math.round(inlandness(continentalness) * RIVER_CLIMB);
+    return SEA_LEVEL + 1 + inlandness(continentalness) * RIVER_CLIMB;
   }
 
   /** True where a spring should bubble up: the far upstream end of a channel. */

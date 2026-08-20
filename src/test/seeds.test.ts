@@ -3,6 +3,7 @@ import { VERIFICATION_SEED, VERIFICATION_SEED_TEXT, findSpawn, seedFromUrl } fro
 import { seedFromString } from '../core/rng';
 import { SEA_LEVEL } from '../world/chunk';
 import { TerrainGenerator } from '../world/generation/terrain';
+import { riverCovers } from '../world/generation/rivers';
 
 describe('seeds', () => {
   it('reads a seed out of the page URL', () => {
@@ -41,7 +42,7 @@ describe('seeds', () => {
           const x = Math.round(spawn.x + Math.cos(angle) * radius);
           const z = Math.round(spawn.z + Math.sin(angle) * radius);
           const river = generator.riverAt(x, z);
-          if (river.strength > 0.4 && generator.height(x, z) < river.surface) {
+          if (river.strength > 0.4 && riverCovers(river, generator.height(x, z))) {
             found = { x, z, distance: radius };
             break;
           }

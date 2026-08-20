@@ -226,15 +226,30 @@ export function buildChunkMesh(
   const cornerHeight = (x: number, y: number, z: number, dx: number, dz: number): number => {
     let sum = 0;
     let count = 0;
+    let covered = false;
     for (const [ox, oz] of [[0, 0], [dx, 0], [0, dz], [dx, dz]] as const) {
-      if (waterAt(x + ox, y + 1, z + oz) > 0) return 1;
+      if (waterAt(x + ox, y + 1, z + oz) > 0) {
+        // Water carries on above this corner, so the face has to reach the ceiling.
+        sum += 1;
+        count++;
+        covered = true;
+        continue;
+      }
       const level = waterAt(x + ox, y, z + oz);
       if (level > 0) {
         sum += waterFraction(level);
         count++;
+      } else if (waterAt(x + ox, y - 1, z + oz) > 0) {
+        // The sheet passes below this cell here: counting it as empty is what keeps a
+        // gently sloping river smooth where its surface crosses a block boundary.
+        count++;
       }
     }
-    return count > 0 ? Math.max(0.1, sum / count) : waterFraction(waterAt(x, y, z));
+    if (covered) return 1;
+    // A film lying straight on the ground is nudged up so it does not z-fight with it,
+    // but one lying on more water is left exactly where the average puts it.
+    const lowest = waterAt(x, y - 1, z) > 0 ? 0 : 0.1;
+    return count > 0 ? Math.max(lowest, sum / count) : waterFraction(waterAt(x, y, z));
   };
 
   for (let y = 0; y < CHUNK_HEIGHT; y++) {

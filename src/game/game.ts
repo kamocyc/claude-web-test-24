@@ -58,6 +58,7 @@ import type { Settings } from './settings';
 import { tickFurnace } from './smelting';
 import { tradesFromJSON, tradesToJSON } from './trading';
 import { biomeDef } from '../world/generation/biome';
+import { riverCovers } from '../world/generation/rivers';
 
 const UNLOAD_MARGIN = 2;
 const REACH = 5;
@@ -1060,14 +1061,14 @@ export class Game {
             if (river.strength < 0.85) continue;
             // Inland enough to be a proper channel rather than the tidal mouth, and
             // actually cut below its own water line.
-            if (river.surface <= SEA_LEVEL + 3) continue;
-            if (this.generator.height(x, z) >= river.surface) continue;
+            if (river.surface <= SEA_LEVEL + 4) continue;
+            if (!riverCovers(river, this.generator.height(x, z))) continue;
             // Land on the nearest dry bank rather than in the water.
             for (let offset = 4; offset < 14; offset++) {
               for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
                 const bx = x + dx * offset;
                 const bz = z + dz * offset;
-                if (this.generator.height(bx, bz) > river.surface) {
+                if (this.generator.height(bx, bz) + 1 >= river.surface) {
                   this.debug.teleport(bx, bz);
                   return { x, z, surface: river.surface };
                 }
