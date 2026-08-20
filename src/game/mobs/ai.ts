@@ -1,6 +1,6 @@
 import { type EntityBox, sweepMove } from '../../core/aabb';
 import type { Rng } from '../../core/rng';
-import { Block } from '../../world/blocks';
+import { WATER_FULL } from '../../world/water';
 import type { World } from '../../world/world';
 import { type Damageable, applyDamage } from '../combat';
 import type { DayCycle } from '../daycycle';
@@ -15,6 +15,8 @@ export type MobState = 'idle' | 'wander' | 'chase' | 'flee';
 
 export interface MobContext {
   world: World;
+  /** Current in a cell, so mobs are swept along like the player. */
+  currentAt?(x: number, y: number, z: number): { x: number; z: number };
   player: Player;
   day: DayCycle;
   rng: Rng;
@@ -105,7 +107,7 @@ export class Mob implements Damageable {
     }
 
     this.think(dt, ctx, events);
-    this.move(dt, ctx.world);
+    this.move(dt, ctx);
 
     if (this.y < -8) this.health = 0;
     events.died = this.isDead;
@@ -117,8 +119,8 @@ export class Mob implements Damageable {
     if (this.def.burnsInDaylight && ctx.day.sunLight > 0.5) {
       const headY = Math.floor(this.y + this.def.height - 0.2);
       const sky = ctx.world.getSkyLight(Math.floor(this.x), headY, Math.floor(this.z));
-      const inWater = ctx.world.getBlock(Math.floor(this.x), Math.floor(this.y), Math.floor(this.z)) === Block.WATER;
-      if (sky >= 14 && !inWater) this.burning = 2;
+      const wet = ctx.world.getWater(Math.floor(this.x), Math.floor(this.y), Math.floor(this.z)) > 0;
+      if (sky >= 14 && !wet) this.burning = 2;
     }
     if (this.burning > 0) {
       this.burning -= dt;
@@ -210,8 +212,20 @@ export class Mob implements Damageable {
     if (Math.abs(dirX) + Math.abs(dirZ) > 0) this.yaw = Math.atan2(-dirX, -dirZ);
   }
 
-  private move(dt: number, world: World): void {
-    const inWater = world.getBlock(Math.floor(this.x), Math.floor(this.y + 0.4), Math.floor(this.z)) === Block.WATER;
+  private move(dt: number, ctx: MobContext): void {
+    const world = ctx.world;
+    const cellX = Math.floor(this.x);
+    const cellY = Math.floor(this.y + 0.4);
+    const cellZ = Math.floor(this.z);
+    const waterLevel = world.getWater(cellX, cellY, cellZ) / WATER_FULL;
+    const inWater = waterLevel > 0.35;
+    if (waterLevel > 0.1) {
+      const current = ctx.currentAt?.(cellX, cellY, cellZ);
+      if (current) {
+        this.vx += current.x * 26 * dt;
+        this.vz += current.z * 26 * dt;
+      }
+    }
     if (inWater) {
       this.vy += 12 * dt;
       this.vy = Math.min(this.vy, 2.5);

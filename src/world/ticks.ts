@@ -1,5 +1,6 @@
 import type { Rng } from '../core/rng';
 import { Block, cropAt, isFarmland } from './blocks';
+import { WATER_FULL } from './water';
 import { CHUNK_HEIGHT, CHUNK_SIZE, type Chunk } from './chunk';
 import type { World } from './world';
 
@@ -9,6 +10,8 @@ export const TICK_INTERVAL = 0.4;
 const SAMPLES_PER_CHUNK = 3;
 /** How far a farmland block looks for water. */
 const WATER_RANGE = 4;
+/** Fill level a cell needs before it counts as a water source for irrigation. */
+const IRRIGATION_MIN = WATER_FULL * 0.25;
 
 /** Slow, ambient world changes: crops ripening, grass spreading, farmland drying out. */
 export function randomTickChunk(world: World, chunk: Chunk, rng: Rng): void {
@@ -78,11 +81,13 @@ function tickBlock(world: World, x: number, y: number, z: number, rng: Rng): voi
   }
 }
 
+/** Farmland is only wet while there is genuinely deep enough water within reach, so
+ *  a channel that runs dry leaves the field parched. */
 function hasWaterNearby(world: World, x: number, y: number, z: number): boolean {
   for (let dz = -WATER_RANGE; dz <= WATER_RANGE; dz++) {
     for (let dx = -WATER_RANGE; dx <= WATER_RANGE; dx++) {
       for (let dy = 0; dy <= 1; dy++) {
-        if (world.getBlock(x + dx, y + dy, z + dz) === Block.WATER) return true;
+        if (world.getWater(x + dx, y + dy, z + dz) >= IRRIGATION_MIN) return true;
       }
     }
   }

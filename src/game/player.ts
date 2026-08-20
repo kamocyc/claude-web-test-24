@@ -1,5 +1,6 @@
 import { type EntityBox, sweepMove } from '../core/aabb';
-import { Block, blockDef } from '../world/blocks';
+import { blockDef } from '../world/blocks';
+import { WATER_FULL } from '../world/water';
 import type { World } from '../world/world';
 import { type Damageable, applyDamage, fallDamage } from './combat';
 import { EXHAUSTION, Hunger } from './hunger';
@@ -20,6 +21,14 @@ const AIR_ACCEL = 8;
 const GROUND_FRICTION = 12;
 const WATER_FRICTION = 6;
 const TERMINAL_VELOCITY = 60;
+/** Fill level at which water is deep enough to swim rather than wade through. */
+const SWIM_DEPTH = 0.35;
+/** Seconds of air before drowning starts. */
+export const MAX_AIR = 10;
+/** Seconds between drowning hits. */
+const DROWN_INTERVAL = 1.5;
+/** How hard a flowing current pushes, in blocks per second per unit of flow. */
+const CURRENT_STRENGTH = 26;
 
 export interface PlayerInput {
   forward: boolean;
@@ -30,6 +39,8 @@ export interface PlayerInput {
   sprint: boolean;
   sneak: boolean;
 }
+
+const ZERO_CURRENT = { x: 0, z: 0 };
 
 export const NO_INPUT: PlayerInput = {
   forward: false,
@@ -70,7 +81,15 @@ export class Player implements Damageable {
   yaw = 0;
   pitch = 0;
   onGround = false;
+  /** Deep enough to swim. */
   inWater = false;
+  /** 0..1 fill of the cell around the feet, so shallow water only slows the player. */
+  waterLevel = 0;
+  /** The camera is under water: this is what drains the air supply. */
+  submerged = false;
+  /** Seconds of breath left. */
+  air = MAX_AIR;
+  private drownTimer = 0;
   health = 20;
   maxHealth = 20;
   hurtCooldown = 0;
@@ -103,12 +122,21 @@ export class Player implements Damageable {
     };
   }
 
-  update(dt: number, world: World, input: PlayerInput): PlayerTickEvents {
+  update(
+    dt: number,
+    world: World,
+    input: PlayerInput,
+    current: { x: number; z: number } = ZERO_CURRENT,
+  ): PlayerTickEvents {
     const events: PlayerTickEvents = { fellFrom: 0, tookDamage: 0, died: false };
     if (this.hurtCooldown > 0) this.hurtCooldown = Math.max(0, this.hurtCooldown - dt);
     if (this.isDead) return events;
 
-    this.inWater = world.getBlock(Math.floor(this.x), Math.floor(this.y + 0.6), Math.floor(this.z)) === Block.WATER;
+    this.waterLevel =
+      world.getWater(Math.floor(this.x), Math.floor(this.y + 0.4), Math.floor(this.z)) / WATER_FULL;
+    this.inWater = this.waterLevel > SWIM_DEPTH;
+    this.submerged =
+      world.getWater(Math.floor(this.x), Math.floor(this.eyeY), Math.floor(this.z)) / WATER_FULL > 0.5;
 
     // --- horizontal movement -------------------------------------------------
     let inputX = 0;
@@ -137,6 +165,8 @@ export class Player implements Damageable {
     const accel = this.onGround || this.inWater ? GROUND_ACCEL : AIR_ACCEL;
     this.vx += wishX * target * accel * dt;
     this.vz += wishZ * target * accel * dt;
+    // The current carries the player along; it is applied after the speed clamp below
+    // so that being swept away is not limited by the walking speed.
 
     const friction = this.inWater ? WATER_FRICTION : this.onGround ? GROUND_FRICTION : 1.5;
     const damping = Math.max(0, 1 - friction * dt);
@@ -147,6 +177,10 @@ export class Player implements Damageable {
     if (speed > target) {
       this.vx = (this.vx / speed) * target;
       this.vz = (this.vz / speed) * target;
+    }
+    if (this.waterLevel > 0.1) {
+      this.vx += current.x * CURRENT_STRENGTH * dt;
+      this.vz += current.z * CURRENT_STRENGTH * dt;
     }
 
     // --- vertical movement ---------------------------------------------------
@@ -201,6 +235,22 @@ export class Player implements Damageable {
     if (travelled > 0 && this.onGround) {
       this.hunger.addExhaustion(travelled * (sprinting ? EXHAUSTION.sprintPerBlock : EXHAUSTION.walkPerBlock));
     }
+    // --- breath --------------------------------------------------------------
+    if (this.submerged) {
+      this.air = Math.max(0, this.air - dt);
+      if (this.air <= 0) {
+        this.drownTimer += dt;
+        if (this.drownTimer >= DROWN_INTERVAL) {
+          this.drownTimer = 0;
+          this.health = Math.max(0, this.health - 1);
+          events.tookDamage += 1;
+        }
+      }
+    } else {
+      this.air = Math.min(MAX_AIR, this.air + dt * 4);
+      this.drownTimer = 0;
+    }
+
     const hungerTick = this.hunger.update(dt, this.health, this.maxHealth);
     if (hungerTick.heal > 0) this.health = Math.min(this.maxHealth, this.health + hungerTick.heal);
     if (hungerTick.damage > 0) {
@@ -264,6 +314,7 @@ export class Player implements Damageable {
     this.health = this.maxHealth;
     this.hurtCooldown = 0;
     this.fallStartY = y;
+    this.air = MAX_AIR;
     this.hunger.reset();
   }
 }

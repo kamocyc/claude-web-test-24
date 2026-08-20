@@ -80,10 +80,19 @@ blockItem('sugar_cane', Block.SUGAR_CANE);
 blockItem('flower_red', Block.FLOWER_RED);
 blockItem('flower_yellow', Block.FLOWER_YELLOW);
 blockItem('iron_ore', Block.IRON_ORE, { smeltsTo: 'iron_ingot' });
+blockItem('spring', Block.SPRING);
+blockItem('pump', Block.PUMP);
+blockItem('drain', Block.DRAIN);
+// One item for both states of the gate; it is placed closed and toggled in place.
+blockItem('floodgate', Block.FLOODGATE_CLOSED);
 blockItem('gold_ore', Block.GOLD_ORE, { smeltsTo: 'gold_ingot' });
 
 // Cobblestone smelts back into smooth stone.
 ITEMS.get('cobblestone')!.smeltsTo = 'stone';
+
+// --- water handling ----------------------------------------------------------
+item({ id: 'bucket', label: 'バケツ', tex: 'bucket', maxStack: 16 });
+item({ id: 'water_bucket', label: '水入りバケツ', tex: 'water_bucket', maxStack: 1 });
 
 // --- materials ---------------------------------------------------------------
 item({ id: 'stick', label: '棒', tex: 'stick', fuel: 5 });

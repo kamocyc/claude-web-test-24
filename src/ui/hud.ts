@@ -1,4 +1,4 @@
-import type { Player } from '../game/player';
+import { MAX_AIR, type Player } from '../game/player';
 import { itemDef, itemLabel } from '../game/items';
 import type { Atlas } from '../render/textures';
 import { HOTBAR_SIZE } from '../game/inventory';
@@ -12,6 +12,7 @@ export interface DebugInfo {
   biome: string;
   clock: string;
   mobs: number;
+  waterDepth: number;
 }
 
 /** Health, hunger, hotbar, crosshair and the debug overlay. */
@@ -19,6 +20,7 @@ export class Hud {
   readonly root = el('div', 'hud');
   private readonly hearts = el('div', 'stat-row hearts');
   private readonly food = el('div', 'stat-row food');
+  private readonly air = el('div', 'stat-row air');
   private readonly hotbar = el('div', 'hotbar');
   private readonly hotbarSlots: HTMLElement[] = [];
   private readonly heldLabel = el('div', 'held-label');
@@ -34,13 +36,14 @@ export class Hud {
     const crosshair = el('div', 'crosshair');
     const stats = el('div', 'stats');
     stats.append(this.hearts, this.food);
+    this.air.style.display = 'none';
     const bottom = el('div', 'bottom');
     for (let i = 0; i < HOTBAR_SIZE; i++) {
       const slot = el('div', 'slot hotbar-slot');
       this.hotbarSlots.push(slot);
       this.hotbar.appendChild(slot);
     }
-    bottom.append(this.heldLabel, stats, this.hotbar);
+    bottom.append(this.heldLabel, this.air, stats, this.hotbar);
     this.root.append(this.underwater, this.flash, crosshair, bottom, this.debug, this.toasts, this.clickPrompt);
     this.underwater.style.display = 'none';
     this.clickPrompt.style.display = 'none';
@@ -86,6 +89,10 @@ export class Hud {
   update(dt: number, player: Player, info: DebugInfo): void {
     this.renderBar(this.hearts, player.health, player.maxHealth, 'heart');
     this.renderBar(this.food, player.hunger.food, 20, 'drumstick');
+    // The breath meter only appears once the player is actually holding their breath.
+    const drowning = player.air < MAX_AIR;
+    this.air.style.display = drowning ? '' : 'none';
+    if (drowning) this.renderBar(this.air, player.air, MAX_AIR, 'bubble');
 
     for (let i = 0; i < this.hotbarSlots.length; i++) {
       const slot = this.hotbarSlots[i];
@@ -107,6 +114,7 @@ export class Hud {
         `時刻 ${info.clock}`,
         `チャンク ${info.chunks} (生成待ち ${info.pending})`,
         `モブ ${info.mobs}`,
+        `水深 ${info.waterDepth.toFixed(2)}`,
         `手持ち ${held ? `${itemDef(held.id)?.label ?? held.id} x${held.count}` : 'なし'}`,
       ].join('\n');
     }

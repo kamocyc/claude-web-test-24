@@ -554,6 +554,24 @@ function ingot(color: Color): Draw {
 tile('iron_ingot', ingot([214, 214, 214]));
 tile('gold_ingot', ingot([238, 202, 74]));
 
+tile('bucket', (ctx) => {
+  iconBase(ctx);
+  const metal: Color = [186, 186, 194];
+  rect(ctx, 4, 5, 8, 1, metal);
+  rect(ctx, 4, 6, 8, 7, shade(metal, -18));
+  rect(ctx, 5, 13, 6, 1, shade(metal, -40));
+  rect(ctx, 4, 3, 1, 3, shade(metal, -30));
+  rect(ctx, 11, 3, 1, 3, shade(metal, -30));
+  rect(ctx, 5, 2, 6, 1, shade(metal, -30));
+});
+
+tile('water_bucket', (ctx, rng) => {
+  drawings.get('bucket')!(ctx, rng);
+  for (let y = 7; y < 12; y++) {
+    for (let x = 5; x < 11; x++) px(ctx, x, y, shade(WATER, (rng() - 0.5) * 24));
+  }
+});
+
 tile('stick', (ctx) => {
   iconBase(ctx);
   for (let i = 0; i < 9; i++) rect(ctx, 4 + i, 11 - i, 2, 2, shade(BARK, 20));

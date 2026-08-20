@@ -24,6 +24,8 @@ export interface Arrow {
 export interface MobUpdateContext {
   player: Player;
   day: DayCycle;
+  /** Current in a cell, so mobs drift with the river. */
+  currentAt?(x: number, y: number, z: number): { x: number; z: number };
   /** Called when the player takes damage from a mob. */
   onPlayerHit(damage: number, fromX: number, fromZ: number): void;
   /** Called for every item a dying mob leaves behind. */
@@ -88,7 +90,14 @@ export class MobManager {
 
     for (let i = this.mobs.length - 1; i >= 0; i--) {
       const mob = this.mobs[i];
-      const events = mob.update(dt, { world: this.world, player: ctx.player, day: ctx.day, rng: this.rng, shoot });
+      const events = mob.update(dt, {
+        world: this.world,
+        player: ctx.player,
+        day: ctx.day,
+        rng: this.rng,
+        shoot,
+        currentAt: ctx.currentAt,
+      });
       if (events.meleeDamage > 0) ctx.onPlayerHit(events.meleeDamage, mob.x, mob.z);
       if (events.died) {
         this.dropLoot(mob, ctx);

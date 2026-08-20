@@ -11,6 +11,7 @@ import { Block, blockDef, isFarmland, isReplaceable, supportsPlant } from '../wo
 import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, Chunk, chunkKey, toChunkCoord } from '../world/chunk';
 import { TerrainGenerator } from '../world/generation/terrain';
 import { LightEngine } from '../world/lighting';
+import { WATER_FULL } from '../world/water';
 import { WaterSimulator } from '../world/waterSim';
 import { raycastVoxels, type RaycastHit } from '../world/raycast';
 import { TICK_INTERVAL, randomTickChunk } from '../world/ticks';
@@ -230,7 +231,12 @@ export class Game {
     if (!screenOpen && this.options.input.locked) this.updateLook();
     const input = screenOpen ? NO_INPUT : this.readMovement();
 
-    const events = this.player.update(dt, this.world, input);
+    const current = this.water.flowAt(
+      Math.floor(this.player.x),
+      Math.floor(this.player.y + 0.4),
+      Math.floor(this.player.z),
+    );
+    const events = this.player.update(dt, this.world, input, current);
     this.unstick();
     if (events.tookDamage > 0) this.hud.flashDamage();
 
@@ -283,6 +289,11 @@ export class Game {
       biome: biomeDef(this.generator.biomeAt(Math.floor(this.player.x), Math.floor(this.player.z))).label,
       clock: this.day.clock,
       mobs: this.mobs.mobs.length,
+      waterDepth: this.water.depthAt(
+        Math.floor(this.player.x),
+        Math.floor(this.player.y + 0.4),
+        Math.floor(this.player.z),
+      ),
     };
   }
 
@@ -520,6 +531,12 @@ export class Game {
         this.openScreen(() => this.screens.openChest(chest.slots));
         return;
       }
+      if (target === Block.FLOODGATE_CLOSED || target === Block.FLOODGATE_OPEN) {
+        const opened = target === Block.FLOODGATE_CLOSED;
+        this.world.setBlock(hit.x, hit.y, hit.z, opened ? Block.FLOODGATE_OPEN : Block.FLOODGATE_CLOSED);
+        this.hud.toast(opened ? '水門を開いた' : '水門を閉じた');
+        return;
+      }
       if (target === Block.FURNACE) {
         let entity = this.world.getBlockEntity(hit.x, hit.y, hit.z);
         if (!isFurnace(entity)) {
@@ -534,6 +551,12 @@ export class Game {
     }
 
     if (!held || !def) return;
+
+    // Buckets look through water rather than at it, so they get their own trace.
+    if (held.id === 'bucket' || held.id === 'water_bucket') {
+      this.useBucket(held.id === 'bucket');
+      return;
+    }
 
     // Eating.
     if (def.food && this.player.hunger.canEat()) {
@@ -567,6 +590,37 @@ export class Game {
 
     if (def.placesBlock === undefined) return;
     this.placeBlock(hit, def.placesBlock);
+  }
+
+  /** Scoops a full cell of water into an empty bucket, or pours one back out. */
+  private useBucket(empty: boolean): void {
+    const eye = { x: this.player.x, y: this.player.eyeY, z: this.player.z };
+    const look = this.player.lookVector();
+    const hit = raycastVoxels(this.world, eye, look, { maxDistance: REACH, hitLiquids: true });
+    if (!hit) return;
+
+    if (empty) {
+      if (hit.block !== Block.WATER) return;
+      if (this.world.getWater(hit.x, hit.y, hit.z) < WATER_FULL * 0.75) {
+        this.hud.toast('水が浅すぎる');
+        return;
+      }
+      this.world.setBlock(hit.x, hit.y, hit.z, Block.AIR);
+      this.player.inventory.consumeHeld();
+      const leftover = this.player.inventory.add({ id: 'water_bucket', count: 1 });
+      if (leftover > 0) this.dropAtPlayer({ id: 'water_bucket', count: leftover });
+      return;
+    }
+
+    // Pouring: into the cell that was hit if it can hold water, otherwise the face.
+    const x = hit.block === Block.WATER || isReplaceable(hit.block) ? hit.x : hit.x + hit.nx;
+    const y = hit.block === Block.WATER || isReplaceable(hit.block) ? hit.y : hit.y + hit.ny;
+    const z = hit.block === Block.WATER || isReplaceable(hit.block) ? hit.z : hit.z + hit.nz;
+    if (!isReplaceable(this.world.getBlock(x, y, z))) return;
+    this.world.setBlock(x, y, z, Block.WATER);
+    this.player.inventory.consumeHeld();
+    const leftover = this.player.inventory.add({ id: 'bucket', count: 1 });
+    if (leftover > 0) this.dropAtPlayer({ id: 'bucket', count: leftover });
   }
 
   private placeBlock(hit: RaycastHit, block: number): void {
@@ -651,6 +705,7 @@ export class Game {
     return {
       player: this.player,
       day: this.day,
+      currentAt: (x, y, z) => this.water.flowAt(x, y, z),
       onPlayerHit: (damage, fromX, fromZ) => {
         const result = applyDamage(this.player, damage, this.player.inventory.defense);
         if (!result.applied) return;

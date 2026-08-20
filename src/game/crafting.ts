@@ -38,6 +38,12 @@ shaped(['SS', 'SS'], { S: 'stone' }, { id: 'stone_bricks', count: 4 });
 shaped(['SS', 'SS'], { S: 'sand' }, { id: 'sandstone', count: 1 });
 shaped(['WWW'], { W: 'wheat' }, { id: 'bread', count: 1 });
 
+// --- water works --------------------------------------------------------------
+shaped(['I I', ' I '], { I: 'iron_ingot' }, { id: 'bucket', count: 1 });
+shaped(['PPP', 'III', 'PPP'], { P: 'oak_planks', I: 'iron_ingot' }, { id: 'floodgate', count: 2 });
+shaped([' I ', 'ICI', ' I '], { I: 'iron_ingot', C: 'cobblestone' }, { id: 'pump', count: 1 });
+shaped(['CIC', 'C C', 'CCC'], { C: 'cobblestone', I: 'iron_ingot' }, { id: 'drain', count: 1 });
+
 // --- tools, one set per material ---------------------------------------------
 for (const tier of TIERS) {
   const keys = { M: tier.material, S: 'stick' };
