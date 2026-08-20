@@ -11,6 +11,9 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const message = event.data;
   if (message.type === 'init') {
     generator = new TerrainGenerator(message.seed);
+    // Work the island's drainage network out now rather than on the first chunk, so all
+    // the workers pay for it at once instead of one after another.
+    generator.prepare();
     return;
   }
   if (message.type === 'generate') {

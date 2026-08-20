@@ -289,7 +289,13 @@ export class Game {
     }
 
     if (this.paused || this.player.isDead) {
-      if (this.player.isDead) this.options.menus.showDeath(true);
+      if (this.player.isDead) {
+        this.options.menus.showDeath(true);
+        // Dying is the one way a menu comes up without the player asking for it, so the
+        // mouse has to be handed back here rather than in a key handler. Without it the
+        // respawn button cannot be clicked at all.
+        this.options.input.releaseLock();
+      }
       this.hud.update(dt, this.player, this.debugInfo(), this.navigationInfo());
       return;
     }

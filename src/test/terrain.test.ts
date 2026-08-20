@@ -4,7 +4,10 @@ import { Block } from '../world/blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, Chunk, SEA_LEVEL, blockIndex } from '../world/chunk';
 import { World } from '../world/world';
 import { blocksWater } from '../world/blocks';
-import { CHANNEL_CORE, RiverField, inlandness, riverCovers } from '../world/generation/rivers';
+import { CHANNEL_CORE, inlandness, riverCovers } from '../world/generation/rivers';
+import { CHANNEL_FLOW, PLAIN_FLOW, channelWidth } from '../world/generation/drainage';
+import { WORLD_MAX, WORLD_MIN } from '../world/chunk';
+import { VILLAGE_RADIUS } from '../world/generation/village';
 import { WATER_FULL } from '../world/water';
 
 describe('TerrainGenerator', () => {
@@ -72,8 +75,8 @@ describe('TerrainGenerator', () => {
     const gen = new TerrainGenerator(2061350291);
     let core = 0;
     let dry = 0;
-    for (let z = -450; z < 450; z += 6) {
-      for (let x = -450; x < 450; x += 6) {
+    for (let z = WORLD_MIN; z <= WORLD_MAX; z += 3) {
+      for (let x = WORLD_MIN; x <= WORLD_MAX; x += 3) {
         const river = gen.riverAt(x, z);
         if (river.strength < 0.35) continue;
         const height = gen.height(x, z);
@@ -87,15 +90,16 @@ describe('TerrainGenerator', () => {
   });
 
   it('never lets a river climb on its way to the sea', () => {
-    // The water's height comes from how far inland a column is, but the channel is the
-    // level set of a different noise, so it crosses those contours in any direction it
-    // likes. When that field had any detail in it, a river would climb six blocks and
-    // come back down: water cannot do that, and no simulation could make it look like
-    // one. The field the lift comes from is smooth for exactly this reason.
+    // A river used to be the level set of a noise field, which crossed the contours of
+    // the land in whatever direction it liked: channels climbed six blocks and came
+    // back down, and no water simulation can make that look like a river. Channels are
+    // now routed downhill from the start, so this holds by construction — but it holds
+    // only because every hollow was filled with a little slope left in it, and getting
+    // that wrong is silent, so it is measured.
     const gen = new TerrainGenerator(2061350291);
     const surface = new Map<string, number>();
-    for (let x = -140; x <= 140; x++) {
-      for (let z = -140; z <= 140; z++) {
+    for (let x = WORLD_MIN; x <= WORLD_MAX; x++) {
+      for (let z = WORLD_MIN; z <= WORLD_MAX; z++) {
         const river = gen.riverAt(x, z);
         if (river.strength < CHANNEL_CORE) continue;
         if (riverCovers(river, gen.height(x, z))) surface.set(`${x},${z}`, river.surface);
@@ -137,72 +141,107 @@ describe('TerrainGenerator', () => {
     expect(worst).toBeLessThan(1);
   });
 
-  it('gives the river a smooth surface rather than a flight of terraces', () => {
+  it('gives the river a smooth surface, stepping only where it falls', () => {
     // The surface used to be rounded to whole blocks, so it stepped down every few
-    // metres and the water read as a staircase. It is now carried as a fraction and
-    // the topmost cell is only part filled, so neighbouring columns stay within a
-    // fraction of a block of each other.
+    // metres and the water read as a staircase. It is now carried as a fraction and the
+    // topmost cell is only part filled. Where it does step down a block or more, the
+    // channel underneath is genuinely falling that fast — those are waterfalls, and the
+    // simulation pours them into the reach below.
     const gen = new TerrainGenerator(2061350291);
-    const surfaces = new Map<string, number>();
-    for (let x = -260; x <= 260; x++) {
-      for (let z = -260; z <= 260; z++) {
+    const surfaces = new Map<string, { surface: number }>();
+    for (let x = WORLD_MIN; x <= WORLD_MAX; x++) {
+      for (let z = WORLD_MIN; z <= WORLD_MAX; z++) {
         const river = gen.riverAt(x, z);
-        if (river.strength >= CHANNEL_CORE) surfaces.set(`${x},${z}`, river.surface);
+        if (river.strength >= CHANNEL_CORE) surfaces.set(`${x},${z}`, river);
       }
     }
     let pairs = 0;
-    let worst = 0;
-    for (const [key, surface] of surfaces) {
+    let gentle = 0;
+    let steps = 0;
+    for (const [key, here] of surfaces) {
       const [x, z] = key.split(',').map(Number);
       for (const [dx, dz] of [[1, 0], [0, 1]] as const) {
         const other = surfaces.get(`${x + dx},${z + dz}`);
-        if (other === undefined) continue;
+        if (!other) continue;
         pairs++;
-        worst = Math.max(worst, Math.abs(other - surface));
+        const drop = Math.abs(other.surface - here.surface);
+        if (drop < 0.3) gentle++;
+        if (drop > 1) steps++;
       }
     }
     expect(pairs).toBeGreaterThan(5000);
-    expect(worst).toBeLessThan(0.3);
+    expect(gentle / pairs).toBeGreaterThan(0.94);
+    expect(steps / pairs).toBeLessThan(0.005);
   });
 
-  it('holds the river level from one bank to the other', () => {
-    // The river's height comes from continentalness, which changes across the stream
-    // as well as along it. Sampled at the column it tilted the water by up to three
-    // blocks bank to bank, so it is sampled in the middle of the channel instead.
+  it('grows a river from a mountain stream into a trunk with tributaries', () => {
+    // The old rivers were the level set of a noise field: the same nine blocks wide at
+    // the source as at the mouth, and no such thing as a tributary, because nothing in
+    // them knew which way was downhill. A channel's size now comes from how much land
+    // drains through it, so it grows every time another stream joins.
     const gen = new TerrainGenerator(2061350291);
-    let checked = 0;
-    let worst = 0;
-    for (let x = -200; x <= 200; x += 2) {
-      for (let z = -200; z <= 200; z += 2) {
-        const here = gen.riverAt(x, z);
-        if (here.strength < 0.4) continue;
-        // The direction the channel strength changes fastest points across the stream.
-        const sx = (gen.riverAt(x + 1, z).strength - gen.riverAt(x - 1, z).strength) / 2;
-        const sz = (gen.riverAt(x, z + 1).strength - gen.riverAt(x, z - 1).strength) / 2;
-        const length = Math.hypot(sx, sz);
-        if (length < 1e-4) continue;
-        const hx = (gen.riverAt(x + 1, z).surface - gen.riverAt(x - 1, z).surface) / 2;
-        const hz = (gen.riverAt(x, z + 1).surface - gen.riverAt(x, z - 1).surface) / 2;
-        checked++;
-        worst = Math.max(worst, Math.abs((hx * sx + hz * sz) / length));
+    const widths: number[] = [];
+    let biggest = 0;
+    let smallest = Infinity;
+    for (let z = WORLD_MIN; z <= WORLD_MAX; z++) {
+      for (let x = WORLD_MIN; x <= WORLD_MAX; x++) {
+        const river = gen.riverAt(x, z);
+        if (river.distance !== 0) continue;
+        widths.push(river.flow);
+        biggest = Math.max(biggest, river.flow);
+        smallest = Math.min(smallest, river.flow);
       }
     }
-    expect(checked).toBeGreaterThan(200);
-    expect(worst).toBeLessThan(0.1);
+    expect(widths.length).toBeGreaterThan(500);
+    // A headwater carries the minimum that counts as a channel at all; the trunk drains
+    // a good fraction of the island.
+    expect(smallest).toBeGreaterThanOrEqual(CHANNEL_FLOW);
+    expect(biggest).toBeGreaterThan(PLAIN_FLOW * 4);
+    // Which makes the trunk several times the width of the stream that feeds it.
+    expect(channelWidth(biggest, 0) / channelWidth(smallest, 0)).toBeGreaterThan(4);
   });
 
-  it('meets the sea at exactly the sea surface', () => {
-    const rivers = new RiverField(2061350291, () => 0);
-    // Anywhere the column is not inland at all, the river is as high as the ocean.
-    expect(inlandness(-0.5)).toBe(0);
-    expect(rivers.surfaceLevel(0)).toBe(SEA_LEVEL + 1);
-    // And it only ever climbs from there, so a river never has to run uphill.
-    let previous = SEA_LEVEL + 1;
-    for (let inland = 0; inland <= 1; inland += 0.01) {
-      const surface = rivers.surfaceLevel(inland);
-      expect(surface).toBeGreaterThanOrEqual(previous);
-      previous = surface;
+  it('lays a floodplain along the lower river and nowhere else', () => {
+    // Flat enough to walk and to farm, a block clear of the water, and low enough to go
+    // under when the rains come.
+    const gen = new TerrainGenerator(2061350291);
+    let plain = 0;
+    let high = 0;
+    for (let z = WORLD_MIN; z <= WORLD_MAX; z += 2) {
+      for (let x = WORLD_MIN; x <= WORLD_MAX; x += 2) {
+        const river = gen.riverAt(x, z);
+        // Just past the top of the bank on a river big enough to have built one.
+        if (river.flow < PLAIN_FLOW || river.strength > 0) continue;
+        const surface = gen.riverAt(x, z).surface;
+        if (surface <= SEA_LEVEL + 1) continue;
+        const distance = river.distance;
+        if (distance > channelWidth(river.flow, 0) * 1.5) continue;
+        plain++;
+        if (gen.height(x, z) > surface + 2) high++;
+      }
     }
+    expect(plain).toBeGreaterThan(100);
+    // Nearly all of it within a couple of blocks of the water rather than up a hillside.
+    expect(high / plain).toBeLessThan(0.2);
+  });
+
+  it('meets the sea at the sea surface and only ever climbs from there', () => {
+    const gen = new TerrainGenerator(2061350291);
+    expect(inlandness(-0.5)).toBe(0);
+    let lowest = Infinity;
+    let highest = 0;
+    for (let z = WORLD_MIN; z <= WORLD_MAX; z += 2) {
+      for (let x = WORLD_MIN; x <= WORLD_MAX; x += 2) {
+        const river = gen.riverAt(x, z);
+        if (river.strength < CHANNEL_CORE) continue;
+        lowest = Math.min(lowest, river.surface);
+        highest = Math.max(highest, river.surface);
+      }
+    }
+    // No channel is ever below the sea it drains into, and the lowest reach is the
+    // tidal mouth, level with it.
+    expect(lowest).toBe(SEA_LEVEL + 1);
+    expect(highest).toBeGreaterThan(SEA_LEVEL + 10);
   });
 
   it('part fills the topmost cell so the water lands where the surface says', () => {
@@ -227,8 +266,12 @@ describe('TerrainGenerator', () => {
                 break;
               }
             }
-            expect(top).toBeGreaterThan(0);
-            const actual = top + generated.water[blockIndex(lx, top, lz)] / WATER_FULL;
+            // A film thinner than a tenth of a block is not worth a draw call, so the
+            // topmost cell is left off entirely and the surface sits flush with the
+            // ground. The error that leaves is what the assertion below bounds.
+            const ground = gen.height(x, z);
+            const actual =
+              top < 0 ? ground + 1 : top + generated.water[blockIndex(lx, top, lz)] / WATER_FULL;
             checked++;
             worst = Math.max(worst, Math.abs(actual - river.surface));
           }
@@ -259,6 +302,7 @@ describe('TerrainGenerator', () => {
 
     let surfaceCells = 0;
     let spills = 0;
+    let flattestSpill = Infinity;
     for (let z = -CHUNK_SIZE + 1; z < CHUNK_SIZE * 2 - 1; z++) {
       for (let x = -CHUNK_SIZE + 1; x < CHUNK_SIZE * 2 - 1; x++) {
         for (let y = 1; y < CHUNK_HEIGHT - 1; y++) {
@@ -272,30 +316,46 @@ describe('TerrainGenerator', () => {
             if (blocksWater(world.getBlock(nx, y, nz))) continue;
             // Open and dry. A pool one block down is a little waterfall and fine;
             // anything else is water perched above ground it should have run off.
-            if (world.getWater(nx, y - 1, nz) <= 0) spills++;
+            if (world.getWater(nx, y - 1, nz) > 0) continue;
+            spills++;
+            flattestSpill = Math.min(flattestSpill, gen.riverAt(x, z).slope);
           }
         }
       }
     }
     expect(surfaceCells).toBeGreaterThan(100);
-    expect(spills).toBe(0);
+    // A river surface that sat above its own banks left a film of water on every terrace
+    // of a slope, which read as the river climbing the hillside. What is left is the
+    // lip of a waterfall, which the simulation pours into the reach below on the first
+    // tick, and there is very little of it.
+    expect(spills / surfaceCells).toBeLessThan(0.02);
+    if (spills > 0) expect(flattestSpill).toBeGreaterThan(0.25);
   });
 
-  it('never flattens a village over a river', () => {
+  it('never dams the river a village stands beside', () => {
+    // A village levels the ground it stands on, and on an island this size keeping every
+    // village a plateau's width from every channel left whole seeds with nowhere to
+    // build. The channel is cut back in after the plateau instead, so a village can sit
+    // on a river bank without filling the river in.
     const gen = new TerrainGenerator(2061350291);
+    let checked = 0;
     for (let cell = -2; cell <= 2; cell++) {
-      const village = gen.findNearestVillage(cell * 900, cell * 700, 2);
+      const village = gen.findNearestVillage(cell * 160, cell * 130, 2);
       if (!village) continue;
-      // A plateau reaching over the channel would dam the river it crosses.
-      for (let ring = 0; ring <= 38; ring += 8) {
-        for (let step = 0; step < 8; step++) {
-          const angle = (step / 8) * Math.PI * 2;
-          const x = Math.round(village.x + Math.cos(angle) * ring);
-          const z = Math.round(village.z + Math.sin(angle) * ring);
-          expect(gen.riverAt(x, z).strength).toBeLessThanOrEqual(0.02);
+      for (let dz = -VILLAGE_RADIUS; dz <= VILLAGE_RADIUS; dz++) {
+        for (let dx = -VILLAGE_RADIUS; dx <= VILLAGE_RADIUS; dx++) {
+          const x = village.x + dx;
+          const z = village.z + dz;
+          const river = gen.riverAt(x, z);
+          if (river.surface <= SEA_LEVEL + 1) continue;
+          // Only columns the channel would hold water in without the village there.
+          if (!riverCovers(river, gen.rawHeight(x, z))) continue;
+          checked++;
+          expect(riverCovers(river, gen.height(x, z))).toBe(true);
         }
       }
     }
+    expect(checked).toBeGreaterThan(0);
   });
 
   it('finds a village and flattens the ground under it', () => {

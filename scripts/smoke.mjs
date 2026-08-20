@@ -417,7 +417,9 @@ if (river && river.surface !== null) {
   if (works) {
     const farWater = () =>
       evaluate((w) => window.voxelcraft.waterAt(w.far[0], w.floorY + 1, w.far[1]), works);
-    await page.waitForTimeout(9000);
+    // The whole island's rivers are live, so the simulation's per-step budget is spread
+    // thin and a fresh channel fills over tens of seconds rather than a handful.
+    await page.waitForTimeout(25000);
     console.log('water reached the far end:', await farWater());
     await evaluate((w) => {
       const g = window.voxelcraft.game;
@@ -438,7 +440,7 @@ if (river && river.surface !== null) {
         for (let y = w.floorY + 1; y <= w.surface; y++) g.world.setBlock(x, y, z, 0);
       }
     }, works);
-    await page.waitForTimeout(7000);
+    await page.waitForTimeout(12000);
     console.log('with the gate shut:', await farWater());
     await shot('17-gate-closed');
 
@@ -446,7 +448,7 @@ if (river && river.surface !== null) {
       const g = window.voxelcraft.game;
       for (let y = w.floorY; y <= w.surface; y++) g.world.setBlock(w.gate[0], y, w.gate[1], 58);
     }, works);
-    await page.waitForTimeout(9000);
+    await page.waitForTimeout(25000);
     console.log('with the gate open:', await farWater());
     await shot('18-gate-open');
 

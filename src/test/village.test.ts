@@ -1,23 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { TerrainGenerator } from '../world/generation/terrain';
-import { planVillage, plateauWeight, villageInCell, VILLAGE_RADIUS } from '../world/generation/village';
+import { planVillage, plateauWeight, villageCandidates, VILLAGE_RADIUS } from '../world/generation/village';
 import { Block } from '../world/blocks';
 
 describe('village placement', () => {
   it('places the same villages for the same seed', () => {
-    const a = villageInCell(4242, 3, -2);
-    const b = villageInCell(4242, 3, -2);
+    const a = villageCandidates(4242, 3, -2);
+    const b = villageCandidates(4242, 3, -2);
     expect(a).toEqual(b);
   });
 
   it('places different villages for different seeds', () => {
-    const cells = Array.from({ length: 12 }, (_, i) => [villageInCell(1, i, 0), villageInCell(2, i, 0)]);
+    const cells = Array.from({ length: 12 }, (_, i) => [
+      villageCandidates(1, i, 0),
+      villageCandidates(2, i, 0),
+    ]);
     expect(cells.some(([a, b]) => JSON.stringify(a) !== JSON.stringify(b))).toBe(true);
   });
 
   it('falls to zero influence outside the plateau', () => {
-    const site = villageInCell(7, 0, 0);
-    expect(site).not.toBeNull();
+    const [site] = villageCandidates(7, 0, 0);
+    expect(site).toBeDefined();
     if (!site) return;
     expect(plateauWeight(site, site.x, site.z)).toBe(1);
     expect(plateauWeight(site, site.x + VILLAGE_RADIUS + 1, site.z)).toBe(0);

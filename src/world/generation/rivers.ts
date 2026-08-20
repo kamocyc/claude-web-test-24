@@ -1,138 +1,166 @@
-import { Noise, clamp, smoothstep } from '../../core/noise';
-import { hashFloat } from '../../core/rng';
+import { clamp, lerp, smoothstep } from '../../core/noise';
 import { SEA_LEVEL } from '../chunk';
+import { Drainage, PLAIN_FLOW } from './drainage';
 
-/** Rivers are carved from a noise field rather than traced downstream, so every chunk
- *  can be generated on its own. What keeps a channel running downhill is that its
- *  height comes from how far inland a column is — a deliberately smooth field that
- *  falls away towards the ocean — and that the land is lifted by exactly the same
- *  amount, so the channel stays sunk into its banks the whole way.
+/** The shape of a river, read off the island's drainage network.
+ *
+ *  Everything here is geometry: given how far a column is from the middle of its channel
+ *  and how much land drains through it, what is the bed, where is the water's top face,
+ *  and how far out does the floodplain reach. The network in `drainage.ts` decides where
+ *  the channels are and how big; this decides what they look like.
  *
  *  The generator only fills the channel once, as an opening position. From then on the
- *  water is the simulation's, and where it stands is whatever the springs and the
- *  ground between them make of it. */
+ *  water is the simulation's, and where it stands is whatever the springs and the ground
+ *  between them make of it. */
 
-/** How far the land, and with it the river surface, climbs from coast to interior. */
+/** How far the land climbs from coast to interior. Rivers no longer take their height
+ *  from this — they take it from the ground they run over — but it is still what gives
+ *  the island an inland to run down from. */
 export const RIVER_CLIMB = 15;
 
-/** Turns the inland field into a 0 to 1 fraction, flat at the coast and flat again deep
- *  inland. Monotone, so a river's height never doubles back on itself for want of a
- *  smooth ramp to run down. */
+/** Turns the continentalness field into a 0 to 1 fraction, flat at the coast and flat
+ *  again deep inland. */
 export function inlandness(continentalness: number): number {
   return clamp((continentalness + 0.02) / 0.34, 0, 1);
 }
-/** Half width of the carved channel, in blocks of noise band. */
-const RIVER_WIDTH = 0.055;
-/** Strength at which a column counts as the channel itself rather than its bank. The
- *  bed is cut straight down to the floor here, whatever the land above it is doing. */
+
+/** Strength at which a column counts as the channel itself rather than its bank, which
+ *  is exactly the half width of the channel. Only the channel holds water. */
 export const CHANNEL_CORE = 0.25;
-/** Deepest part of the channel below its surface. */
-const RIVER_DEPTH = 3;
-/** Furthest the centre line search may step, in blocks. */
-const CENTER_REACH = 14;
-/** How far inland a column has to be to count as headwater. */
-const SPRING_INLAND = 0.55;
-/** Chance an eligible headwater column carries a spring. Tuned to give a few dozen
- *  across the island, so no river system is left without one. */
-const SPRING_CHANCE = 0.03;
+
+/** How far past the water's edge the bank slopes back up to the surrounding land,
+ *  measured in half channel widths. The old generator went straight up in a single
+ *  block, which is what made every river read as a crack in the ground. */
+const BANK_SPAN = 1;
+/** How far past the crest an ordinary channel takes to blend back into the hillside. */
+const TAPER_SPAN = 1;
+/** How far the floodplain reaches, in half channel widths, on rivers big enough to have
+ *  laid one down. Roughly two and a half times the width of the water to either side. */
+const PLAIN_SPAN = 5;
+/** How much of the outer floodplain is spent easing back into the hillside. */
+const PLAIN_FADE = 2;
+
 export interface RiverSample {
-  /** 0 outside the river, 1 in the middle of the channel. */
+  /** 1 in the middle of the channel, `CHANNEL_CORE` at the water's edge, 0 past the top
+   *  of the bank. */
   strength: number;
   /** World height of the water's top face, as a fraction rather than a whole block.
    *  Quantising it to whole blocks turned every river into a flight of one block
    *  terraces, because the surface crosses a block boundary every few metres; the
    *  generator instead part fills the topmost cell so the sheet slopes smoothly. */
   surface: number;
-  /** Y the channel floor is cut down to. */
+  /** Y the middle of the channel floor is cut down to. */
   floor: number;
-  /** 0 at the river mouth, 1 at the headwaters. Decides how long the weather upstream
-   *  takes to arrive, and so how far behind the headwaters this column runs. */
+  /** 0 at the river mouth, 1 at the headwaters. */
   inland: number;
+  /** Blocks from the middle of the channel. */
+  distance: number;
+  /** Cells of land draining through the channel. */
+  flow: number;
+  /** How steeply the channel falls there, in blocks per block. A reach steeper than
+   *  about half a block per block is a fall, and the water surface steps down it. */
+  slope: number;
 }
 
+const DRY: RiverSample = {
+  strength: 0,
+  surface: 0,
+  floor: 0,
+  inland: 0,
+  distance: Infinity,
+  flow: 0,
+  slope: 0,
+};
+
 /** True when the river covers a column of ground `height` blocks high. A column is
- *  covered only inside the channel itself: the banks are carved to stay clear of the
- *  water line. */
+ *  covered only inside the channel itself: the banks slope up out of the water. */
 export function riverCovers(sample: RiverSample, height: number, offset = 0): boolean {
   return sample.strength >= CHANNEL_CORE && sample.surface + offset > height + 1;
 }
 
 export class RiverField {
-  private readonly path: Noise;
-  private readonly warp: Noise;
+  private readonly drainage: Drainage;
 
-  /** @param inlandAt how far inland a column is, 0 at the coast and 1 in the interior,
-   *  which is where the river's height comes from. The field samples it away from the
-   *  column it was asked about, so it has to be able to ask for it anywhere. */
-  constructor(seed: number, private readonly inlandAt: (x: number, z: number) => number) {
-    this.path = new Noise(seed ^ 0x21e7);
-    this.warp = new Noise(seed ^ 0x33a2b);
+  private readonly springKeys: Set<string>;
+
+  /** @param naturalHeight land height at a column before any channel is cut into it. */
+  constructor(naturalHeight: (x: number, z: number) => number) {
+    this.drainage = new Drainage(naturalHeight);
+    this.springKeys = new Set(this.drainage.springs.map((s) => `${s.x},${s.z}`));
   }
 
-  /** The winding field whose zero crossing is the middle of a channel. */
-  private pathValue(x: number, z: number): number {
-    // Warping the lookup makes the channel wind instead of running straight.
-    const warpX = this.warp.noise2(x * 0.0007, z * 0.0007) * 0.9;
-    const warpZ = this.warp.noise2(x * 0.0007 + 71.3, z * 0.0007 - 19.7) * 0.9;
-    return this.path.noise2(x * 0.0013 + warpX, z * 0.0013 + warpZ);
+  /** Heads of streams, one per branch of the network. Every river now lives or dies by
+   *  its springs, so a valley without one dries out for good. */
+  get springs(): readonly { x: number; z: number }[] {
+    return this.drainage.springs;
   }
 
-  /** How far inland the middle of this column's channel is, found with a single Newton
-   *  step down the path field. Taking the river's height at the column itself tilted the
-   *  water by up to three blocks from one bank to the other, because the field changes
-   *  across the stream as well as along it. */
-  private centerInland(x: number, z: number, value: number): number {
-    const step = 2;
-    const gx = (this.pathValue(x + step, z) - value) / step;
-    const gz = (this.pathValue(x, z + step) - value) / step;
-    const grad = gx * gx + gz * gz;
-    if (grad < 1e-12) return this.inlandAt(x, z);
-    // Clamped because a flat spot in the field would otherwise throw the sample
-    // clear across the map.
-    const t = Math.max(-CENTER_REACH, Math.min(CENTER_REACH, -value / Math.sqrt(grad)));
-    return this.inlandAt(x + (gx / Math.sqrt(grad)) * t, z + (gz / Math.sqrt(grad)) * t);
+  /** True where a spring should bubble up. */
+  isSpringSite(x: number, z: number): boolean {
+    return this.springKeys.has(`${x},${z}`);
   }
 
-  /** Samples the river at a column. The surface comes from continentalness alone, and
-   *  the terrain generator lifts the land by exactly the same amount, so the channel is
-   *  always sunk into its banks and always slopes towards the sea. */
-  sample(x: number, z: number, continentalness: number): RiverSample {
-    // No rivers out at sea, and they fade out as they meet it.
-    const land = smoothstep(-0.12, 0.06, continentalness + 0.16);
-    if (land <= 0) return DRY;
-
-    const value = this.pathValue(x, z);
-    const band = 1 - smoothstep(0, RIVER_WIDTH, Math.abs(value));
-    const strength = band * land;
-    if (strength <= 0.02) return DRY;
-
-    const inland = this.centerInland(x, z, value);
-    const surface = this.surfaceLevel(inland);
+  sample(x: number, z: number): RiverSample {
+    const found = this.drainage.sample(x, z);
+    if (found.flow <= 0) return DRY;
+    const half = found.width / 2;
+    const t = found.distance / half;
     return {
-      strength,
-      surface,
-      floor: Math.floor(surface) - 2 - Math.round(strength * RIVER_DEPTH),
-      inland,
+      strength:
+        t <= 1
+          ? 1 - t * (1 - CHANNEL_CORE)
+          : Math.max(0, (CHANNEL_CORE * (1 + BANK_SPAN - t)) / BANK_SPAN),
+      surface: found.surface,
+      floor: Math.floor(found.surface - found.depth),
+      inland: clamp((found.surface - (SEA_LEVEL + 1)) / RIVER_CLIMB, 0, 1),
+      distance: found.distance,
+      flow: found.flow,
+      slope: found.slope,
     };
   }
 
-  /** Top face of the river's water, for a column that far inland. It is left as a
-   *  fraction, so the surface is a smooth ramp rather than a staircase, and at the coast
-   *  it meets the top face of the sea exactly. The land is lifted by exactly the same
-   *  amount, which is what keeps the channel sunk into its banks all the way down. */
-  surfaceLevel(inland: number): number {
-    return SEA_LEVEL + 1 + inland * RIVER_CLIMB;
+  /** The height the land is cut or filled to at a column, given whatever the untouched
+   *  terrain was doing there. Returns `height` unchanged where no river reaches.
+   *
+   *  Working outwards: the bed is a rounded trough, deepest in the middle and rising to
+   *  the water line at the edge; then a crest, which is the bank, at or above the water's
+   *  top face — this is what holds the river in, and the old generator's vertical block
+   *  of it is exactly what made every channel read as a crack in the ground; then the
+   *  ground eases back down to the hillside. On a river big enough to have built one the
+   *  crest is a floodplain instead, running out a block clear of the water: flat enough
+   *  to walk and to farm, low enough to go under when the rains come. */
+  carve(height: number, x: number, z: number): number {
+    const found = this.drainage.sample(x, z);
+    if (found.flow <= 0) return height;
+    const t = found.distance / (found.width / 2);
+    // Top face the banks have to reach for the water to stay in the channel.
+    const lip = Math.ceil(found.surface);
+
+    if (t <= 1) {
+      const bed = Math.floor(found.surface - found.depth * Math.sqrt(Math.max(0, 1 - t * t)));
+      return Math.min(height, bed);
+    }
+
+    const plain = found.flow >= PLAIN_FLOW;
+    // Where the ground settles just past the water's edge. Never below the lip: a bank
+    // that dips even one block under the surface lets the river out sideways, which used
+    // to leave a film of water lying on every terrace of the slope below.
+    const shelf = Math.max(lip, plain ? Math.min(height, lip + 1) : height);
+    if (t <= 1 + BANK_SPAN) return lerp(lip, shelf, smoothstep(0, 1, (t - 1) / BANK_SPAN));
+
+    // Past the crest the ground comes back to whatever the land was doing. Anything low
+    // out here is safe: the crest stands between it and the water.
+    const edge = plain ? PLAIN_SPAN : 1 + BANK_SPAN + TAPER_SPAN;
+    if (t >= edge) return height;
+    return lerp(shelf, height, smoothstep(plain ? PLAIN_SPAN - PLAIN_FADE : 1 + BANK_SPAN, edge, t));
   }
 
-  /** True where a spring should bubble up. Every river now lives or dies by its
-   *  springs, so they are far commoner than they were when the generator simply filled
-   *  the channel in: a valley without one dries out for good. */
-  isSpringSite(seed: number, x: number, z: number, sample: RiverSample): boolean {
-    if (sample.strength < 0.8) return false;
-    // Only in the headwaters, where the channel is highest above the sea.
-    if (sample.inland < SPRING_INLAND) return false;
-    return hashFloat(seed ^ 0x5210, x, z) < SPRING_CHANCE;
+  /** True when the nearest channel, banks and all, keeps this far clear of a column.
+   *  A village asks before flattening its plateau: laid over a channel it would dam the
+   *  river, and on a finite island a dammed river is a river gone. */
+  clearOfChannel(x: number, z: number, radius: number): boolean {
+    const found = this.drainage.sample(x, z);
+    if (found.flow <= 0) return true;
+    return found.distance - found.width / 2 > radius;
   }
 }
-
-const DRY: RiverSample = { strength: 0, surface: 0, floor: 0, inland: 0 };

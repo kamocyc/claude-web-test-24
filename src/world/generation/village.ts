@@ -9,7 +9,7 @@ export const VILLAGE_CELL_CHUNKS = 7;
 export const VILLAGE_CELL = VILLAGE_CELL_CHUNKS * CHUNK_SIZE;
 /** Radius of the flattened plateau a village sits on. */
 export const VILLAGE_RADIUS = 38;
-const VILLAGE_CHANCE = 0.62;
+const VILLAGE_CHANCE = 0.75;
 
 export type VillageVariant = 'plains' | 'desert' | 'snowy';
 
@@ -53,32 +53,43 @@ export interface VillagePlan {
   chests: ChestMarker[];
 }
 
-/** Returns the village centre inside a grid cell, or null when the cell has none. */
-export function villageInCell(seed: number, cellX: number, cellZ: number): VillageSite | null {
-  if (hashFloat(seed ^ 0x5eed1, cellX, cellZ, 17) > VILLAGE_CHANCE) return null;
-  const jitter = mulberry32(hashInts(seed ^ 0x5eed2, cellX, cellZ));
-  const margin = VILLAGE_RADIUS + 16;
-  const span = VILLAGE_CELL - margin * 2;
-  return {
-    cellX,
-    cellZ,
-    x: cellX * VILLAGE_CELL + margin + Math.floor(jitter() * span),
-    z: cellZ * VILLAGE_CELL + margin + Math.floor(jitter() * span),
-  };
-}
+/** How many spots in a cell are tried before giving up on it. One was enough while the
+ *  island was unbounded and rivers were thin: there was always another cell. On a finite
+ *  island with a real drainage network, a tenth of the land is water and a single fixed
+ *  spot per cell left whole seeds with nowhere to build. */
+const VILLAGE_TRIES = 8;
+/** How far a centre is kept from the edge of its cell. Only wide enough that two
+ *  neighbouring villages cannot land on top of each other. */
+const VILLAGE_MARGIN = 12;
 
-/** Every candidate village whose plateau could reach the given block column. */
-export function nearbyVillageSites(seed: number, blockX: number, blockZ: number): VillageSite[] {
-  const cellX = Math.floor(blockX / VILLAGE_CELL);
-  const cellZ = Math.floor(blockZ / VILLAGE_CELL);
+/** The spots in a grid cell a village might stand on, best first, or nothing at all when
+ *  the cell has no village. Whether any of them is buildable is the terrain's business:
+ *  that needs heights and rivers, which this module deliberately knows nothing about. */
+export function villageCandidates(seed: number, cellX: number, cellZ: number): VillageSite[] {
+  if (hashFloat(seed ^ 0x5eed1, cellX, cellZ, 17) > VILLAGE_CHANCE) return [];
+  const jitter = mulberry32(hashInts(seed ^ 0x5eed2, cellX, cellZ));
+  const span = VILLAGE_CELL - VILLAGE_MARGIN * 2;
   const sites: VillageSite[] = [];
-  for (let dz = -1; dz <= 1; dz++) {
-    for (let dx = -1; dx <= 1; dx++) {
-      const site = villageInCell(seed, cellX + dx, cellZ + dz);
-      if (site) sites.push(site);
-    }
+  for (let i = 0; i < VILLAGE_TRIES; i++) {
+    sites.push({
+      cellX,
+      cellZ,
+      x: cellX * VILLAGE_CELL + VILLAGE_MARGIN + Math.floor(jitter() * span),
+      z: cellZ * VILLAGE_CELL + VILLAGE_MARGIN + Math.floor(jitter() * span),
+    });
   }
   return sites;
+}
+
+/** The grid cells whose village could reach the given block column. */
+export function nearbyVillageCells(blockX: number, blockZ: number): [number, number][] {
+  const cellX = Math.floor(blockX / VILLAGE_CELL);
+  const cellZ = Math.floor(blockZ / VILLAGE_CELL);
+  const cells: [number, number][] = [];
+  for (let dz = -1; dz <= 1; dz++) {
+    for (let dx = -1; dx <= 1; dx++) cells.push([cellX + dx, cellZ + dz]);
+  }
+  return cells;
 }
 
 /** 1 inside the flat core, falling to 0 at the plateau edge. */

@@ -30,7 +30,7 @@ describe('seeds', () => {
     const spawn = findSpawn(generator);
 
     it('starts the player on dry land', () => {
-      expect(spawn).toEqual({ x: 8, y: 52, z: 0 });
+      expect(spawn).toEqual({ x: 0, y: 55, z: 0 });
       expect(generator.height(spawn.x, spawn.z)).toBeGreaterThan(SEA_LEVEL);
     });
 
