@@ -192,12 +192,13 @@ interface Palette {
 
 function paletteFor(variant: VillageVariant): Palette {
   if (variant === 'desert') {
+    // Different roof and path blocks, otherwise a sandstone village reads as one lump.
     return {
       wall: Block.SANDSTONE,
-      corner: Block.SANDSTONE,
-      roof: Block.SANDSTONE,
-      floor: Block.SANDSTONE,
-      path: Block.SANDSTONE,
+      corner: Block.OAK_LOG,
+      roof: Block.STONE_BRICKS,
+      floor: Block.OAK_PLANKS,
+      path: Block.GRAVEL,
     };
   }
   if (variant === 'snowy') {

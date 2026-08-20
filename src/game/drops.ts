@@ -21,8 +21,8 @@ export class ItemDrop {
 }
 
 const GRAVITY = 20;
-const PICKUP_RADIUS = 1.4;
-const MAGNET_RADIUS = 2.6;
+const PICKUP_RADIUS = 0.9;
+const MAGNET_RADIUS = 3;
 const DESPAWN_SECONDS = 300;
 
 export interface DropTarget {
@@ -58,14 +58,10 @@ export class DropManager {
       drop.pickupDelay = Math.max(0, drop.pickupDelay - dt);
       drop.spin += dt * 2;
 
-      const distance = Math.hypot(drop.x - target.x, drop.y - (target.y + 0.9), drop.z - target.z);
-      if (drop.pickupDelay <= 0 && distance < MAGNET_RADIUS) {
-        // Drift towards the player before being absorbed.
-        const pull = (MAGNET_RADIUS - distance) * 6 * dt;
-        drop.x += (target.x - drop.x) * pull;
-        drop.y += (target.y + 0.6 - drop.y) * pull;
-        drop.z += (target.z - drop.z) * pull;
-      }
+      const chestHeight = target.y + 0.7;
+      const distance = Math.hypot(drop.x - target.x, drop.y - chestHeight, drop.z - target.z);
+      const magnetised = drop.pickupDelay <= 0 && distance < MAGNET_RADIUS;
+
       if (drop.pickupDelay <= 0 && distance < PICKUP_RADIUS) {
         const leftover = target.collect(drop.stack);
         if (leftover === 0) {
@@ -76,16 +72,28 @@ export class DropManager {
         drop.stack.count = leftover;
       }
 
-      drop.vy -= GRAVITY * dt;
-      const box = { x: drop.x, y: drop.y, z: drop.z, width: 0.25, height: 0.25 };
-      const result = sweepMove(this.world, box, drop.vx * dt, drop.vy * dt, drop.vz * dt);
-      drop.x = box.x;
-      drop.y = box.y;
-      drop.z = box.z;
-      if (result.collidedY) drop.vy = 0;
-      if (result.onGround) {
-        drop.vx *= 0.6;
-        drop.vz *= 0.6;
+      if (magnetised) {
+        // Fly straight to the player, ignoring gravity and terrain so items never
+        // get stuck on a ledge just out of reach.
+        const speed = 9;
+        drop.x += ((target.x - drop.x) / distance) * speed * dt;
+        drop.y += ((chestHeight - drop.y) / distance) * speed * dt;
+        drop.z += ((target.z - drop.z) / distance) * speed * dt;
+        drop.vx = 0;
+        drop.vy = 0;
+        drop.vz = 0;
+      } else {
+        drop.vy -= GRAVITY * dt;
+        const box = { x: drop.x, y: drop.y, z: drop.z, width: 0.25, height: 0.25 };
+        const result = sweepMove(this.world, box, drop.vx * dt, drop.vy * dt, drop.vz * dt);
+        drop.x = box.x;
+        drop.y = box.y;
+        drop.z = box.z;
+        if (result.collidedY) drop.vy = 0;
+        if (result.onGround) {
+          drop.vx *= 0.6;
+          drop.vz *= 0.6;
+        }
       }
 
       if (drop.age > DESPAWN_SECONDS || drop.y < -10) this.drops.splice(i, 1);

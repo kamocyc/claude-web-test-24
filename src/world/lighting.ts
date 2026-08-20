@@ -28,11 +28,14 @@ export class LightEngine {
     return (this.add.length - this.addHead) / 4 + (this.remove.length - this.removeHead) / 5;
   }
 
-  /** Seeds skylight columns and torch light for a freshly generated chunk, and re-queues
-   *  the borders of its neighbours so light can flow across the seam. */
+  /** Seeds skylight columns and torch light for a freshly generated chunk.
+   *  Only cells that sit on a light discontinuity are queued: an open sky column
+   *  surrounded by more open sky can never brighten anything, and queueing all of
+   *  them would mean millions of pointless flood-fill steps per world load. */
   seedChunk(chunk: Chunk): void {
     const originX = chunk.originX;
     const originZ = chunk.originZ;
+
     for (let lz = 0; lz < CHUNK_SIZE; lz++) {
       for (let lx = 0; lx < CHUNK_SIZE; lx++) {
         let level = 15;
@@ -47,7 +50,6 @@ export class LightEngine {
             if (filter > 1) level = Math.max(0, level - (filter - 1));
           }
           chunk.setSkyLight(lx, y, lz, level);
-          if (level > 0) this.queueAdd(originX + lx, y, originZ + lz, SKY);
 
           const emission = blockDef(id).light;
           if (emission > 0) {
@@ -57,24 +59,74 @@ export class LightEngine {
         }
       }
     }
+
+    // Second pass: queue only the cells whose in-chunk neighbours are darker.
+    for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+      for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+        for (let y = 0; y < CHUNK_HEIGHT; y++) {
+          const level = chunk.getSkyLight(lx, y, lz);
+          if (level <= 1) continue;
+          if (this.hasDarkerNeighbour(chunk, lx, y, lz, level)) {
+            this.queueAdd(originX + lx, y, originZ + lz, SKY);
+          }
+        }
+      }
+    }
+
     chunk.lit = true;
-    this.queueChunkBorders(chunk.cx, chunk.cz);
+    this.queueChunkSeams(chunk);
   }
 
-  /** Pushes the light values along the four seams so the flood fill can spread inwards. */
-  private queueChunkBorders(cx: number, cz: number): void {
-    const edges: [number, number][] = [];
-    for (let i = 0; i < CHUNK_SIZE; i++) {
-      edges.push([cx * CHUNK_SIZE + i, cz * CHUNK_SIZE - 1]);
-      edges.push([cx * CHUNK_SIZE + i, cz * CHUNK_SIZE + CHUNK_SIZE]);
-      edges.push([cx * CHUNK_SIZE - 1, cz * CHUNK_SIZE + i]);
-      edges.push([cx * CHUNK_SIZE + CHUNK_SIZE, cz * CHUNK_SIZE + i]);
+  private hasDarkerNeighbour(chunk: Chunk, lx: number, y: number, lz: number, level: number): boolean {
+    for (const [dx, dy, dz] of NEIGHBORS) {
+      const nx = lx + dx;
+      const nz = lz + dz;
+      const ny = y + dy;
+      if (nx < 0 || nx >= CHUNK_SIZE || nz < 0 || nz >= CHUNK_SIZE) continue;
+      if (ny < 0 || ny >= CHUNK_HEIGHT) continue;
+      if (isOpaque(chunk.get(nx, ny, nz))) continue;
+      if (chunk.getSkyLight(nx, ny, nz) < level - 1) return true;
     }
-    for (const [x, z] of edges) {
-      if (!this.world.isLoadedAt(x, z)) continue;
-      for (let y = 0; y < CHUNK_HEIGHT; y++) {
-        if (this.world.getSkyLight(x, y, z) > 0) this.queueAdd(x, y, z, SKY);
-        if (this.world.getBlockLight(x, y, z) > 0) this.queueAdd(x, y, z, BLOCK);
+    return false;
+  }
+
+  /** Compares the four seams with already loaded neighbours and queues the brighter
+   *  side wherever the two disagree, so light flows across chunk borders. */
+  private queueChunkSeams(chunk: Chunk): void {
+    const seams: { dx: number; dz: number }[] = [
+      { dx: -1, dz: 0 },
+      { dx: 1, dz: 0 },
+      { dx: 0, dz: -1 },
+      { dx: 0, dz: 1 },
+    ];
+    for (const seam of seams) {
+      const neighbor = this.world.getChunk(chunk.cx + seam.dx, chunk.cz + seam.dz);
+      if (!neighbor) continue;
+      for (let i = 0; i < CHUNK_SIZE; i++) {
+        const here = {
+          lx: seam.dx === -1 ? 0 : seam.dx === 1 ? CHUNK_SIZE - 1 : i,
+          lz: seam.dz === -1 ? 0 : seam.dz === 1 ? CHUNK_SIZE - 1 : i,
+        };
+        const there = {
+          lx: seam.dx === -1 ? CHUNK_SIZE - 1 : seam.dx === 1 ? 0 : i,
+          lz: seam.dz === -1 ? CHUNK_SIZE - 1 : seam.dz === 1 ? 0 : i,
+        };
+        for (let y = 0; y < CHUNK_HEIGHT; y++) {
+          const mine = chunk.getSkyLight(here.lx, y, here.lz);
+          const theirs = neighbor.getSkyLight(there.lx, y, there.lz);
+          if (mine > theirs + 1 && !isOpaque(neighbor.get(there.lx, y, there.lz))) {
+            this.queueAdd(chunk.originX + here.lx, y, chunk.originZ + here.lz, SKY);
+          } else if (theirs > mine + 1 && !isOpaque(chunk.get(here.lx, y, here.lz))) {
+            this.queueAdd(neighbor.originX + there.lx, y, neighbor.originZ + there.lz, SKY);
+          }
+          const mineBlock = chunk.getBlockLight(here.lx, y, here.lz);
+          const theirsBlock = neighbor.getBlockLight(there.lx, y, there.lz);
+          if (mineBlock > theirsBlock + 1) {
+            this.queueAdd(chunk.originX + here.lx, y, chunk.originZ + here.lz, BLOCK);
+          } else if (theirsBlock > mineBlock + 1) {
+            this.queueAdd(neighbor.originX + there.lx, y, neighbor.originZ + there.lz, BLOCK);
+          }
+        }
       }
     }
   }

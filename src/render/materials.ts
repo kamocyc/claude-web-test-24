@@ -29,7 +29,6 @@ const FRAGMENT = /* glsl */ `
   varying float vShade;
   varying vec2 vUvTile;
   #include <common>
-  #include <colorspace_pars_fragment>
   #include <fog_pars_fragment>
   void main() {
     vec4 texel = texture2D( uMap, vUvTile );
@@ -38,7 +37,7 @@ const FRAGMENT = /* glsl */ `
     #endif
     // Sunlight fades with the time of day; torch light never does.
     float level = max( vLight.x * uSun, vLight.y );
-    float lit = mix( 0.06, 1.0, pow( clamp( level, 0.0, 1.0 ), 1.35 ) );
+    float lit = mix( 0.085, 1.0, pow( clamp( level, 0.0, 1.0 ), 1.35 ) );
     gl_FragColor = vec4( texel.rgb * lit * vShade, texel.a * uOpacity );
     #include <colorspace_fragment>
     #include <fog_fragment>

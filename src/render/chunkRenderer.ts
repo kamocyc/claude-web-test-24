@@ -5,16 +5,17 @@ import type { ChunkMaterials } from './materials';
 import { PASS_CUTOUT, PASS_OPAQUE, PASS_TRANSPARENT, type GeometryArrays, buildChunkMesh } from './mesher';
 import type { Atlas } from './textures';
 
-function toGeometry(data: GeometryArrays, cx: number, cz: number): THREE.BufferGeometry {
+function toGeometry(data: GeometryArrays): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(data.position, 3));
   geometry.setAttribute('uv', new THREE.BufferAttribute(data.uv, 2));
   geometry.setAttribute('aLight', new THREE.BufferAttribute(data.light, 2));
   geometry.setAttribute('aShade', new THREE.BufferAttribute(data.shade, 1));
   geometry.setIndex(new THREE.BufferAttribute(data.index, 1));
-  // The bounds are known up front, so skip the full vertex scan.
+  // The bounds are known up front, so skip the full vertex scan. They are in the
+  // mesh's own space: the mesh itself is positioned at the chunk origin.
   geometry.boundingSphere = new THREE.Sphere(
-    new THREE.Vector3(cx * CHUNK_SIZE + CHUNK_SIZE / 2, CHUNK_HEIGHT / 2, cz * CHUNK_SIZE + CHUNK_SIZE / 2),
+    new THREE.Vector3(CHUNK_SIZE / 2, CHUNK_HEIGHT / 2, CHUNK_SIZE / 2),
     Math.hypot(CHUNK_SIZE, CHUNK_HEIGHT, CHUNK_SIZE) / 2,
   );
   return geometry;
@@ -49,7 +50,7 @@ export class ChunkRenderer {
     ];
     for (const pass of passes) {
       if (!pass.data) continue;
-      const mesh = new THREE.Mesh(toGeometry(pass.data, chunk.cx, chunk.cz), pass.material);
+      const mesh = new THREE.Mesh(toGeometry(pass.data), pass.material);
       mesh.position.set(chunk.originX, 0, chunk.originZ);
       mesh.renderOrder = pass.order;
       mesh.matrixAutoUpdate = false;

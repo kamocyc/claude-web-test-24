@@ -235,6 +235,17 @@ export class Player implements Damageable {
     return worst;
   }
 
+  /** Moves the player without carrying over momentum or fall distance. */
+  teleportTo(x: number, y: number, z: number): void {
+    this.x = x;
+    this.y = y;
+    this.z = z;
+    this.vx = 0;
+    this.vy = 0;
+    this.vz = 0;
+    this.fallStartY = y;
+  }
+
   respawn(x: number, y: number, z: number): void {
     this.x = x;
     this.y = y;

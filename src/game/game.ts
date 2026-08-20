@@ -1,0 +1,919 @@
+import * as THREE from 'three';
+import { boxIntersectsWorld } from '../core/aabb';
+import { mulberry32 } from '../core/rng';
+import { ChunkRenderer } from '../render/chunkRenderer';
+import { Effects } from '../render/effects';
+import { EntityRenderer } from '../render/entityRenderer';
+import { createChunkMaterials, type ChunkMaterials } from '../render/materials';
+import { Sky } from '../render/sky';
+import { buildAtlas, type Atlas } from '../render/textures';
+import { Block, blockDef, isFarmland, isReplaceable, supportsPlant } from '../world/blocks';
+import { CHUNK_HEIGHT, CHUNK_SIZE, Chunk, chunkKey, toChunkCoord } from '../world/chunk';
+import { TerrainGenerator } from '../world/generation/terrain';
+import { LightEngine } from '../world/lighting';
+import { raycastVoxels, type RaycastHit } from '../world/raycast';
+import { TICK_INTERVAL, randomTickChunk } from '../world/ticks';
+import { World } from '../world/world';
+import { ChunkWorkerPool } from '../workers/pool';
+import type { ChunkReadyMessage } from '../workers/chunkMessages';
+import { Hud } from '../ui/hud';
+import type { Input } from '../ui/input';
+import type { Menus } from '../ui/menus';
+import { ScreenManager } from '../ui/screens';
+import { createChest, createFurnace, isChest, isFurnace } from './blockEntities';
+import { applyDamage, applyKnockback } from './combat';
+import { DayCycle } from './daycycle';
+import { DropManager } from './drops';
+import { EXHAUSTION } from './hunger';
+import { Inventory, type ItemStack } from './inventory';
+import { itemDef } from './items';
+import { fillVillageChest } from './loot';
+import { blockDrops, heldTool, miningTime } from './mining';
+import { Mob } from './mobs/ai';
+import { MobManager, type MobUpdateContext } from './mobs/spawner';
+import type { MobKind } from './mobs/types';
+import { NO_INPUT, Player, type PlayerInput } from './player';
+import {
+  type SaveData,
+  SAVE_VERSION,
+  decodeEdits,
+  encodeEdits,
+  writeSave,
+} from './save';
+import { tickFurnace } from './smelting';
+import { tradesFromJSON, tradesToJSON } from './trading';
+import { biomeDef } from '../world/generation/biome';
+
+const RENDER_DISTANCE = 8;
+const UNLOAD_MARGIN = 2;
+const REACH = 5;
+const ATTACK_REACH = 3.6;
+const AUTOSAVE_SECONDS = 30;
+/** Chunk meshes rebuilt per frame; higher values load faster but stutter more. */
+const MESH_BUDGET = 3;
+
+export interface GameOptions {
+  canvas: HTMLCanvasElement;
+  input: Input;
+  menus: Menus;
+  seed: number;
+  save: SaveData | null;
+  onQuit(): void;
+}
+
+export class Game {
+  readonly world: World;
+  readonly player = new Player();
+  readonly day = new DayCycle();
+  private readonly renderer: THREE.WebGLRenderer;
+  private readonly scene = new THREE.Scene();
+  private readonly camera: THREE.PerspectiveCamera;
+  private readonly atlas: Atlas;
+  private readonly materials: ChunkMaterials;
+  private readonly chunkRenderer: ChunkRenderer;
+  private readonly entityRenderer: EntityRenderer;
+  private readonly effects: Effects;
+  private readonly sky: Sky;
+  private readonly light: LightEngine;
+  private readonly generator: TerrainGenerator;
+  private readonly pool: ChunkWorkerPool;
+  private readonly mobs: MobManager;
+  private readonly drops: DropManager;
+  private readonly hud: Hud;
+  private readonly screens: ScreenManager;
+  private readonly tickRng = mulberry32(0x71c4);
+
+  private readonly populatedChunks = new Set<string>();
+  private running = false;
+  private paused = false;
+  private ready = false;
+  private lastFrame = 0;
+  private tickTimer = 0;
+  private autosaveTimer = 0;
+  private fps = 60;
+  /** Block being mined and how far along it is. */
+  private miningTarget: { x: number; y: number; z: number } | null = null;
+  private miningProgress = 0;
+  private openContainerPos: { x: number; y: number; z: number } | null = null;
+
+  constructor(private readonly options: GameOptions) {
+    this.world = new World(options.seed);
+    this.generator = new TerrainGenerator(options.seed);
+    this.light = new LightEngine(this.world);
+    this.world.onBlockChange((x, y, z, previous, next) => {
+      this.light.onBlockChanged(x, y, z, previous, next);
+      this.onBlockChanged(x, y, z, previous, next);
+    });
+
+    this.renderer = new THREE.WebGLRenderer({ canvas: options.canvas, antialias: false, powerPreference: 'high-performance' });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.camera = new THREE.PerspectiveCamera(75, 1, 0.1, RENDER_DISTANCE * CHUNK_SIZE * 1.4);
+
+    this.atlas = buildAtlas();
+    this.materials = createChunkMaterials(this.atlas.texture);
+    this.chunkRenderer = new ChunkRenderer(this.world, this.atlas, this.materials);
+    this.entityRenderer = new EntityRenderer(this.atlas);
+    this.effects = new Effects(this.atlas);
+    this.sky = new Sky(this.scene, RENDER_DISTANCE * CHUNK_SIZE);
+    this.scene.add(this.chunkRenderer.group, this.entityRenderer.group, this.effects.group);
+
+    this.mobs = new MobManager(this.world, options.seed);
+    this.drops = new DropManager(this.world);
+    this.hud = new Hud(this.atlas);
+    this.screens = new ScreenManager(this.player, this.atlas, (stack) => this.dropAtPlayer(stack));
+
+    document.body.append(this.hud.root, this.screens.layer);
+
+    this.pool = new ChunkWorkerPool(options.seed);
+    this.pool.setHandler((message) => this.onChunkReady(message));
+
+    if (options.save) this.applySave(options.save);
+    else this.placeAtSpawn();
+
+    this.bindInput();
+    window.addEventListener('resize', this.onResize);
+    this.onResize();
+  }
+
+  // --- lifecycle -------------------------------------------------------------
+
+  start(): void {
+    this.running = true;
+    this.lastFrame = performance.now();
+    this.options.menus.showLoading(true, 'ワールドを生成しています...');
+    requestAnimationFrame(this.loop);
+  }
+
+  dispose(): void {
+    this.running = false;
+    window.removeEventListener('resize', this.onResize);
+    this.pool.dispose();
+    this.chunkRenderer.dispose();
+    this.hud.root.remove();
+    this.screens.close();
+    this.screens.layer.remove();
+    this.renderer.dispose();
+  }
+
+  private readonly onResize = (): void => {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    this.renderer.setSize(width, height, false);
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+  };
+
+  private readonly loop = (now: number): void => {
+    if (!this.running) return;
+    requestAnimationFrame(this.loop);
+    const dt = Math.min(0.05, (now - this.lastFrame) / 1000);
+    this.lastFrame = now;
+    this.fps = this.fps * 0.9 + (1 / Math.max(dt, 1e-4)) * 0.1;
+    this.update(dt);
+    this.render();
+    this.options.input.endFrame();
+  };
+
+  private update(dt: number): void {
+    this.streamChunks();
+    this.light.update(20000);
+    this.chunkRenderer.processDirty(MESH_BUDGET, this.player.x, this.player.z);
+
+    if (!this.ready) {
+      // Wait until the ground under the player exists before handing over control.
+      const loaded = this.world.hasChunk(toChunkCoord(this.player.x), toChunkCoord(this.player.z));
+      this.options.menus.showLoading(true, `地形を生成しています... 残り ${this.pool.pending} チャンク`);
+      if (loaded && this.pool.pending < 40) {
+        this.ready = true;
+        this.options.menus.showLoading(false);
+        this.options.menus.hideAll();
+        this.settlePlayerOnGround();
+        // Pointer lock can only be requested from a real user gesture, so the player
+        // clicks once to start looking around.
+        this.hud.setClickPrompt(true);
+      }
+      return;
+    }
+
+    if (this.paused || this.player.isDead) {
+      if (this.player.isDead) this.options.menus.showDeath(true);
+      this.hud.update(dt, this.player, this.debugInfo());
+      return;
+    }
+
+    this.day.update(dt);
+    this.materials.setSun(Math.max(0.06, this.day.sunLight));
+
+    // Only mouse look needs pointer lock; keyboard and clicks keep working without it
+    // so the game stays playable if the browser refuses to lock the cursor.
+    const screenOpen = this.screens.isOpen;
+    if (!screenOpen && this.options.input.locked) this.updateLook();
+    const input = screenOpen ? NO_INPUT : this.readMovement();
+
+    const events = this.player.update(dt, this.world, input);
+    this.unstick();
+    if (events.tookDamage > 0) this.hud.flashDamage();
+
+    if (!screenOpen) this.updateInteraction(dt);
+    else this.resetMining();
+
+    this.updateMobs(dt);
+    this.updateDrops(dt);
+    this.updateTicks(dt);
+    this.updateFurnaces(dt);
+    this.checkOpenContainer();
+
+    this.effects.update(dt);
+    this.entityRenderer.sync(this.mobs.mobs, this.drops.drops, this.mobs.arrows, performance.now() / 1000);
+    this.screens.refresh();
+    this.hud.update(dt, this.player, this.debugInfo());
+
+    this.autosaveTimer += dt;
+    if (this.autosaveTimer >= AUTOSAVE_SECONDS) {
+      this.autosaveTimer = 0;
+      this.save(false);
+    }
+  }
+
+  /** Safety net: if the player ends up inside terrain, lift them out. */
+  private unstick(): void {
+    for (let i = 0; i < 8; i++) {
+      if (!boxIntersectsWorld(this.world, this.player.box())) return;
+      this.player.y += 1;
+      this.player.vy = 0;
+    }
+  }
+
+  private render(): void {
+    this.camera.position.set(this.player.x, this.player.eyeY, this.player.z);
+    this.camera.rotation.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
+    this.sky.update(this.day, this.camera, this.renderer);
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  private debugInfo() {
+    return {
+      fps: this.fps,
+      chunks: this.chunkRenderer.meshCount,
+      pending: this.pool.pending,
+      biome: biomeDef(this.generator.biomeAt(Math.floor(this.player.x), Math.floor(this.player.z))).label,
+      clock: this.day.clock,
+      mobs: this.mobs.mobs.length,
+    };
+  }
+
+  // --- chunk streaming -------------------------------------------------------
+
+  private streamChunks(): void {
+    const pcx = toChunkCoord(this.player.x);
+    const pcz = toChunkCoord(this.player.z);
+    for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
+      for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
+        const distance = dx * dx + dz * dz;
+        if (distance > RENDER_DISTANCE * RENDER_DISTANCE) continue;
+        const cx = pcx + dx;
+        const cz = pcz + dz;
+        if (this.world.hasChunk(cx, cz) || this.pool.isBusyWith(cx, cz)) continue;
+        this.pool.request(cx, cz, distance);
+      }
+    }
+
+    const limit = (RENDER_DISTANCE + UNLOAD_MARGIN) * (RENDER_DISTANCE + UNLOAD_MARGIN);
+    this.pool.cancelFarther((cx, cz) => (cx - pcx) ** 2 + (cz - pcz) ** 2 <= limit);
+    for (const chunk of [...this.world.chunks.values()]) {
+      const distance = (chunk.cx - pcx) ** 2 + (chunk.cz - pcz) ** 2;
+      if (distance <= limit) continue;
+      this.chunkRenderer.remove(chunk.key);
+      this.world.removeChunk(chunk.cx, chunk.cz);
+    }
+  }
+
+  private onChunkReady(message: ChunkReadyMessage): void {
+    const chunk = new Chunk(message.cx, message.cz, message.blocks);
+    chunk.generated = true;
+    this.world.addChunk(chunk);
+    this.light.seedChunk(chunk);
+
+    const key = chunkKey(message.cx, message.cz);
+    if (!this.populatedChunks.has(key)) {
+      this.populatedChunks.add(key);
+      for (const villager of message.villagers) {
+        this.mobs.addVillager(villager.x + 0.5, villager.y, villager.z + 0.5, villager.profession);
+      }
+      for (const chest of message.chests) {
+        if (this.world.getBlockEntity(chest.x, chest.y, chest.z)) continue;
+        this.world.setBlockEntity(
+          chest.x,
+          chest.y,
+          chest.z,
+          createChest(fillVillageChest(this.options.seed, chest.x, chest.y, chest.z, chest.loot)),
+        );
+      }
+    }
+  }
+
+  // --- player input ----------------------------------------------------------
+
+  private bindInput(): void {
+    const input = this.options.input;
+    input.onKey((event) => {
+      if (!this.ready) return;
+      switch (event.code) {
+        case 'Escape':
+          if (this.screens.isOpen) {
+            this.closeScreen();
+          } else {
+            this.togglePause();
+          }
+          break;
+        case 'KeyE':
+          if (this.paused || this.player.isDead) break;
+          if (this.screens.isOpen) this.closeScreen();
+          else this.openScreen(() => this.screens.openInventory());
+          break;
+        case 'F3':
+          event.preventDefault();
+          this.hud.toggleDebug();
+          break;
+        default:
+          break;
+      }
+      const hotbar = /^Digit([1-9])$/.exec(event.code);
+      if (hotbar && !this.screens.isOpen) {
+        this.player.inventory.selected = Number(hotbar[1]) - 1;
+        this.hud.showHeldItem(this.player.inventory.held?.id ?? null);
+      }
+    });
+
+    this.options.canvas.addEventListener('mousedown', () => {
+      if (this.ready && !this.paused && !this.screens.isOpen && !this.player.isDead && !this.options.input.locked) {
+        this.options.input.requestLock();
+      }
+    });
+    document.addEventListener('pointerlockchange', () => {
+      this.hud.setClickPrompt(!this.options.input.locked && this.ready && !this.paused && !this.screens.isOpen);
+    });
+  }
+
+  private readMovement(): PlayerInput {
+    const input = this.options.input;
+    const wheel = input.takeWheel();
+    if (wheel !== 0) {
+      const size = 9;
+      this.player.inventory.selected = (this.player.inventory.selected + wheel + size) % size;
+      this.hud.showHeldItem(this.player.inventory.held?.id ?? null);
+    }
+    return {
+      forward: input.isDown('KeyW'),
+      back: input.isDown('KeyS'),
+      left: input.isDown('KeyA'),
+      right: input.isDown('KeyD'),
+      jump: input.isDown('Space'),
+      sprint: input.isDown('ControlLeft') || input.isDown('ControlRight'),
+      sneak: input.isDown('ShiftLeft') || input.isDown('ShiftRight'),
+    };
+  }
+
+  private updateLook(): void {
+    const delta = this.options.input.takeMouseDelta();
+    this.player.yaw -= delta.x;
+    this.player.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.player.pitch - delta.y));
+  }
+
+  // --- interaction -----------------------------------------------------------
+
+  private updateInteraction(dt: number): void {
+    const eye = { x: this.player.x, y: this.player.eyeY, z: this.player.z };
+    const look = this.player.lookVector();
+    const hit = raycastVoxels(this.world, eye, look, { maxDistance: REACH });
+    this.effects.setSelection(hit);
+
+    const input = this.options.input;
+    if (input.buttonJustPressed(0)) {
+      const mob = this.mobUnderCrosshair(eye, look);
+      if (mob) {
+        this.attack(mob);
+        this.resetMining();
+        return;
+      }
+    }
+    if (input.buttonJustPressed(2)) {
+      const mob = this.mobUnderCrosshair(eye, look);
+      if (mob && mob.kind === 'villager') {
+        this.openScreen(() => this.screens.openTrade(mob, () => this.hud.toast('取引が成立した')));
+        return;
+      }
+      this.useItem(hit);
+      return;
+    }
+
+    if (input.buttons[0] && hit) {
+      this.updateMining(dt, hit);
+    } else {
+      this.resetMining();
+    }
+  }
+
+  private updateMining(dt: number, hit: RaycastHit): void {
+    if (
+      !this.miningTarget ||
+      this.miningTarget.x !== hit.x ||
+      this.miningTarget.y !== hit.y ||
+      this.miningTarget.z !== hit.z
+    ) {
+      this.miningTarget = { x: hit.x, y: hit.y, z: hit.z };
+      this.miningProgress = 0;
+    }
+    const tool = heldTool(this.player.inventory.held);
+    const seconds = miningTime(hit.block, tool);
+    if (!Number.isFinite(seconds)) {
+      this.effects.setBreakProgress(null, 0);
+      return;
+    }
+    this.miningProgress += dt / seconds;
+    this.effects.setBreakProgress(this.miningTarget, this.miningProgress);
+    if (this.miningProgress >= 1) {
+      this.breakBlock(hit.x, hit.y, hit.z, hit.block);
+      this.resetMining();
+    }
+  }
+
+  private resetMining(): void {
+    this.miningTarget = null;
+    this.miningProgress = 0;
+    this.effects.setBreakProgress(null, 0);
+  }
+
+  private breakBlock(x: number, y: number, z: number, block: number): void {
+    const tool = heldTool(this.player.inventory.held);
+    const drops = blockDrops(block, tool, { random: () => Math.random() });
+    this.effects.spawnBlockParticles(x, y, z, block);
+
+    const entity = this.world.getBlockEntity(x, y, z);
+    if (isChest(entity)) {
+      for (const slot of entity.slots.slots) if (slot) this.drops.spawn(x + 0.5, y + 0.5, z + 0.5, slot);
+    } else if (isFurnace(entity)) {
+      for (const slot of entity.slots.slots) if (slot) this.drops.spawn(x + 0.5, y + 0.5, z + 0.5, slot);
+    }
+    if (entity) this.world.removeBlockEntity(x, y, z);
+
+    this.world.setBlock(x, y, z, Block.AIR);
+    for (const drop of drops) this.drops.spawn(x + 0.5, y + 0.5, z + 0.5, drop);
+    this.player.hunger.addExhaustion(EXHAUSTION.mineBlock);
+  }
+
+  /** Right click: place, plant, till, eat or open a container. */
+  private useItem(hit: RaycastHit | null): void {
+    const held = this.player.inventory.held;
+    const def = held ? itemDef(held.id) : undefined;
+    const sneaking = this.options.input.isDown('ShiftLeft') || this.options.input.isDown('ShiftRight');
+
+    if (hit && !sneaking) {
+      const target = this.world.getBlock(hit.x, hit.y, hit.z);
+      if (target === Block.CRAFTING_TABLE) {
+        this.openScreen(() => this.screens.openCraftingTable());
+        return;
+      }
+      if (target === Block.CHEST) {
+        let entity = this.world.getBlockEntity(hit.x, hit.y, hit.z);
+        if (!isChest(entity)) {
+          entity = createChest();
+          this.world.setBlockEntity(hit.x, hit.y, hit.z, entity);
+        }
+        this.openContainerPos = { x: hit.x, y: hit.y, z: hit.z };
+        const chest = entity as ReturnType<typeof createChest>;
+        this.openScreen(() => this.screens.openChest(chest.slots));
+        return;
+      }
+      if (target === Block.FURNACE) {
+        let entity = this.world.getBlockEntity(hit.x, hit.y, hit.z);
+        if (!isFurnace(entity)) {
+          entity = createFurnace();
+          this.world.setBlockEntity(hit.x, hit.y, hit.z, entity);
+        }
+        this.openContainerPos = { x: hit.x, y: hit.y, z: hit.z };
+        const furnace = entity as ReturnType<typeof createFurnace>;
+        this.openScreen(() => this.screens.openFurnace(furnace));
+        return;
+      }
+    }
+
+    if (!held || !def) return;
+
+    // Eating.
+    if (def.food && this.player.hunger.canEat()) {
+      this.player.hunger.eat(def.food.hunger, def.food.saturation);
+      this.player.inventory.consumeHeld();
+      this.hud.toast(`${def.label}を食べた`);
+      return;
+    }
+
+    if (!hit) return;
+
+    // Tilling soil with a hoe.
+    if (def.tool?.kind === 'hoe') {
+      const target = this.world.getBlock(hit.x, hit.y, hit.z);
+      if ((target === Block.GRASS || target === Block.DIRT) && this.world.getBlock(hit.x, hit.y + 1, hit.z) === Block.AIR) {
+        this.world.setBlock(hit.x, hit.y, hit.z, Block.FARMLAND);
+        return;
+      }
+    }
+
+    // Planting crops on farmland.
+    if (def.plantsCrop !== undefined) {
+      const soil = this.world.getBlock(hit.x, hit.y, hit.z);
+      const above = { x: hit.x, y: hit.y + 1, z: hit.z };
+      if (isFarmland(soil) && this.world.getBlock(above.x, above.y, above.z) === Block.AIR) {
+        this.world.setBlock(above.x, above.y, above.z, def.plantsCrop);
+        this.player.inventory.consumeHeld();
+        return;
+      }
+    }
+
+    if (def.placesBlock === undefined) return;
+    this.placeBlock(hit, def.placesBlock);
+  }
+
+  private placeBlock(hit: RaycastHit, block: number): void {
+    let x = hit.x + hit.nx;
+    let y = hit.y + hit.ny;
+    let z = hit.z + hit.nz;
+    // Replaceable blocks (grass, water) are overwritten in place.
+    if (isReplaceable(this.world.getBlock(hit.x, hit.y, hit.z))) {
+      x = hit.x;
+      y = hit.y;
+      z = hit.z;
+    } else if (!isReplaceable(this.world.getBlock(x, y, z))) {
+      return;
+    }
+    if (y < 0 || y >= CHUNK_HEIGHT) return;
+
+    const def = blockDef(block);
+    if (def.render === 'cross' && block !== Block.TORCH) {
+      if (!supportsPlant(this.world.getBlock(x, y - 1, z))) return;
+    }
+    if (block === Block.TORCH && !blockDef(this.world.getBlock(x, y - 1, z)).solid) {
+      // Torches need something to stand on, otherwise they would float.
+      const sideSupport = [[-1, 0], [1, 0], [0, -1], [0, 1]].some(
+        ([dx, dz]) => blockDef(this.world.getBlock(x + dx, y, z + dz)).solid,
+      );
+      if (!sideSupport) return;
+    }
+
+    if (def.solid) {
+      const playerBox = this.player.box();
+      const blocked = boxIntersectsWorld({ isSolidAt: (bx, by, bz) => bx === x && by === y && bz === z }, playerBox);
+      if (blocked) return;
+      for (const mob of this.mobs.mobs) {
+        if (boxIntersectsWorld({ isSolidAt: (bx, by, bz) => bx === x && by === y && bz === z }, mob.box())) return;
+      }
+    }
+
+    if (!this.world.setBlock(x, y, z, block)) return;
+    this.player.inventory.consumeHeld();
+    if (block === Block.CHEST) this.world.setBlockEntity(x, y, z, createChest());
+    if (block === Block.FURNACE) this.world.setBlockEntity(x, y, z, createFurnace());
+  }
+
+  /** Nearest mob whose box the crosshair ray passes through. */
+  private mobUnderCrosshair(
+    eye: { x: number; y: number; z: number },
+    look: { x: number; y: number; z: number },
+  ): Mob | null {
+    let best: Mob | null = null;
+    let bestDistance = ATTACK_REACH;
+    for (const mob of this.mobs.mobs) {
+      const dx = mob.x - eye.x;
+      const dy = mob.y + mob.def.height / 2 - eye.y;
+      const dz = mob.z - eye.z;
+      const along = dx * look.x + dy * look.y + dz * look.z;
+      if (along <= 0 || along > bestDistance) continue;
+      const perpendicular = Math.hypot(dx - look.x * along, dy - look.y * along, dz - look.z * along);
+      if (perpendicular > mob.def.width / 2 + 0.35) continue;
+      best = mob;
+      bestDistance = along;
+    }
+    return best;
+  }
+
+  private attack(mob: Mob): void {
+    const held = this.player.inventory.held;
+    const damage = (held ? itemDef(held.id)?.attack : undefined) ?? 1;
+    this.player.hunger.addExhaustion(EXHAUSTION.attack);
+    this.mobs.hurt(mob, damage, this.player.x, this.player.z, this.mobContext());
+  }
+
+  // --- world simulation ------------------------------------------------------
+
+  private mobContext(): MobUpdateContext {
+    return {
+      player: this.player,
+      day: this.day,
+      onPlayerHit: (damage, fromX, fromZ) => {
+        const result = applyDamage(this.player, damage, this.player.inventory.defense);
+        if (!result.applied) return;
+        applyKnockback(this.player, fromX, fromZ, this.player.x, this.player.z, 4);
+        this.player.hunger.addExhaustion(EXHAUSTION.damageTaken);
+        this.hud.flashDamage();
+      },
+      onDrop: (x, y, z, stack) => {
+        this.drops.spawn(x, y, z, stack);
+      },
+    };
+  }
+
+  private updateMobs(dt: number): void {
+    this.mobs.update(dt, this.mobContext());
+  }
+
+  private updateDrops(dt: number): void {
+    const collected = this.drops.update(dt, {
+      x: this.player.x,
+      y: this.player.y,
+      z: this.player.z,
+      collect: (stack) => this.player.inventory.add(stack),
+    });
+    for (const stack of collected) {
+      this.hud.toast(`${itemDef(stack.id)?.label ?? stack.id} x${stack.count}`);
+    }
+  }
+
+  private updateTicks(dt: number): void {
+    this.tickTimer += dt;
+    if (this.tickTimer < TICK_INTERVAL) return;
+    this.tickTimer = 0;
+    const pcx = toChunkCoord(this.player.x);
+    const pcz = toChunkCoord(this.player.z);
+    // Only simulate chunks close to the player, which is where changes are visible.
+    for (let dz = -3; dz <= 3; dz++) {
+      for (let dx = -3; dx <= 3; dx++) {
+        const chunk = this.world.getChunk(pcx + dx, pcz + dz);
+        if (chunk) randomTickChunk(this.world, chunk, this.tickRng);
+      }
+    }
+  }
+
+  private updateFurnaces(dt: number): void {
+    for (const entity of this.world.blockEntities.values()) {
+      if (isFurnace(entity)) tickFurnace(entity, dt);
+    }
+  }
+
+  /** Closes a container screen once the player walks away from the block. */
+  private checkOpenContainer(): void {
+    if (!this.openContainerPos || !this.screens.isOpen) return;
+    const distance = Math.hypot(
+      this.player.x - this.openContainerPos.x,
+      this.player.y - this.openContainerPos.y,
+      this.player.z - this.openContainerPos.z,
+    );
+    if (distance > 7) this.closeScreen();
+  }
+
+  /** Sand and gravel fall when the block under them disappears. */
+  private onBlockChanged(x: number, y: number, z: number, _previous: number, next: number): void {
+    if (next !== Block.AIR) return;
+    let above = y + 1;
+    while (above < CHUNK_HEIGHT && blockDef(this.world.getBlock(x, above, z)).gravity) {
+      const id = this.world.getBlock(x, above, z);
+      this.world.setBlock(x, above, z, Block.AIR);
+      this.world.setBlock(x, above - 1, z, id);
+      above++;
+    }
+    // A crop or plant loses its support and pops off.
+    const supported = this.world.getBlock(x, y + 1, z);
+    const def = blockDef(supported);
+    if (def.render === 'cross' && supported !== Block.AIR) {
+      const drops = blockDrops(supported, undefined, { random: () => Math.random() });
+      this.world.setBlock(x, y + 1, z, Block.AIR);
+      for (const drop of drops) this.drops.spawn(x + 0.5, y + 1.5, z + 0.5, drop);
+    }
+  }
+
+  private dropAtPlayer(stack: ItemStack): void {
+    this.drops.spawn(this.player.x, this.player.y + 1, this.player.z, stack);
+  }
+
+  // --- screens and pausing ---------------------------------------------------
+
+  private openScreen(open: () => void): void {
+    open();
+    this.options.input.releaseLock();
+    document.body.classList.add('screen-open');
+  }
+
+  private closeScreen(): void {
+    this.screens.close();
+    this.openContainerPos = null;
+    document.body.classList.remove('screen-open');
+    if (!this.paused && !this.player.isDead) this.hud.setClickPrompt(!this.options.input.locked);
+  }
+
+  togglePause(): void {
+    this.paused = !this.paused;
+    this.options.menus.showPause(this.paused);
+    if (this.paused) {
+      this.options.input.releaseLock();
+      this.options.menus.showTitle(false);
+    } else {
+      this.options.menus.hideAll();
+      this.hud.setClickPrompt(!this.options.input.locked);
+    }
+  }
+
+  respawn(): void {
+    this.options.menus.showDeath(false);
+    this.placeAtSpawn();
+    this.player.respawn(this.player.x, this.player.y, this.player.z);
+    this.settlePlayerOnGround();
+    this.hud.setClickPrompt(!this.options.input.locked);
+  }
+
+  // --- spawn placement -------------------------------------------------------
+
+  private placeAtSpawn(): void {
+    const spawn = this.findSpawn();
+    this.player.teleportTo(spawn.x + 0.5, spawn.y, spawn.z + 0.5);
+  }
+
+  /** Spirals outwards from the origin looking for dry land above the sea. */
+  private findSpawn(): { x: number; y: number; z: number } {
+    for (let radius = 0; radius < 400; radius += 8) {
+      for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 6) {
+        const x = Math.round(Math.cos(angle) * radius);
+        const z = Math.round(Math.sin(angle) * radius);
+        const height = this.generator.height(x, z);
+        if (height > 47 && height < CHUNK_HEIGHT - 20) return { x, y: height + 1, z };
+      }
+    }
+    return { x: 0, y: 70, z: 0 };
+  }
+
+  /** After the spawn chunk loads, drop the player onto the real surface. */
+  private settlePlayerOnGround(): void {
+    const x = Math.floor(this.player.x);
+    const z = Math.floor(this.player.z);
+    const top = this.world.heightAt(x, z);
+    if (top >= 0) this.player.teleportTo(this.player.x, top + 1, this.player.z);
+  }
+
+  // --- persistence -----------------------------------------------------------
+
+  save(announce = true): boolean {
+    const edits: Record<string, string> = {};
+    for (const [key, map] of this.world.edits) {
+      if (map.size > 0) edits[key] = encodeEdits(map);
+    }
+    const chests: SaveData['chests'] = [];
+    const furnaces: SaveData['furnaces'] = [];
+    for (const [key, entity] of this.world.blockEntities) {
+      const [x, y, z] = key.split(',').map(Number);
+      if (isChest(entity)) chests.push({ pos: [x, y, z], slots: entity.slots.toJSON() });
+      else if (isFurnace(entity)) {
+        furnaces.push({
+          pos: [x, y, z],
+          slots: entity.slots.toJSON(),
+          burnLeft: entity.burnLeft,
+          burnTotal: entity.burnTotal,
+          cookProgress: entity.cookProgress,
+        });
+      }
+    }
+    const data: SaveData = {
+      version: SAVE_VERSION,
+      seed: this.options.seed,
+      time: this.day.time,
+      savedAt: Date.now(),
+      player: {
+        x: this.player.x,
+        y: this.player.y,
+        z: this.player.z,
+        yaw: this.player.yaw,
+        pitch: this.player.pitch,
+        health: this.player.health,
+        food: this.player.hunger.food,
+        saturation: this.player.hunger.saturation,
+        selected: this.player.inventory.selected,
+        inventory: this.player.inventory.toJSON(),
+        armor: this.player.inventory.armor.toJSON(),
+      },
+      edits,
+      chests,
+      furnaces,
+      villagers: this.mobs.mobs
+        .filter((mob) => mob.kind === 'villager')
+        .map((mob) => ({
+          x: mob.x,
+          y: mob.y,
+          z: mob.z,
+          profession: mob.profession ?? 'farmer',
+          trades: tradesToJSON(mob.trades),
+        })),
+      populatedChunks: [...this.populatedChunks],
+    };
+    const ok = writeSave(data);
+    if (announce) this.hud.toast(ok ? 'セーブしました' : 'セーブに失敗しました');
+    return ok;
+  }
+
+  // --- debug helpers ---------------------------------------------------------
+
+  /** Exposed on `window.voxelcraft` so the world can be poked from the console. */
+  get debug() {
+    return {
+      game: this,
+      player: this.player,
+      isReady: (): boolean => this.ready,
+      pending: (): number => this.pool.pending,
+      world: this.world,
+      give: (id: string, count = 1): number => this.player.inventory.add({ id, count }),
+      setTime: (time: number): void => {
+        this.day.time = ((time % 1) + 1) % 1;
+      },
+      toggleDayCycle: (): boolean => (this.day.running = !this.day.running),
+      toggleFly: (): boolean => (this.player.flying = !this.player.flying),
+      teleport: (x: number, z: number): void => {
+        // Drop in from above so village roofs and trees are landed on, not entered.
+        this.player.teleportTo(x + 0.5, this.generator.height(Math.floor(x), Math.floor(z)) + 6, z + 0.5);
+      },
+      /** Jumps to the nearest generated village, which is otherwise a long walk. */
+      gotoVillage: (): { x: number; z: number } | null => {
+        const village = this.generator.findNearestVillage(this.player.x, this.player.z, 4);
+        if (village) this.debug.teleport(village.x, village.z);
+        return village;
+      },
+      biome: (): string =>
+        biomeDef(this.generator.biomeAt(Math.floor(this.player.x), Math.floor(this.player.z))).label,
+      mobs: () => this.mobs.mobs,
+      /** Spawns a mob straight ahead of the camera so it is easy to look at. */
+      spawnMob: (kind: MobKind, distance = 4): Mob => {
+        const look = this.player.lookVector();
+        const length = Math.hypot(look.x, look.z) || 1;
+        const x = this.player.x + (look.x / length) * distance;
+        const z = this.player.z + (look.z / length) * distance;
+        const y = this.world.surfaceY(Math.floor(x), Math.floor(z));
+        return this.mobs.add(new Mob(kind, x, y, z));
+      },
+      /** Drops the player into the nearest cave below, for testing underground light. */
+      findCave: (): { x: number; y: number; z: number } | null => {
+        const x = Math.floor(this.player.x);
+        const z = Math.floor(this.player.z);
+        for (let radius = 0; radius < 48; radius += 4) {
+          for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+            const cx = x + Math.round(Math.cos(angle) * radius);
+            const cz = z + Math.round(Math.sin(angle) * radius);
+            if (!this.world.isLoadedAt(cx, cz)) continue;
+            for (let y = 40; y > 6; y--) {
+              const open =
+                this.world.getBlock(cx, y, cz) === Block.AIR &&
+                this.world.getBlock(cx, y + 1, cz) === Block.AIR &&
+                blockDef(this.world.getBlock(cx, y - 1, cz)).solid;
+              if (!open) continue;
+              this.player.teleportTo(cx + 0.5, y, cz + 0.5);
+              return { x: cx, y, z: cz };
+            }
+          }
+        }
+        return null;
+      },
+    };
+  }
+
+  private applySave(data: SaveData): void {
+    this.day.time = data.time;
+    const player = data.player;
+    this.player.x = player.x;
+    this.player.y = player.y;
+    this.player.z = player.z;
+    this.player.yaw = player.yaw;
+    this.player.pitch = player.pitch;
+    this.player.health = player.health;
+    this.player.hunger.loadJSON({ food: player.food, saturation: player.saturation });
+    this.player.inventory.loadJSON(player.inventory);
+    this.player.inventory.armor.loadJSON(player.armor);
+    this.player.inventory.selected = player.selected;
+
+    for (const [key, encoded] of Object.entries(data.edits)) {
+      this.world.edits.set(key, decodeEdits(encoded));
+    }
+    for (const chest of data.chests) {
+      const slots = new Inventory(27);
+      slots.loadJSON(chest.slots);
+      this.world.setBlockEntity(chest.pos[0], chest.pos[1], chest.pos[2], createChest(slots));
+    }
+    for (const furnace of data.furnaces) {
+      const entity = createFurnace();
+      entity.slots.loadJSON(furnace.slots);
+      entity.burnLeft = furnace.burnLeft;
+      entity.burnTotal = furnace.burnTotal;
+      entity.cookProgress = furnace.cookProgress;
+      this.world.setBlockEntity(furnace.pos[0], furnace.pos[1], furnace.pos[2], entity);
+    }
+    for (const key of data.populatedChunks) this.populatedChunks.add(key);
+    for (const villager of data.villagers) {
+      const mob = this.mobs.addVillager(villager.x, villager.y, villager.z, villager.profession);
+      const trades = tradesFromJSON(villager.trades);
+      if (trades.length > 0) mob.trades = trades;
+    }
+  }
+}
