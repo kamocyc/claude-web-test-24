@@ -40,11 +40,11 @@ import {
   encodeEdits,
   writeSave,
 } from './save';
+import type { Settings } from './settings';
 import { tickFurnace } from './smelting';
 import { tradesFromJSON, tradesToJSON } from './trading';
 import { biomeDef } from '../world/generation/biome';
 
-const RENDER_DISTANCE = 8;
 const UNLOAD_MARGIN = 2;
 const REACH = 5;
 const ATTACK_REACH = 3.6;
@@ -58,6 +58,7 @@ export interface GameOptions {
   menus: Menus;
   seed: number;
   save: SaveData | null;
+  settings: Settings;
   onQuit(): void;
 }
 
@@ -95,6 +96,7 @@ export class Game {
   private miningTarget: { x: number; y: number; z: number } | null = null;
   private miningProgress = 0;
   private openContainerPos: { x: number; y: number; z: number } | null = null;
+  private renderDistance: number;
   private keyHandler: ((event: KeyboardEvent) => void) | null = null;
   private lockHandler: (() => void) | null = null;
 
@@ -109,14 +111,15 @@ export class Game {
 
     this.renderer = new THREE.WebGLRenderer({ canvas: options.canvas, antialias: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.camera = new THREE.PerspectiveCamera(75, 1, 0.1, RENDER_DISTANCE * CHUNK_SIZE * 1.4);
+    this.renderDistance = options.settings.renderDistance;
+    this.camera = new THREE.PerspectiveCamera(75, 1, 0.1, this.renderDistance * CHUNK_SIZE * 1.4);
 
     this.atlas = buildAtlas();
     this.materials = createChunkMaterials(this.atlas.texture);
     this.chunkRenderer = new ChunkRenderer(this.world, this.atlas, this.materials);
     this.entityRenderer = new EntityRenderer(this.atlas);
     this.effects = new Effects(this.atlas);
-    this.sky = new Sky(this.scene, RENDER_DISTANCE * CHUNK_SIZE);
+    this.sky = new Sky(this.scene, this.renderDistance * CHUNK_SIZE);
     this.scene.add(this.chunkRenderer.group, this.entityRenderer.group, this.effects.group);
 
     this.mobs = new MobManager(this.world, options.seed);
@@ -277,10 +280,11 @@ export class Game {
   private streamChunks(): void {
     const pcx = toChunkCoord(this.player.x);
     const pcz = toChunkCoord(this.player.z);
-    for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
-      for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
+    const radius = this.renderDistance;
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dx = -radius; dx <= radius; dx++) {
         const distance = dx * dx + dz * dz;
-        if (distance > RENDER_DISTANCE * RENDER_DISTANCE) continue;
+        if (distance > radius * radius) continue;
         const cx = pcx + dx;
         const cz = pcz + dz;
         if (this.world.hasChunk(cx, cz) || this.pool.isBusyWith(cx, cz)) continue;
@@ -288,7 +292,7 @@ export class Game {
       }
     }
 
-    const limit = (RENDER_DISTANCE + UNLOAD_MARGIN) * (RENDER_DISTANCE + UNLOAD_MARGIN);
+    const limit = (radius + UNLOAD_MARGIN) * (radius + UNLOAD_MARGIN);
     this.pool.cancelFarther((cx, cz) => (cx - pcx) ** 2 + (cz - pcz) ** 2 <= limit);
     for (const chunk of [...this.world.chunks.values()]) {
       const distance = (chunk.cx - pcx) ** 2 + (chunk.cz - pcz) ** 2;
@@ -733,6 +737,14 @@ export class Game {
     this.openContainerPos = null;
     document.body.classList.remove('screen-open');
     if (!this.paused && !this.player.isDead) this.hud.setClickPrompt(!this.options.input.locked);
+  }
+
+  /** Changing the view distance takes effect on the next streaming pass. */
+  setRenderDistance(chunks: number): void {
+    this.renderDistance = chunks;
+    this.camera.far = chunks * CHUNK_SIZE * 1.4;
+    this.camera.updateProjectionMatrix();
+    this.sky.setRenderDistance(chunks * CHUNK_SIZE);
   }
 
   togglePause(): void {

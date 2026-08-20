@@ -56,9 +56,10 @@ await evaluate(() => {
 });
 await page.mouse.move(640, 360);
 await page.mouse.down();
-await page.waitForTimeout(2500);
+// Software rendering makes the simulation run well below real time, so hold the
+// button until something is actually collected rather than for a fixed duration.
+await page.waitForFunction(() => window.voxelcraft?.player.inventory.slots.some(Boolean) === true, null, { timeout: 60000 });
 await page.mouse.up();
-await page.waitForFunction(() => window.voxelcraft.player.inventory.slots.some(Boolean), null, { timeout: 15000 });
 const mined = await evaluate(() => window.voxelcraft.player.inventory.slots.filter(Boolean));
 console.log('after mining:', JSON.stringify(mined));
 await shot('03-mining');
@@ -88,7 +89,7 @@ console.log('night:', JSON.stringify(await debugText()));
 // --- village -----------------------------------------------------------------
 const village = await evaluate(() => window.voxelcraft.gotoVillage());
 console.log('village:', JSON.stringify(village));
-await page.waitForFunction(() => window.voxelcraft.pending() === 0, null, { timeout: 90000 });
+await page.waitForFunction(() => window.voxelcraft?.pending() === 0, null, { timeout: 90000 });
 await page.waitForTimeout(2500);
 await evaluate(() => {
   window.voxelcraft.setTime(0.2);
@@ -318,7 +319,7 @@ const shore = await evaluate(() => {
   return null;
 });
 console.log('shore:', JSON.stringify(shore));
-await page.waitForFunction(() => window.voxelcraft.pending() === 0, null, { timeout: 90000 });
+await page.waitForFunction(() => window.voxelcraft?.pending() === 0, null, { timeout: 90000 });
 await page.waitForTimeout(3000);
 await shot('11-water');
 console.log('in water:', await evaluate(() => window.voxelcraft.player.inWater));
@@ -334,6 +335,19 @@ await page.click('.menu.death .menu-button');
 await page.waitForTimeout(1200);
 const revived = await evaluate(() => ({ health: window.voxelcraft.player.health, dead: window.voxelcraft.player.isDead }));
 console.log('death screen:', deathVisible, 'after respawn:', JSON.stringify(revived));
+
+// --- pause menu --------------------------------------------------------------
+await page.keyboard.press('Escape');
+await page.waitForTimeout(500);
+const paused = await page.locator('.menu-button:has-text("ゲームに戻る")').isVisible();
+await shot('13-pause');
+// Drag the render distance slider down and check it takes effect.
+await page.locator('.setting-row:has-text("描画距離") .slider').fill('5');
+await page.waitForTimeout(300);
+console.log('render distance:', await evaluate(() => window.voxelcraft.game.renderDistance));
+await page.click('.menu-button:has-text("ゲームに戻る")');
+await page.waitForTimeout(400);
+console.log('pause menu:', paused, 'resumed:', await evaluate(() => window.voxelcraft.game.paused === false));
 
 // --- save, reload and continue ----------------------------------------------
 const before = await evaluate(() => {
@@ -352,6 +366,18 @@ const after = await evaluate(() => {
 });
 console.log('saved:', JSON.stringify(before), 'loaded:', JSON.stringify(after));
 await shot('10-reloaded');
+
+// --- back to the title, then a second world ---------------------------------
+await page.keyboard.press('Escape');
+await page.waitForTimeout(400);
+await page.click('.menu-button:has-text("タイトルへ戻る")');
+await page.waitForTimeout(800);
+await page.fill('.seed-input', 'second');
+await page.click('.menu-button.primary');
+await page.waitForFunction(() => window.voxelcraft?.isReady() === true, null, { timeout: 90000 });
+await page.waitForTimeout(1500);
+await shot('14-second-world');
+console.log('second world:', JSON.stringify(await debugText()));
 
 console.log(errors.length === 0 ? 'NO PAGE ERRORS' : `ERRORS:\n${errors.join('\n')}`);
 await browser.close();

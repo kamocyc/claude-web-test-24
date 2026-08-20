@@ -164,9 +164,9 @@ export class MobManager {
       for (let attempt = 0; attempt < 8; attempt++) {
         const spot = this.findSpawnSpot(player, 22, 46);
         if (!spot) continue;
-        // Hostile mobs only appear in the dark, so torches keep a base safe.
+        // Hostile mobs only appear in the dark, so torches keep a base safe. Skylight
+        // does not matter here: it is already night when this runs.
         if (this.world.getBlockLight(spot.x, spot.y, spot.z) > 7) continue;
-        if (this.world.getSkyLight(spot.x, spot.y, spot.z) > 7 && !night) continue;
         const kind = HOSTILE_KINDS[Math.floor(this.rng() * HOSTILE_KINDS.length)];
         if (!this.fits(kind, spot.x, spot.y, spot.z)) continue;
         this.add(new Mob(kind, spot.x + 0.5, spot.y, spot.z + 0.5));

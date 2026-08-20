@@ -4,12 +4,15 @@ import { seedFromString } from './core/rng';
 import { Input } from './ui/input';
 import { Menus } from './ui/menus';
 import { hasSave, readSave } from './game/save';
+import { loadSettings, saveSettings } from './game/settings';
 
 const canvas = document.createElement('canvas');
 canvas.id = 'viewport';
 document.body.appendChild(canvas);
 
+const settings = loadSettings();
 const input = new Input(canvas);
+input.sensitivity = settings.sensitivity;
 const menus = new Menus();
 document.body.appendChild(menus.root);
 
@@ -30,7 +33,12 @@ function startGame(seed: number, save: ReturnType<typeof readSave>): void {
   menus.showTitle(false);
   menus.showPause(false);
   menus.showDeath(false);
-  game = new Game({ canvas, input, menus, seed, save, onQuit: quitToTitle });
+  game = new Game({ canvas, input, menus, seed, save, settings, onQuit: quitToTitle });
+  menus.bindSettings(settings, (next) => {
+    input.sensitivity = next.sensitivity;
+    game?.setRenderDistance(next.renderDistance);
+    saveSettings(next);
+  });
   menus.bindPause({
     onResume: () => game?.togglePause(),
     onSave: () => game?.save(),

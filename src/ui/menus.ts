@@ -1,3 +1,8 @@
+import {
+  RENDER_DISTANCE_RANGE,
+  SENSITIVITY_RANGE,
+  type Settings,
+} from '../game/settings';
 import { el, show } from './dom';
 
 export interface TitleActions {
@@ -20,6 +25,10 @@ export class Menus {
   private saveButton!: HTMLButtonElement;
   private quitButton!: HTMLButtonElement;
   private respawnButton!: HTMLButtonElement;
+  private distanceInput!: HTMLInputElement;
+  private sensitivityInput!: HTMLInputElement;
+  private distanceLabel!: HTMLElement;
+  private sensitivityLabel!: HTMLElement;
 
   constructor() {
     this.buildTitle();
@@ -53,7 +62,56 @@ export class Menus {
     this.resumeButton = el('button', 'menu-button primary', 'ゲームに戻る');
     this.saveButton = el('button', 'menu-button', 'セーブ');
     this.quitButton = el('button', 'menu-button', 'タイトルへ戻る');
-    this.pause.append(heading, this.resumeButton, this.saveButton, this.quitButton);
+
+    const settings = el('div', 'settings');
+    this.distanceInput = el('input', 'slider');
+    this.distanceInput.type = 'range';
+    this.distanceInput.min = String(RENDER_DISTANCE_RANGE.min);
+    this.distanceInput.max = String(RENDER_DISTANCE_RANGE.max);
+    this.distanceInput.step = '1';
+    this.distanceLabel = el('span', 'slider-value');
+
+    this.sensitivityInput = el('input', 'slider');
+    this.sensitivityInput.type = 'range';
+    this.sensitivityInput.min = '1';
+    this.sensitivityInput.max = '100';
+    this.sensitivityInput.step = '1';
+    this.sensitivityLabel = el('span', 'slider-value');
+
+    settings.append(
+      settingRow('描画距離', this.distanceInput, this.distanceLabel),
+      settingRow('マウス感度', this.sensitivityInput, this.sensitivityLabel),
+    );
+    this.pause.append(heading, this.resumeButton, settings, this.saveButton, this.quitButton);
+  }
+
+  /** Wires the sliders to the live settings object. */
+  bindSettings(settings: Settings, onChange: (next: Settings) => void): void {
+    const sensitivityToSlider = (value: number): number =>
+      Math.round(
+        ((value - SENSITIVITY_RANGE.min) / (SENSITIVITY_RANGE.max - SENSITIVITY_RANGE.min)) * 99 + 1,
+      );
+    const sliderToSensitivity = (value: number): number =>
+      SENSITIVITY_RANGE.min + ((value - 1) / 99) * (SENSITIVITY_RANGE.max - SENSITIVITY_RANGE.min);
+
+    const render = (): void => {
+      this.distanceLabel.textContent = `${settings.renderDistance} チャンク`;
+      this.sensitivityLabel.textContent = String(sensitivityToSlider(settings.sensitivity));
+    };
+    this.distanceInput.value = String(settings.renderDistance);
+    this.sensitivityInput.value = String(sensitivityToSlider(settings.sensitivity));
+    render();
+
+    this.distanceInput.oninput = () => {
+      settings.renderDistance = Number(this.distanceInput.value);
+      render();
+      onChange(settings);
+    };
+    this.sensitivityInput.oninput = () => {
+      settings.sensitivity = sliderToSensitivity(Number(this.sensitivityInput.value));
+      render();
+      onChange(settings);
+    };
   }
 
   private buildDeath(): void {
@@ -120,4 +178,10 @@ export class Menus {
     show(this.loading, false);
     this.refreshRoot();
   }
+}
+
+function settingRow(label: string, input: HTMLInputElement, value: HTMLElement): HTMLElement {
+  const row = el('div', 'setting-row');
+  row.append(el('span', 'setting-label', label), input, value);
+  return row;
 }

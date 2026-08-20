@@ -9,6 +9,8 @@ export class Input {
   private readonly buttonsJust = [false, false, false];
   private dx = 0;
   private dy = 0;
+  /** Movement events to throw away, used right after the pointer is locked. */
+  private ignoreMoves = 0;
   private wheel = 0;
   locked = false;
   /** Mouse sensitivity, radians per pixel. */
@@ -39,8 +41,15 @@ export class Input {
     });
     window.addEventListener('mousemove', (event) => {
       if (!this.locked) return;
-      this.dx += event.movementX;
-      this.dy += event.movementY;
+      if (this.ignoreMoves > 0) {
+        this.ignoreMoves--;
+        return;
+      }
+      // Browsers can report a huge jump on the first event after locking, and a single
+      // spike would whip the camera around.
+      const limit = 250;
+      this.dx += Math.max(-limit, Math.min(limit, event.movementX));
+      this.dy += Math.max(-limit, Math.min(limit, event.movementY));
     });
     window.addEventListener('wheel', (event) => {
       this.wheel += Math.sign(event.deltaY);
@@ -49,6 +58,9 @@ export class Input {
 
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === canvas;
+      this.dx = 0;
+      this.dy = 0;
+      this.ignoreMoves = this.locked ? 1 : 0;
       if (!this.locked) {
         this.buttons.fill(false);
         this.pressed.clear();
