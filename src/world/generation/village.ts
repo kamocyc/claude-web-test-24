@@ -5,7 +5,7 @@ import { CHUNK_SIZE, chunkKey, toChunkCoord } from '../chunk';
 
 /** Villages sit on a coarse grid so their existence can be decided from the seed alone,
  *  without generating any surrounding terrain first. */
-export const VILLAGE_CELL_CHUNKS = 20;
+export const VILLAGE_CELL_CHUNKS = 7;
 export const VILLAGE_CELL = VILLAGE_CELL_CHUNKS * CHUNK_SIZE;
 /** Radius of the flattened plateau a village sits on. */
 export const VILLAGE_RADIUS = 38;

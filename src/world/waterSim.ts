@@ -273,9 +273,10 @@ export class WaterSimulator {
   private targetOf(x: number, y: number, z: number): Target {
     if (y < 0) return 'sink';
     if (y >= CHUNK_HEIGHT) return 'blocked';
-    // Chunks that are not loaded act as a wall, never as a drain: the loaded area
-    // moves with the player, and draining at its edge would empty the ocean.
-    if (!this.world.isLoadedAt(x, z)) return 'blocked';
+    // Past the edge of the island a river simply runs away, the way it would if the
+    // map carried on. Below the water line the edge is a wall instead, or the sea
+    // itself would pour out through it.
+    if (!this.world.isLoadedAt(x, z)) return y > SEA_LEVEL ? 'sink' : 'blocked';
     const id = this.world.getBlock(x, y, z);
     if (isWaterSink(id)) return 'sink';
     return blocksWater(id) ? 'blocked' : 'open';

@@ -66,7 +66,7 @@ def({
   id: Biome.FOREST, name: 'forest', label: '森林',
   surface: Block.GRASS, filler: Block.DIRT, fillerDepth: 3, underFiller: null,
   treeDensity: 9, treeLog: Block.OAK_LOG, treeLeaves: Block.OAK_LEAVES,
-  grassDensity: 0.3, flowerDensity: 0.05, cactusDensity: 0, sugarCaneDensity: 0.01, allowsVillage: false,
+  grassDensity: 0.3, flowerDensity: 0.05, cactusDensity: 0, sugarCaneDensity: 0.01, allowsVillage: true,
 });
 def({
   id: Biome.DESERT, name: 'desert', label: '砂漠',
@@ -90,7 +90,7 @@ def({
   id: Biome.TAIGA, name: 'taiga', label: 'タイガ',
   surface: Block.SNOW, filler: Block.DIRT, fillerDepth: 3, underFiller: null,
   treeDensity: 6, treeLog: Block.SPRUCE_LOG, treeLeaves: Block.SPRUCE_LEAVES,
-  grassDensity: 0.04, flowerDensity: 0, cactusDensity: 0, sugarCaneDensity: 0, allowsVillage: false,
+  grassDensity: 0.04, flowerDensity: 0, cactusDensity: 0, sugarCaneDensity: 0, allowsVillage: true,
 });
 def({
   id: Biome.SWAMP, name: 'swamp', label: '湿地',

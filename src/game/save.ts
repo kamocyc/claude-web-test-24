@@ -2,7 +2,7 @@
  *  save stays small no matter how far the player has explored. */
 
 export const SAVE_KEY = 'voxelcraft.save.v1';
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 
 export interface SavedPlayer {
   x: number;
@@ -50,7 +50,8 @@ export interface SaveData {
   player: SavedPlayer;
   /** Chunk key -> base64 encoded (blockIndex, blockId) pairs. */
   edits: Record<string, string>;
-  /** Chunk key -> run length encoded water levels, for chunks the player changed. */
+  /** Chunk key -> run length encoded water levels, for every chunk. The water is
+   *  simulated rather than generated, so it cannot be recovered from the seed. */
   water: Record<string, string>;
   chests: SavedChest[];
   furnaces: SavedFurnace[];

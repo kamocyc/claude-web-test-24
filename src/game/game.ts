@@ -1025,13 +1025,16 @@ export class Game {
 
   save(announce = true): boolean {
     const edits: Record<string, string> = {};
-    const water: Record<string, string> = {};
     for (const [key, map] of this.world.edits) {
       if (map.size === 0) continue;
       edits[key] = encodeEdits(map);
-      // Water in edited chunks was shaped by the player, so it cannot be regenerated.
-      const levels = this.world.waterOf(key);
-      if (levels) water[key] = encodeWater(levels);
+    }
+    // Every drop is under the simulation now, so none of it can be regenerated from the
+    // seed: where the water has got to is as much a part of the world as the blocks.
+    // Run length encoding keeps it small, because most of a chunk is dry air.
+    const water: Record<string, string> = {};
+    for (const chunk of this.world.chunks.values()) {
+      water[chunk.key] = encodeWater(chunk.water);
     }
     const chests: SaveData['chests'] = [];
     const furnaces: SaveData['furnaces'] = [];
@@ -1160,6 +1163,7 @@ export class Game {
           for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 16) {
             const x = startX + Math.round(Math.cos(angle) * radius);
             const z = startZ + Math.round(Math.sin(angle) * radius);
+            if (x < WORLD_MIN || x > WORLD_MAX || z < WORLD_MIN || z > WORLD_MAX) continue;
             const river = this.generator.riverAt(x, z);
             if (river.strength < 0.85) continue;
             // Inland enough to be a proper channel rather than the tidal mouth, and
@@ -1253,6 +1257,9 @@ export class Game {
 
   private applySave(data: SaveData): void {
     this.day.time = data.time;
+    // A saved world's water is already where the simulation left it; there is nothing
+    // to settle.
+    this.settleStepsLeft = 0;
     // Saves made before the weather existed simply start the cycle over.
     this.advanceWeather(data.weatherSeconds ?? 0);
     const player = data.player;

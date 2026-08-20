@@ -1,7 +1,16 @@
 import { Noise, clamp, lerp, smoothstep } from '../../core/noise';
 import { hashFloat, mulberry32, hashInts } from '../../core/rng';
 import { Block, type BlockId } from '../blocks';
-import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey } from '../chunk';
+import {
+  CHUNK_HEIGHT,
+  CHUNK_SIZE,
+  CHUNK_VOLUME,
+  SEA_LEVEL,
+  blockIndex,
+  chunkKey,
+  isInsideWorld,
+  toChunkCoord,
+} from '../chunk';
 import { WATER_FULL } from '../water';
 import { Biome, type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
 import { ORES, placeCactus, placeSugarCane, placeTree, treeCandidates } from './features';
@@ -20,7 +29,6 @@ import {
   type VillageVariant,
   type VillagerMarker,
   VILLAGE_CELL,
-  VILLAGE_RADIUS,
   nearbyVillageSites,
   planVillage,
   plateauWeight,
@@ -51,6 +59,10 @@ const MIN_HEIGHT = 4;
 /** Thinnest film the generator will lay as a river's topmost cell. Anything shallower
  *  is invisible, so the surface is left flush with the block boundary instead. */
 const MIN_FILM = 10;
+/** How far from a village centre a river is still too close. The plateau reaches
+ *  further than this, but only as a gentle slope: what must not happen is a village
+ *  flattening the channel itself into a dam. */
+const VILLAGE_KEEP_CLEAR = 24;
 
 /** How full one cell of a river column is, for a surface given as a fraction of a
  *  block. The topmost cell is only part filled, which is what turns the water into a
@@ -276,8 +288,9 @@ export class TerrainGenerator {
     const def = biomeDef(biome);
     // Villages need reasonably flat, dry, buildable ground.
     let valid = def.allowsVillage && baseY > SEA_LEVEL + 2 && baseY < SEA_LEVEL + 24;
-    // Never flatten a village over a river: the plateau would dam it. The whole
-    // plateau has to be clear, not just the centre, because it reaches 38 blocks out.
+    // Never flatten a village over a river: the plateau would dam it, and on a finite
+    // island a dammed river is a river gone. Only the flat middle of the plateau has to
+    // be clear, though — further out it is a gentle slope the water can still cross.
     if (valid && this.riverNearVillage(site.x, site.z)) valid = false;
     if (valid) {
       // Reject sites where the surrounding land is too steep to plausibly flatten.
@@ -300,7 +313,7 @@ export class TerrainGenerator {
   /** True when any part of a village plateau would sit on a river channel. */
   private riverNearVillage(x: number, z: number): boolean {
     if (this.riverAt(x, z).strength > 0.02) return true;
-    for (let ring = 10; ring <= VILLAGE_RADIUS; ring += 9) {
+    for (let ring = 10; ring <= VILLAGE_KEEP_CLEAR; ring += 7) {
       for (let step = 0; step < 12; step++) {
         const angle = (step / 12) * Math.PI * 2;
         const sx = Math.round(x + Math.cos(angle) * ring);
@@ -331,6 +344,8 @@ export class TerrainGenerator {
       for (let dx = -cellRadius; dx <= cellRadius; dx++) {
         const site = villageInCell(this.seed, cellX + dx, cellZ + dz);
         if (!site) continue;
+        // A village off the edge of the island is not somewhere the player can go.
+        if (!isInsideWorld(toChunkCoord(site.x), toChunkCoord(site.z))) continue;
         const info = this.villageInfo(site);
         if (!info.valid) continue;
         const dist = Math.hypot(site.x - x, site.z - z);

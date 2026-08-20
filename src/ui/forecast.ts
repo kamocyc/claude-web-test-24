@@ -73,6 +73,6 @@ export class ForecastPanel {
     const width = Math.min(50, Math.abs(view.flow - 1) * 50);
     this.fill.style.width = `${width}%`;
     this.fill.style.left = view.flow >= 1 ? '50%' : `${50 - width}%`;
-    this.level.textContent = `水源 ${Math.round(view.flow * 100)}% ・ 水深 ${view.depth.toFixed(1)}`;
+    this.level.textContent = `水源 ${Math.round(view.flow * 100)}%・水深 ${view.depth.toFixed(1)}`;
   }
 }

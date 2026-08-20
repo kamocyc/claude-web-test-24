@@ -332,9 +332,12 @@ const river = await evaluate(() => {
 });
 console.log('river:', JSON.stringify(river));
 if (river) {
-  // The water surface is a fraction of a block; the block building below wants whole
-  // cells, so work from the topmost cell the water reaches.
-  river.surface = Math.floor(river.surface);
+  // The water is simulated, so where it actually stands is not where the generator
+  // drew it. Everything below builds from the real surface, in whole cells.
+  const standing = await evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
+  river.surface = standing === null ? null : Math.floor(standing);
+}
+if (river && river.surface !== null) {
   await page.waitForFunction(() => window.voxelcraft?.pending() === 0, null, { timeout: 90000 });
   await page.waitForTimeout(4000);
   await evaluate(() => {
@@ -343,61 +346,25 @@ if (river) {
   await shot('15-river');
   console.log('river depth:', await evaluate((r) => window.voxelcraft.waterDepth(r.x, r.surface, r.z), river));
 
-  // --- the weather upstream, and how late it gets here ------------------------
-  const calmLevel = await evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
-  // A drought begins in the headwaters. Downstream is still in the calm season, which
-  // is the whole point: the player has that long to fill a reservoir.
-  await evaluate(() => window.voxelcraft.setWeatherSeconds(30 * 60));
-  await page.waitForTimeout(1200);
-  const warning = await evaluate(() => window.voxelcraft.weather());
-  console.log('drought announced:', JSON.stringify(warning));
+  // --- the seasons, which only ever touch the springs -------------------------
+  const level = () => evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
+  const before = await level();
+  await evaluate(() => window.voxelcraft.setWeather('drought'));
+  await page.waitForTimeout(1500);
+  const dry = await evaluate(() => window.voxelcraft.weather());
+  console.log('drought:', JSON.stringify(dry));
   console.log('forecast panel:', (await page.locator('.forecast').textContent())?.trim());
   await shot('15b-forecast');
-
-  // Once it arrives the river drops, and the bank it leaves behind is dry.
-  await evaluate(() => window.voxelcraft.setWeather('drought'));
-  await page.waitForTimeout(2500);
-  const dryLevel = await evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
-  await shot('15c-drought');
-
-  // Heavy rain lifts it again, without ever spilling over the bank.
-  await evaluate(() => window.voxelcraft.setWeather('rain'));
-  await page.waitForTimeout(2500);
-  const wetLevel = await evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
-  const spilled = await evaluate((r) => {
-    const g = window.voxelcraft.game;
-    let onLand = 0;
-    for (let dx = -14; dx <= 14; dx++) {
-      for (let dz = -14; dz <= 14; dz++) {
-        const x = r.x + dx;
-        const z = r.z + dz;
-        for (let y = 40; y < 70; y++) {
-          if (g.world.getWater(x, y, z) <= 0) continue;
-          if (g.world.getWater(x, y + 1, z) > 0) continue;
-          // Water sitting on top of solid ground with nothing under it to drain into.
-          for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            const solid = g.world.getBlock(x + ox, y, z + oz);
-            if (solid !== 0 && solid !== 9) continue;
-            if (g.world.getWater(x + ox, y, z + oz) > 0) continue;
-            if (g.world.getWater(x + ox, y - 1, z + oz) <= 0) onLand++;
-          }
-        }
-      }
-    }
-    return onLand;
-  }, river);
-  await shot('15d-rain');
-
-  // And the calm season puts it back exactly where the generator had it.
+  // The springs are off. Nothing writes a water level anywhere: the river answers by
+  // draining, in its own time, so all we ask of it here is that it never rises.
+  await page.waitForTimeout(12000);
+  const during = await level();
   await evaluate(() => window.voxelcraft.setWeather('normal'));
-  await page.waitForTimeout(2500);
-  const backLevel = await evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
+  await page.waitForTimeout(1500);
+  const back = await evaluate(() => window.voxelcraft.weather());
   console.log(
-    'river level  calm:', calmLevel,
-    ' drought:', dryLevel,
-    ' rain:', wetLevel,
-    ' calm again:', backLevel,
-    ' water on land:', spilled,
+    'river level  before:', before, ' with the springs off:', during,
+    ' spring flow dry/normal:', dry.flow, '/', back.flow,
   );
 
   // Build a stone aqueduct out of the river and check the water runs its length.
