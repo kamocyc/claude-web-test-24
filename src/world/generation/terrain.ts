@@ -112,7 +112,7 @@ export class TerrainGenerator {
     this.cave1 = new Noise(seed ^ 0x7007);
     this.cave2 = new Noise(seed ^ 0x8008);
     this.cavern = new Noise(seed ^ 0x9009);
-    this.rivers = new RiverField(seed, (x, z) => this.continentalness(x, z));
+    this.rivers = new RiverField(seed, (x, z) => this.inlandAt(x, z));
   }
 
   /** Terrain height before villages flatten anything. */
@@ -130,12 +130,13 @@ export class TerrainGenerator {
     const mountain = smoothstep(0.15, 0.42, ero) * smoothstep(0.3, 0.68, ridge);
 
     // Land rises steadily towards the interior. That slope is what every river runs
-    // down, and it is monotone in continentalness so a river can never meet a hump.
+    // down, and it comes from a deliberately smooth field so a channel never meets a
+    // hump on its way to the sea.
     const base =
       SEA_LEVEL -
       14 +
       land * 17 +
-      land * inlandness(cont) * RIVER_CLIMB +
+      this.liftFrom(cont, x, z) * RIVER_CLIMB +
       land * hilly * (6 + detail * 6) +
       land * mountain * (26 + ridge * 30);
     // The fine detail is left out of `base` so the river surface, which is derived
@@ -157,19 +158,32 @@ export class TerrainGenerator {
       SEA_LEVEL -
       14 +
       land * 17 +
-      land * inlandness(cont) * RIVER_CLIMB +
+      this.liftFrom(cont, x, z) * RIVER_CLIMB +
       land * hilly * (6 + detail * 6) +
       land * mountain * (26 + ridge * 30)
     );
   }
 
-  /** How far inland a column is, 0 at the coast and 1 deep in the interior. The further
-   *  downstream a place is, the later the weather in the headwaters reaches it. */
+  /** How far a column is lifted towards the interior, 0 at the coast and 1 deep inland.
+   *  Both the land and the water standing on it are raised by exactly this, which is
+   *  what keeps a channel sunk into its banks all the way down to the sea.
+   *
+   *  The inland part is deliberately much smoother than the field that draws the
+   *  coastline. A river's path is the level set of an unrelated noise, so it crosses
+   *  these contours in whatever direction it likes: every wiggle here would become a
+   *  stretch of river that runs uphill and back down, and no amount of water simulation
+   *  can make that look like a river. */
   inlandAt(x: number, z: number): number {
-    return inlandness(this.continentalness(x, z));
+    return this.liftFrom(this.continentalness(x, z), x, z);
   }
 
-  /** Continentalness drives both the coastline and the height of every river. */
+  /** The same thing for a caller that has already paid for the continentalness. */
+  private liftFrom(cont: number, x: number, z: number): number {
+    const land = smoothstep(-0.22, 0.05, cont + 0.16);
+    return land * inlandness(this.continent.fbm2(x * 0.0006, z * 0.0006, 2));
+  }
+
+  /** Continentalness decides land from sea, and how the coastline winds. */
   private continentalness(x: number, z: number): number {
     return this.continent.fbm2(x * 0.0011, z * 0.0011, 4);
   }

@@ -80,10 +80,10 @@ export class RiverField {
   private readonly path: Noise;
   private readonly warp: Noise;
 
-  /** @param contAt continentalness at a column, which is where the river's height
-   *  comes from. The field samples it away from the column it was asked about, so it
-   *  has to be able to ask for it anywhere. */
-  constructor(seed: number, private readonly contAt: (x: number, z: number) => number) {
+  /** @param inlandAt how far inland a column is, 0 at the coast and 1 in the interior,
+   *  which is where the river's height comes from. The field samples it away from the
+   *  column it was asked about, so it has to be able to ask for it anywhere. */
+  constructor(seed: number, private readonly inlandAt: (x: number, z: number) => number) {
     this.path = new Noise(seed ^ 0x21e7);
     this.warp = new Noise(seed ^ 0x33a2b);
   }
@@ -96,20 +96,20 @@ export class RiverField {
     return this.path.noise2(x * 0.0013 + warpX, z * 0.0013 + warpZ);
   }
 
-  /** Continentalness in the middle of the channel this column belongs to, found with a
-   *  single Newton step down the path field. Taking the river's height at the column
-   *  itself tilted the water by up to three blocks from one bank to the other, because
-   *  continentalness changes across the stream as well as along it. */
-  private centerCont(x: number, z: number, value: number): number {
+  /** How far inland the middle of this column's channel is, found with a single Newton
+   *  step down the path field. Taking the river's height at the column itself tilted the
+   *  water by up to three blocks from one bank to the other, because the field changes
+   *  across the stream as well as along it. */
+  private centerInland(x: number, z: number, value: number): number {
     const step = 2;
     const gx = (this.pathValue(x + step, z) - value) / step;
     const gz = (this.pathValue(x, z + step) - value) / step;
     const grad = gx * gx + gz * gz;
-    if (grad < 1e-12) return this.contAt(x, z);
+    if (grad < 1e-12) return this.inlandAt(x, z);
     // Clamped because a flat spot in the field would otherwise throw the sample
     // clear across the map.
     const t = Math.max(-CENTER_REACH, Math.min(CENTER_REACH, -value / Math.sqrt(grad)));
-    return this.contAt(x + (gx / Math.sqrt(grad)) * t, z + (gz / Math.sqrt(grad)) * t);
+    return this.inlandAt(x + (gx / Math.sqrt(grad)) * t, z + (gz / Math.sqrt(grad)) * t);
   }
 
   /** Samples the river at a column. The surface comes from continentalness alone, and
@@ -125,8 +125,8 @@ export class RiverField {
     const strength = band * land;
     if (strength <= 0.02) return DRY;
 
-    const inland = inlandness(this.centerCont(x, z, value));
-    const surface = SEA_LEVEL + 1 + inland * RIVER_CLIMB;
+    const inland = this.centerInland(x, z, value);
+    const surface = this.surfaceLevel(inland);
     return {
       strength,
       surface,
@@ -135,11 +135,12 @@ export class RiverField {
     };
   }
 
-  /** Top face of the river's water in a normal season. It climbs inland with
-   *  continentalness and is left as a fraction, so the surface is a smooth ramp rather
-   *  than a staircase. At the coast it meets the top face of the sea exactly. */
-  surfaceLevel(continentalness: number): number {
-    return SEA_LEVEL + 1 + inlandness(continentalness) * RIVER_CLIMB;
+  /** Top face of the river's water, for a column that far inland. It is left as a
+   *  fraction, so the surface is a smooth ramp rather than a staircase, and at the coast
+   *  it meets the top face of the sea exactly. The land is lifted by exactly the same
+   *  amount, which is what keeps the channel sunk into its banks all the way down. */
+  surfaceLevel(inland: number): number {
+    return SEA_LEVEL + 1 + inland * RIVER_CLIMB;
   }
 
   /** True where a spring should bubble up: the far upstream end of a channel. */

@@ -86,6 +86,57 @@ describe('TerrainGenerator', () => {
     expect(dry / core).toBeLessThan(0.05);
   });
 
+  it('never lets a river climb on its way to the sea', () => {
+    // The water's height comes from how far inland a column is, but the channel is the
+    // level set of a different noise, so it crosses those contours in any direction it
+    // likes. When that field had any detail in it, a river would climb six blocks and
+    // come back down: water cannot do that, and no simulation could make it look like
+    // one. The field the lift comes from is smooth for exactly this reason.
+    const gen = new TerrainGenerator(2061350291);
+    const surface = new Map<string, number>();
+    for (let x = -140; x <= 140; x++) {
+      for (let z = -140; z <= 140; z++) {
+        const river = gen.riverAt(x, z);
+        if (river.strength < CHANNEL_CORE) continue;
+        if (riverCovers(river, gen.height(x, z))) surface.set(`${x},${z}`, river.surface);
+      }
+    }
+    expect(surface.size).toBeGreaterThan(2000);
+
+    // Flood the channel from its lowest column upwards. Two stretches of water only
+    // meet at a saddle, and a saddle above either of their low points is a hump the
+    // water would have had to climb over.
+    const parent = new Map<string, string>();
+    const lowest = new Map<string, number>();
+    const find = (key: string): string => {
+      while (parent.get(key) !== key) {
+        parent.set(key, parent.get(parent.get(key)!)!);
+        key = parent.get(key)!;
+      }
+      return key;
+    };
+    const filled = new Set<string>();
+    let worst = 0;
+    for (const key of [...surface.keys()].sort((a, b) => surface.get(a)! - surface.get(b)!)) {
+      const [x, z] = key.split(',').map(Number);
+      const height = surface.get(key)!;
+      parent.set(key, key);
+      lowest.set(key, height);
+      filled.add(key);
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const neighbour = `${x + dx},${z + dz}`;
+        if (!filled.has(neighbour) || neighbour === key) continue;
+        const root = find(neighbour);
+        const mine = lowest.get(key)!;
+        const theirs = lowest.get(root)!;
+        if (mine !== theirs) worst = Math.max(worst, height - Math.max(mine, theirs));
+        parent.set(root, key);
+        lowest.set(key, Math.min(mine, theirs));
+      }
+    }
+    expect(worst).toBeLessThan(1);
+  });
+
   it('gives the river a smooth surface rather than a flight of terraces', () => {
     // The surface used to be rounded to whole blocks, so it stepped down every few
     // metres and the water read as a staircase. It is now carried as a fraction and
@@ -141,14 +192,14 @@ describe('TerrainGenerator', () => {
   });
 
   it('meets the sea at exactly the sea surface', () => {
-    const rivers = new RiverField(2061350291, () => -0.5);
+    const rivers = new RiverField(2061350291, () => 0);
     // Anywhere the column is not inland at all, the river is as high as the ocean.
     expect(inlandness(-0.5)).toBe(0);
-    expect(rivers.surfaceLevel(-0.5)).toBe(SEA_LEVEL + 1);
+    expect(rivers.surfaceLevel(0)).toBe(SEA_LEVEL + 1);
     // And it only ever climbs from there, so a river never has to run uphill.
     let previous = SEA_LEVEL + 1;
-    for (let cont = -0.5; cont <= 0.5; cont += 0.01) {
-      const surface = rivers.surfaceLevel(cont);
+    for (let inland = 0; inland <= 1; inland += 0.01) {
+      const surface = rivers.surfaceLevel(inland);
       expect(surface).toBeGreaterThanOrEqual(previous);
       previous = surface;
     }
