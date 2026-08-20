@@ -17,6 +17,10 @@ export interface DebugInfo {
   clock: string;
   mobs: number;
   waterDepth: number;
+  waterMode: string;
+  springFlow: number;
+  activeWaterCells: number;
+  evaporatedWater: number;
   seed: number;
 }
 
@@ -152,6 +156,9 @@ export class Hud {
         `チャンク ${info.chunks} (生成待ち ${info.pending})`,
         `モブ ${info.mobs}`,
         `水深 ${info.waterDepth.toFixed(2)}`,
+        `水 ${info.waterMode} / 水源 ${Math.round(info.springFlow * 100)}% / 稼働 ${info.activeWaterCells}`,
+        `累計蒸発 ${info.evaporatedWater.toFixed(1)} ブロック`,
+        '水操作 F6 洪水1000% / F7 平常 / F8 渇水+蒸発 / F9 自動',
         `シード ${info.seed}`,
         `手持ち ${held ? `${itemDef(held.id)?.label ?? held.id} x${held.count}` : 'なし'}`,
       ].join('\n');

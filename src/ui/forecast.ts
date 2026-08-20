@@ -24,6 +24,8 @@ export interface ForecastView {
   /** Seconds until the season changes. */
   endsIn: number;
   next: Season;
+  /** True while a debug key is holding the water system in this state. */
+  forced?: boolean;
   /** How hard the springs are running, 0 to 2. */
   flow: number;
   /** Water depth under the player, in blocks. */
@@ -64,10 +66,10 @@ export class ForecastPanel {
       this.title.textContent = LABEL[view.season];
       this.root.className = `forecast ${view.season}`;
     }
-    this.timer.textContent = `あと ${clock(view.endsIn)}`;
-    const text = `次: ${LABEL[view.next]}`;
+    this.timer.textContent = view.forced ? 'デバッグ固定' : `あと ${clock(view.endsIn)}`;
+    const text = view.forced ? 'F9: 自動に戻す' : `次: ${LABEL[view.next]}`;
     if (this.next.textContent !== text) this.next.textContent = text;
-    this.next.classList.toggle('urgent', view.next !== 'normal');
+    this.next.classList.toggle('urgent', !view.forced && view.next !== 'normal');
 
     // The bar is the springs, not the river: the river answers in its own time.
     const width = Math.min(50, Math.abs(view.flow - 1) * 50);

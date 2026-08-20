@@ -27,6 +27,11 @@ const MAX_FLOW = WATER_FULL;
 const SPRING_RATE = 32;
 /** Water a pump lifts each step. */
 const PUMP_RATE = 70;
+/** Exposed water columns checked for evaporation per simulation step. The queue only
+ *  contains columns that have held water, so drought does not scan the whole island. */
+const EVAPORATION_COLUMNS_PER_TICK = 1024;
+/** Fill units lost whenever an exposed column comes round during a full drought. */
+const EVAPORATION_RATE = 2;
 
 const NEIGHBORS: readonly (readonly [number, number])[] = [
   [1, 0],
@@ -113,6 +118,9 @@ export class WaterSimulator {
   private readonly near = new CellSweep();
   /** The rest of the island, which comes round in a few steps rather than one. */
   private readonly far = new CellSweep();
+  /** Columns that contain non-ocean water. They keep cycling even after the flowing
+   *  cells go to sleep, which lets a drought dry a perfectly still pond. */
+  private readonly evaporating = new CellSweep();
   /** Spring and pump blocks that produce or lift water every step. */
   private readonly springs = new Set<number>();
   private readonly pumps = new Set<number>();
@@ -123,10 +131,14 @@ export class WaterSimulator {
   private parity = 0;
   /** Water removed by sinks, for tests and debugging. */
   drained = 0;
+  /** Water removed from exposed surfaces by drought, for tests and debugging. */
+  evaporated = 0;
   /** How hard the springs are running, by column. A drought upstream reaches them the
    *  same way it reaches the river, so a reservoir fed by a spring fills slowly in a dry
    *  season and quickly in a wet one. */
   flowFactor: (x: number, z: number) => number = () => 1;
+  /** 0 in normal/rain weather, 1 at the peak of a drought. */
+  evaporationFactor: () => number = () => 0;
 
   constructor(private readonly world: World) {}
 
@@ -169,6 +181,8 @@ export class WaterSimulator {
     if (previous === Block.PUMP) this.pumps.delete(key);
     if (next === Block.SPRING) this.springs.add(key);
     if (next === Block.PUMP) this.pumps.add(key);
+    // A removed roof may have exposed a previously protected reservoir.
+    this.trackWaterColumn(x, z);
     this.activateAround(x, y, z);
   }
 
@@ -188,6 +202,20 @@ export class WaterSimulator {
         const key = packCell(chunk.originX + lx, y, chunk.originZ + lz);
         if (id === Block.SPRING) this.springs.add(key);
         else this.pumps.add(key);
+      }
+    }
+
+    // Register every non-ocean column that already contains water. This is a one-time
+    // load cost and means settled ponds can evaporate without keeping their flow cells
+    // artificially awake for the lifetime of the world.
+    for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+      for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+        if (chunk.seaColumn[lz * CHUNK_SIZE + lx] === 1) continue;
+        for (let y = CHUNK_HEIGHT - 1; y >= 0; y--) {
+          if (chunk.getWater(lx, y, lz) <= 0) continue;
+          this.trackWaterColumn(chunk.originX + lx, chunk.originZ + lz);
+          break;
+        }
       }
     }
 
@@ -258,6 +286,7 @@ export class WaterSimulator {
   step(): void {
     this.flow = new Map();
     this.parity ^= 1;
+    this.runEvaporation();
     this.runSprings();
     this.runPumps();
 
@@ -302,7 +331,7 @@ export class WaterSimulator {
       const room = WATER_FULL - this.world.getWater(x, y + 1, z);
       const amount = Math.min(source, PUMP_RATE, Math.max(0, room));
       if (amount <= 0) continue;
-      this.world.setWater(x, y - 1, z, source - amount);
+      this.setWater(x, y - 1, z, source - amount);
       this.give(x, y + 1, z, amount);
       this.activateAround(x, y - 1, z);
     }
@@ -320,9 +349,52 @@ export class WaterSimulator {
     const level = this.world.getWater(x, y, z);
     const accepted = Math.min(amount, WATER_MAX - level);
     if (accepted <= 0) return amount;
-    this.world.setWater(x, y, z, level + accepted);
+    this.setWater(x, y, z, level + accepted);
     this.activateAround(x, y, z);
     return amount - accepted;
+  }
+
+  /** Removes water only from surfaces open to the sky. Oceans are deliberately absent
+   *  from the queue: they represent a body far larger than the finite island. */
+  private runEvaporation(): void {
+    const strength = Math.max(0, Math.min(1, this.evaporationFactor()));
+    if (strength <= 0) return;
+    const amount = Math.max(1, Math.round(EVAPORATION_RATE * strength));
+    this.evaporating.run(EVAPORATION_COLUMNS_PER_TICK, (key) => {
+      const x = unpackX(key);
+      const z = unpackZ(key);
+      if (this.world.isSea(x, z)) return;
+
+      // The first water cell seen from the sky is the exposed surface. A solid block
+      // first means a roof, so reservoirs and caves do not mysteriously lose water.
+      for (let y = CHUNK_HEIGHT - 1; y >= 0; y--) {
+        const level = this.world.getWater(x, y, z);
+        if (level > 0) {
+          const removed = Math.min(level, amount);
+          const remaining = level - removed;
+          this.setWater(x, y, z, remaining);
+          this.evaporated += removed;
+          this.activateAround(x, y, z);
+          // setWater tracks a partially full surface. When a whole cell vanishes,
+          // explicitly keep the column in the sweep if there is more water below it.
+          if (remaining === 0 && y > 0 && this.world.getWater(x, y - 1, z) > 0) {
+            this.trackWaterColumn(x, z);
+          }
+          return;
+        }
+        if (blocksWater(this.world.getBlock(x, y, z))) return;
+      }
+    });
+  }
+
+  private trackWaterColumn(x: number, z: number): void {
+    if (!this.world.isSea(x, z)) this.evaporating.add(packCell(x, 0, z));
+  }
+
+  /** Keeps evaporation tracking in sync with every water write made by the simulator. */
+  private setWater(x: number, y: number, z: number, level: number): void {
+    this.world.setWater(x, y, z, level);
+    if (level > 0) this.trackWaterColumn(x, z);
   }
 
   private targetOf(x: number, y: number, z: number): Target {
@@ -350,14 +422,14 @@ export class WaterSimulator {
       if (remaining > keep) {
         this.drained += remaining - keep;
         remaining = keep;
-        this.world.setWater(x, y, z, remaining);
+        this.setWater(x, y, z, remaining);
         this.activateAround(x, y, z);
         if (remaining <= 0) return;
       }
     }
     // A block was placed into this cell: the water is gone with it.
     if (blocksWater(this.world.getBlock(x, y, z))) {
-      this.world.setWater(x, y, z, 0);
+      this.setWater(x, y, z, 0);
       return;
     }
 
@@ -370,7 +442,7 @@ export class WaterSimulator {
     const below = this.targetOf(x, y - 1, z);
     if (below === 'sink') {
       this.drained += remaining;
-      this.world.setWater(x, y, z, 0);
+      this.setWater(x, y, z, 0);
       this.activateAround(x, y, z);
       return;
     }
@@ -385,7 +457,7 @@ export class WaterSimulator {
         room > 0 ? Math.min(remaining, room) : Math.min(remaining - WATER_FULL, WATER_MAX - belowLevel);
       const amount = clampFlow(push, remaining);
       if (amount > 0) {
-        this.world.setWater(x, y - 1, z, belowLevel + amount);
+        this.setWater(x, y - 1, z, belowLevel + amount);
         remaining -= amount;
         this.activateAround(x, y - 1, z);
       }
@@ -428,7 +500,7 @@ export class WaterSimulator {
           const want = Math.min(average - receiver.level, remaining - average);
           const amount = clampFlow(want, remaining);
           if (amount <= 0) continue;
-          this.world.setWater(receiver.x, y, receiver.z, receiver.level + amount);
+          this.setWater(receiver.x, y, receiver.z, receiver.level + amount);
           remaining -= amount;
           flowX += receiver.dx * amount;
           flowZ += receiver.dz * amount;
@@ -443,14 +515,14 @@ export class WaterSimulator {
       const aboveLevel = this.world.getWater(x, y + 1, z);
       const amount = clampFlow(Math.min(remaining - WATER_FULL, WATER_MAX - aboveLevel), remaining);
       if (amount > 0) {
-        this.world.setWater(x, y + 1, z, aboveLevel + amount);
+        this.setWater(x, y + 1, z, aboveLevel + amount);
         remaining -= amount;
         this.activateAround(x, y + 1, z);
       }
     }
 
     if (remaining !== startLevel) {
-      this.world.setWater(x, y, z, remaining);
+      this.setWater(x, y, z, remaining);
       this.activateAround(x, y, z);
       if (flowX !== 0 || flowZ !== 0) {
         this.flow.set(key, { x: flowX / WATER_FULL, z: flowZ / WATER_FULL });

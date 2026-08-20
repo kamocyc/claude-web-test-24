@@ -90,6 +90,27 @@ const MESH_BUDGET = 3;
 /** Water-only rebuilds are much cheaper, so more of them fit in a frame. */
 const WATER_MESH_BUDGET = 6;
 
+export type WaterDebugMode = 'auto' | 'flood' | 'normal' | 'drought';
+
+const WATER_DEBUG_WETNESS: Record<Exclude<WaterDebugMode, 'auto'>, number> = {
+  flood: 1,
+  normal: 0,
+  drought: -1,
+};
+
+const WATER_DEBUG_FLOW: Record<Exclude<WaterDebugMode, 'auto'>, number> = {
+  flood: 10,
+  normal: 1,
+  drought: 0,
+};
+
+const WATER_DEBUG_LABEL: Record<WaterDebugMode, string> = {
+  auto: '自動',
+  flood: '洪水固定',
+  normal: '平常固定',
+  drought: '渇水固定',
+};
+
 export interface GameOptions {
   canvas: HTMLCanvasElement;
   input: Input;
@@ -118,6 +139,8 @@ export class Game {
   private readonly water: WaterSimulator;
   /** Seconds of world time, which is what the seasons run on. */
   private weatherSeconds = 0;
+  /** Debug-only override. It is deliberately not saved with the world. */
+  private waterDebugMode: WaterDebugMode = 'auto';
   /** Simulation steps still owed before the generated rivers have found their level. */
   private settleStepsLeft = SETTLE_STEPS;
   private readonly generator: TerrainGenerator;
@@ -361,14 +384,48 @@ export class Game {
    *  the springs run; everything else follows from the water itself. */
   private advanceWeather(seconds: number): void {
     this.weatherSeconds = seconds;
-    const flow = springFlow(wetnessAt(this.options.seed, seconds));
+    const flow = this.currentSpringFlow();
     this.water.flowFactor = () => flow;
+    this.water.evaporationFactor = () => Math.max(0, -this.currentWetness());
+  }
+
+  private currentWetness(): number {
+    return this.waterDebugMode === 'auto'
+      ? wetnessAt(this.options.seed, this.weatherSeconds)
+      : WATER_DEBUG_WETNESS[this.waterDebugMode];
+  }
+
+  private currentSpringFlow(): number {
+    return this.waterDebugMode === 'auto'
+      ? springFlow(this.currentWetness())
+      : WATER_DEBUG_FLOW[this.waterDebugMode];
+  }
+
+  /** Holds the springs at an exact debug value until automatic weather is restored. */
+  private setWaterDebugMode(mode: WaterDebugMode, announce = true): WaterDebugMode {
+    if (!(mode in WATER_DEBUG_LABEL)) {
+      throw new Error(`Unknown water debug mode: ${String(mode)}`);
+    }
+    this.waterDebugMode = mode;
+    this.advanceWeather(this.weatherSeconds);
+    if (announce) {
+      const flow = this.currentSpringFlow();
+      this.hud.toast(`水デバッグ: ${WATER_DEBUG_LABEL[mode]}（水源 ${Math.round(flow * 100)}%）`);
+    }
+    return mode;
   }
 
   /** What the season is doing, which is the same everywhere: the weather happens at the
    *  springs, and the rest of the world finds out when the water does. */
   private forecast(): Forecast {
-    return forecastAt(this.options.seed, this.weatherSeconds);
+    const forecast = forecastAt(this.options.seed, this.weatherSeconds);
+    if (this.waterDebugMode === 'auto') return forecast;
+    const kind: Season = this.waterDebugMode === 'flood' ? 'rain' : this.waterDebugMode;
+    return {
+      season: { ...forecast.season, kind, intensity: 1, progress: 0.5 },
+      next: 'normal',
+      flow: this.currentSpringFlow(),
+    };
   }
 
   /** The island has an edge. Walking off it would take the player into chunks that do
@@ -398,7 +455,7 @@ export class Game {
   private render(dt: number): void {
     this.camera.position.set(this.player.x, this.player.cameraY, this.player.z);
     this.camera.rotation.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
-    const wetness = wetnessAt(this.options.seed, this.weatherSeconds);
+    const wetness = this.currentWetness();
     this.sky.update(this.day, this.camera, this.renderer, wetness);
     this.rain.update(dt, this.camera, wetness, this.day.sunLight);
     this.renderer.render(this.scene, this.camera);
@@ -424,6 +481,7 @@ export class Game {
         endsIn: forecast.season.endsIn,
         next: forecast.next,
         flow: forecast.flow,
+        forced: this.waterDebugMode !== 'auto',
         depth: this.water.depthAt(
           Math.floor(this.player.x),
           Math.floor(this.player.y + 0.4),
@@ -447,6 +505,10 @@ export class Game {
         Math.floor(this.player.y + 0.4),
         Math.floor(this.player.z),
       ),
+      waterMode: WATER_DEBUG_LABEL[this.waterDebugMode],
+      springFlow: this.currentSpringFlow(),
+      activeWaterCells: this.water.activeCount,
+      evaporatedWater: this.water.evaporated / WATER_FULL,
     };
   }
 
@@ -529,6 +591,22 @@ export class Game {
         case 'F3':
           event.preventDefault();
           this.hud.toggleDebug();
+          break;
+        case 'F6':
+          event.preventDefault();
+          if (!event.repeat) this.setWaterDebugMode('flood');
+          break;
+        case 'F7':
+          event.preventDefault();
+          if (!event.repeat) this.setWaterDebugMode('normal');
+          break;
+        case 'F8':
+          event.preventDefault();
+          if (!event.repeat) this.setWaterDebugMode('drought');
+          break;
+        case 'F9':
+          event.preventDefault();
+          if (!event.repeat) this.setWaterDebugMode('auto');
           break;
         default:
           break;
@@ -1213,6 +1291,7 @@ export class Game {
       weather: () => {
         const forecast = this.forecast();
         return {
+          mode: this.waterDebugMode,
           season: forecast.season.kind,
           endsIn: Math.round(forecast.season.endsIn),
           next: forecast.next,
@@ -1220,11 +1299,13 @@ export class Game {
           seconds: Math.round(this.weatherSeconds),
           springs: this.water.springCount,
           active: this.water.activeCount,
+          evaporated: this.water.evaporated,
         };
       },
       /** Jumps the clock to the middle of the next season of a kind. The water takes as
        *  long as it takes to answer: that is the whole point. */
       setWeather: (kind: Season): number => {
+        this.setWaterDebugMode('auto', false);
         const from = Math.floor(Math.max(0, this.weatherSeconds) / SEASON_LENGTH_SECONDS);
         for (let step = 0; step < 8; step++) {
           const index = from + step;
@@ -1239,9 +1320,16 @@ export class Game {
       /** Sets the world clock outright, which is how the browser tests watch a change
        *  upstream arrive here a few minutes later. */
       setWeatherSeconds: (seconds: number): number => {
+        this.setWaterDebugMode('auto', false);
         this.advanceWeather(Math.max(0, seconds));
         return this.weatherSeconds;
       },
+      /** Holds spring output at an exact value: flood 1000%, normal 100%, drought 0%. */
+      setWaterMode: (mode: WaterDebugMode): WaterDebugMode => this.setWaterDebugMode(mode),
+      flood: (): WaterDebugMode => this.setWaterDebugMode('flood'),
+      drought: (): WaterDebugMode => this.setWaterDebugMode('drought'),
+      normalWater: (): WaterDebugMode => this.setWaterDebugMode('normal'),
+      autoWater: (): WaterDebugMode => this.setWaterDebugMode('auto'),
       /** Height of the water's top face in a column, or null when it is dry. */
       waterSurface: (x: number, z: number): number | null => {
         for (let y = CHUNK_HEIGHT - 1; y > 0; y--) {

@@ -197,6 +197,38 @@ describe('water works', () => {
     expect(r.world.getWater(0, 14, 0)).toBeGreaterThan(0);
     expect(r.world.getWater(0, 10, 0)).toBe(0);
   });
+
+  it('evaporates an exposed still pool during a drought', () => {
+    const r = rig();
+    r.basin(0, 10, 0, 2, 20, 2);
+    // basin() builds a roof for flow tests; remove it to make this an outdoor pool.
+    r.box(-1, 21, -1, 3, 21, 3, Block.AIR);
+    r.pour(1, 10, 1, 3);
+    r.run(80);
+    const before = r.total();
+    r.sim.evaporationFactor = () => 1;
+    r.run(30);
+    expect(r.total()).toBeLessThan(before);
+    expect(r.sim.evaporated).toBeGreaterThan(0);
+  });
+
+  it('does not evaporate water protected by a solid roof', () => {
+    const r = rig();
+    r.basin(0, 10, 0, 0, 20, 0);
+    r.box(-1, 21, -1, 1, 21, 1, Block.AIR);
+    r.pour(0, 10, 0, 1);
+    r.world.setBlock(0, 11, 0, Block.STONE, { record: false });
+    const before = r.total();
+    r.sim.evaporationFactor = () => 1;
+    r.run(100);
+    expect(r.total()).toBe(before);
+    expect(r.sim.evaporated).toBe(0);
+
+    r.world.setBlock(0, 11, 0, Block.AIR, { record: false });
+    r.run(10);
+    expect(r.total()).toBeLessThan(before);
+    expect(r.sim.evaporated).toBeGreaterThan(0);
+  });
 });
 
 describe('water at the edge of the loaded world', () => {
@@ -293,6 +325,7 @@ describe('the sea', () => {
       }
     }
     chunk.syncWaterMarkers();
+    sim.registerChunk(chunk, []);
     return { world, sim };
   }
 
@@ -319,6 +352,15 @@ describe('the sea', () => {
     }
     for (let i = 0; i < 200; i++) sim.step();
     expect(totalWater(world)).toBe(before);
+  });
+
+  it('does not evaporate the ocean during a drought', () => {
+    const { world, sim } = ocean();
+    const before = totalWater(world);
+    sim.evaporationFactor = () => 1;
+    for (let i = 0; i < 200; i++) sim.step();
+    expect(totalWater(world)).toBe(before);
+    expect(sim.evaporated).toBe(0);
   });
 });
 

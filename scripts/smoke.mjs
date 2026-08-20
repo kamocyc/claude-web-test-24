@@ -350,25 +350,37 @@ if (river && river.surface !== null) {
   await shot('15-river');
   console.log('river depth:', await evaluate((r) => window.voxelcraft.waterDepth(r.x, r.surface, r.z), river));
 
-  // --- the seasons, which only ever touch the springs -------------------------
+  // --- debug flood/drought controls ------------------------------------------
   const level = () => evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
   const before = await level();
-  await evaluate(() => window.voxelcraft.setWeather('drought'));
+  await page.keyboard.press('F8');
   await page.waitForTimeout(1500);
   const dry = await evaluate(() => window.voxelcraft.weather());
+  if (dry.mode !== 'drought' || dry.flow !== 0) throw new Error(`F8 drought failed: ${JSON.stringify(dry)}`);
   console.log('drought:', JSON.stringify(dry));
   console.log('forecast panel:', (await page.locator('.forecast').textContent())?.trim());
   await shot('15b-forecast');
-  // The springs are off. Nothing writes a water level anywhere: the river answers by
-  // draining, in its own time, so all we ask of it here is that it never rises.
+  // The springs are off and exposed water now evaporates instead of leaving every
+  // settled pool behind forever.
   await page.waitForTimeout(12000);
   const during = await level();
-  await evaluate(() => window.voxelcraft.setWeather('normal'));
-  await page.waitForTimeout(1500);
-  const back = await evaluate(() => window.voxelcraft.weather());
+  const afterDrought = await evaluate(() => window.voxelcraft.weather());
+  if (afterDrought.evaporated <= dry.evaporated) {
+    throw new Error(`drought did not evaporate water: ${JSON.stringify({ dry, afterDrought })}`);
+  }
+  await page.keyboard.press('F6');
+  const flood = await evaluate(() => window.voxelcraft.weather());
+  if (flood.mode !== 'flood' || flood.flow !== 10) throw new Error(`F6 flood failed: ${JSON.stringify(flood)}`);
+  await page.keyboard.press('F7');
+  const normal = await evaluate(() => window.voxelcraft.weather());
+  if (normal.mode !== 'normal' || normal.flow !== 1) throw new Error(`F7 normal failed: ${JSON.stringify(normal)}`);
+  await page.keyboard.press('F9');
+  const automatic = await evaluate(() => window.voxelcraft.weather());
+  if (automatic.mode !== 'auto') throw new Error(`F9 automatic weather failed: ${JSON.stringify(automatic)}`);
   console.log(
     'river level  before:', before, ' with the springs off:', during,
-    ' spring flow dry/normal:', dry.flow, '/', back.flow,
+    ' evaporated:', afterDrought.evaporated - dry.evaporated,
+    ' spring flow dry/flood/normal:', dry.flow, '/', flood.flow, '/', normal.flow,
   );
 
   // Build a stone aqueduct out of the river and check the water runs its length.

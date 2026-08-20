@@ -66,6 +66,7 @@ export class Menus {
       '<b>WASD</b> 移動 / <b>Space</b> ジャンプ / <b>Shift</b> 忍び足 / <b>Ctrl</b> ダッシュ',
       '<b>左クリック</b> 採掘・攻撃 / <b>右クリック</b> 設置・使用・交易',
       '<b>1-9</b> ホットバー / <b>E</b> 持ち物 / <b>F3</b> デバッグ / <b>Esc</b> ポーズ',
+      '<b>F6</b> 洪水 1000% / <b>F7</b> 平常 / <b>F8</b> 渇水＋蒸発 / <b>F9</b> 天候を自動に戻す',
     ].join('<br>');
     this.verifyButton.title = '毎回まったく同じ地形で始まる、確認用の固定シード';
     this.title.append(
