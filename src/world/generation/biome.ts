@@ -122,9 +122,9 @@ export function classifyBiome({ height, temperature, humidity, seaLevel }: Biome
   if (height < seaLevel - 1) return Biome.OCEAN;
   if (height <= seaLevel + 1) return Biome.BEACH;
   if (height > seaLevel + 32) return Biome.MOUNTAINS;
-  if (temperature < -0.35) return humidity > 0.0 ? Biome.TAIGA : Biome.SNOWY_PLAINS;
-  if (temperature > 0.35 && humidity < -0.05) return Biome.DESERT;
-  if (humidity > 0.42 && temperature > 0.05) return Biome.SWAMP;
+  if (temperature < -0.58) return humidity > 0.0 ? Biome.TAIGA : Biome.SNOWY_PLAINS;
+  if (temperature > 0.25 && humidity < 0.0) return Biome.DESERT;
+  if (humidity > 0.35 && temperature > 0.05) return Biome.SWAMP;
   if (humidity > 0.1) return Biome.FOREST;
   return Biome.PLAINS;
 }
