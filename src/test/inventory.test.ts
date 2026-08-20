@@ -40,6 +40,14 @@ describe('Inventory', () => {
     expect(copy.get(0)).toEqual({ id: 'diamond', count: 4 });
   });
 
+  it('adds only within a slot range', () => {
+    const inv = new Inventory(6);
+    expect(inv.addWithin({ id: 'coal', count: 3 }, 3, 3)).toBe(0);
+    expect(inv.get(0)).toBeNull();
+    expect(inv.get(3)).toEqual({ id: 'coal', count: 3 });
+    expect(inv.addWithin({ id: 'coal', count: 200 }, 3, 3)).toBe(200 - (61 + 64 + 64));
+  });
+
   it('drops unknown items when loading', () => {
     const inv = new Inventory(2);
     inv.loadJSON([['not_a_real_item', 3], ['coal', 2]]);

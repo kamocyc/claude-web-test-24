@@ -75,6 +75,28 @@ export class Inventory {
     return remaining;
   }
 
+  /** Like `add`, but restricted to a slot range. Used for shift-clicking between the
+   *  hotbar and the backpack rows. */
+  addWithin(input: ItemStack, from: number, count: number): number {
+    let remaining = input.count;
+    const max = maxStackOf(input.id);
+    const end = Math.min(this.size, from + count);
+    for (let i = from; i < end && remaining > 0; i++) {
+      const slot = this.slots[i];
+      if (!slot || slot.id !== input.id || slot.count >= max) continue;
+      const moved = Math.min(max - slot.count, remaining);
+      slot.count += moved;
+      remaining -= moved;
+    }
+    for (let i = from; i < end && remaining > 0; i++) {
+      if (this.slots[i]) continue;
+      const moved = Math.min(max, remaining);
+      this.slots[i] = { id: input.id, count: moved };
+      remaining -= moved;
+    }
+    return remaining;
+  }
+
   /** Removes up to `amount` of an item. Returns how many were actually removed. */
   remove(id: string, amount = 1): number {
     let remaining = amount;

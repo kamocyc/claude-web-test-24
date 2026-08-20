@@ -60,6 +60,11 @@ export class Input {
     this.keyListeners.push(handler);
   }
 
+  offKey(handler: KeyHandler): void {
+    const index = this.keyListeners.indexOf(handler);
+    if (index >= 0) this.keyListeners.splice(index, 1);
+  }
+
   private notify(event: KeyboardEvent): void {
     for (const handler of this.keyListeners) handler(event);
   }

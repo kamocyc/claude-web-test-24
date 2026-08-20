@@ -1,5 +1,6 @@
 import { itemDef, itemLabel } from '../game/items';
 import {
+  HOTBAR_SIZE,
   Inventory,
   type ItemStack,
   mergeStacks,
@@ -47,6 +48,8 @@ export interface ContainerOptions {
   atlas: Atlas;
   /** Where shift-clicked items go, and where the crafting grid is emptied to. */
   playerInventory: Inventory;
+  /** The other container on screen (chest, furnace); shift-click moves between the two. */
+  storage?: Inventory;
   onResultTaken?: () => void;
   onChanged?: () => void;
 }
@@ -147,13 +150,8 @@ export class Container {
 
     if (shift) {
       const current = binding.source.get(binding.index);
-      // Shift-click moves a stack between the player inventory and the open container.
-      const target =
-        binding.source === this.options.playerInventory
-          ? this.otherSource(binding)
-          : this.options.playerInventory;
-      if (current && target) {
-        const leftover = target.add({ ...current });
+      if (current) {
+        const leftover = this.quickMove(binding, current);
         binding.source.set(binding.index, leftover > 0 ? { id: current.id, count: leftover } : null);
       }
       this.refresh();
@@ -171,12 +169,18 @@ export class Container {
     this.options.onChanged?.();
   }
 
-  /** For shift-click: the non-player container on screen, if there is one. */
-  private otherSource(binding: SlotBinding): Inventory | null {
-    for (const other of this.bindings) {
-      if (other.source !== binding.source && other.source instanceof Inventory) return other.source;
+  /** Shift-click destination: the other container when one is open, otherwise the
+   *  opposite half of the player's own inventory. Returns what did not fit. */
+  private quickMove(binding: SlotBinding, stack: ItemStack): number {
+    const player = this.options.playerInventory;
+    const storage = this.options.storage;
+    if (binding.source !== player) {
+      return player.add({ ...stack });
     }
-    return null;
+    if (storage) return storage.add({ ...stack });
+    return binding.index < HOTBAR_SIZE
+      ? player.addWithin({ ...stack }, HOTBAR_SIZE, player.size - HOTBAR_SIZE)
+      : player.addWithin({ ...stack }, 0, HOTBAR_SIZE);
   }
 
   refresh(): void {
@@ -206,8 +210,12 @@ export class Container {
   }
 }
 
-/** Draws one slot: icon, stack count and tooltip. */
+/** Draws one slot: icon, stack count and tooltip. Skips the work when nothing changed,
+ *  because the open screen is refreshed every frame. */
 export function renderSlot(element: HTMLElement, stack: ItemStack | null, atlas: Atlas): void {
+  const key = stack ? `${stack.id}:${stack.count}` : '';
+  if (element.dataset.slot === key) return;
+  element.dataset.slot = key;
   clear(element);
   element.title = '';
   if (!stack) return;

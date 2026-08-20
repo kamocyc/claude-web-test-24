@@ -95,6 +95,8 @@ export class Game {
   private miningTarget: { x: number; y: number; z: number } | null = null;
   private miningProgress = 0;
   private openContainerPos: { x: number; y: number; z: number } | null = null;
+  private keyHandler: ((event: KeyboardEvent) => void) | null = null;
+  private lockHandler: (() => void) | null = null;
 
   constructor(private readonly options: GameOptions) {
     this.world = new World(options.seed);
@@ -147,6 +149,8 @@ export class Game {
   dispose(): void {
     this.running = false;
     window.removeEventListener('resize', this.onResize);
+    if (this.keyHandler) this.options.input.offKey(this.keyHandler);
+    if (this.lockHandler) document.removeEventListener('pointerlockchange', this.lockHandler);
     this.pool.dispose();
     this.chunkRenderer.dispose();
     this.hud.root.remove();
@@ -322,7 +326,7 @@ export class Game {
 
   private bindInput(): void {
     const input = this.options.input;
-    input.onKey((event) => {
+    this.keyHandler = (event) => {
       if (!this.ready) return;
       switch (event.code) {
         case 'Escape':
@@ -349,16 +353,25 @@ export class Game {
         this.player.inventory.selected = Number(hotbar[1]) - 1;
         this.hud.showHeldItem(this.player.inventory.held?.id ?? null);
       }
-    });
+    };
+    input.onKey(this.keyHandler);
 
     this.options.canvas.addEventListener('mousedown', () => {
       if (this.ready && !this.paused && !this.screens.isOpen && !this.player.isDead && !this.options.input.locked) {
         this.options.input.requestLock();
       }
     });
-    document.addEventListener('pointerlockchange', () => {
+    this.lockHandler = () => {
+      // A click that opens a container also asks for pointer lock, and the request can
+      // land after the screen opened. Undo it, or the cursor stays trapped and the UI
+      // becomes unclickable.
+      if (this.options.input.locked && (this.screens.isOpen || this.paused || this.player.isDead)) {
+        this.options.input.releaseLock();
+        return;
+      }
       this.hud.setClickPrompt(!this.options.input.locked && this.ready && !this.paused && !this.screens.isOpen);
-    });
+    };
+    document.addEventListener('pointerlockchange', this.lockHandler);
   }
 
   private readMovement(): PlayerInput {
@@ -581,7 +594,7 @@ export class Game {
     if (block === Block.FURNACE) this.world.setBlockEntity(x, y, z, createFurnace());
   }
 
-  /** Nearest mob whose box the crosshair ray passes through. */
+  /** Nearest mob whose bounding box the crosshair ray enters. */
   private mobUnderCrosshair(
     eye: { x: number; y: number; z: number },
     look: { x: number; y: number; z: number },
@@ -589,15 +602,22 @@ export class Game {
     let best: Mob | null = null;
     let bestDistance = ATTACK_REACH;
     for (const mob of this.mobs.mobs) {
-      const dx = mob.x - eye.x;
-      const dy = mob.y + mob.def.height / 2 - eye.y;
-      const dz = mob.z - eye.z;
-      const along = dx * look.x + dy * look.y + dz * look.z;
-      if (along <= 0 || along > bestDistance) continue;
-      const perpendicular = Math.hypot(dx - look.x * along, dy - look.y * along, dz - look.z * along);
-      if (perpendicular > mob.def.width / 2 + 0.35) continue;
+      // A small margin makes mobs easier to hit than their exact hitbox.
+      const margin = 0.15;
+      const half = mob.def.width / 2 + margin;
+      const distance = rayBoxDistance(
+        eye,
+        look,
+        mob.x - half,
+        mob.y - margin,
+        mob.z - half,
+        mob.x + half,
+        mob.y + mob.def.height + margin,
+        mob.z + half,
+      );
+      if (distance === null || distance > bestDistance) continue;
       best = mob;
-      bestDistance = along;
+      bestDistance = distance;
     }
     return best;
   }
@@ -839,6 +859,10 @@ export class Game {
       game: this,
       player: this.player,
       isReady: (): boolean => this.ready,
+      heal: (): void => {
+        this.player.health = this.player.maxHealth;
+        this.player.hunger.reset();
+      },
       pending: (): number => this.pool.pending,
       world: this.world,
       give: (id: string, count = 1): number => this.player.inventory.add({ id, count }),
@@ -848,8 +872,8 @@ export class Game {
       toggleDayCycle: (): boolean => (this.day.running = !this.day.running),
       toggleFly: (): boolean => (this.player.flying = !this.player.flying),
       teleport: (x: number, z: number): void => {
-        // Drop in from above so village roofs and trees are landed on, not entered.
-        this.player.teleportTo(x + 0.5, this.generator.height(Math.floor(x), Math.floor(z)) + 6, z + 0.5);
+        // Land just above the terrain; unstick() lifts the player out of any building.
+        this.player.teleportTo(x + 0.5, this.generator.height(Math.floor(x), Math.floor(z)) + 2, z + 0.5);
       },
       /** Jumps to the nearest generated village, which is otherwise a long walk. */
       gotoVillage: (): { x: number; z: number } | null => {
@@ -869,13 +893,21 @@ export class Game {
       biome: (): string =>
         biomeDef(this.generator.biomeAt(Math.floor(this.player.x), Math.floor(this.player.z))).label,
       mobs: () => this.mobs.mobs,
+      /** The mob the crosshair is currently on, if any. */
+      pick: (): Mob | null =>
+        this.mobUnderCrosshair({ x: this.player.x, y: this.player.eyeY, z: this.player.z }, this.player.lookVector()),
       /** Spawns a mob straight ahead of the camera so it is easy to look at. */
       spawnMob: (kind: MobKind, distance = 4): Mob => {
         const look = this.player.lookVector();
         const length = Math.hypot(look.x, look.z) || 1;
         const x = this.player.x + (look.x / length) * distance;
         const z = this.player.z + (look.z / length) * distance;
-        const y = this.world.surfaceY(Math.floor(x), Math.floor(z));
+        // Spawn at the player's own level so the mob lands on whatever they stand on.
+        const y = this.player.y + 0.1;
+        if (kind === 'villager') {
+          const professions = ['farmer', 'blacksmith', 'librarian', 'butcher'];
+          return this.mobs.addVillager(x, y, z, professions[Math.floor(Math.random() * professions.length)]);
+        }
         return this.mobs.add(new Mob(kind, x, y, z));
       },
       /** Drops the player into the nearest cave below, for testing underground light. */
@@ -940,4 +972,36 @@ export class Game {
       if (trades.length > 0) mob.trades = trades;
     }
   }
+}
+
+/** Slab method: distance along the ray at which it enters the box, or null. */
+function rayBoxDistance(
+  origin: { x: number; y: number; z: number },
+  direction: { x: number; y: number; z: number },
+  minX: number,
+  minY: number,
+  minZ: number,
+  maxX: number,
+  maxY: number,
+  maxZ: number,
+): number | null {
+  let near = 0;
+  let far = Infinity;
+  const axes: [number, number, number, number][] = [
+    [origin.x, direction.x, minX, maxX],
+    [origin.y, direction.y, minY, maxY],
+    [origin.z, direction.z, minZ, maxZ],
+  ];
+  for (const [start, delta, low, high] of axes) {
+    if (Math.abs(delta) < 1e-8) {
+      if (start < low || start > high) return null;
+      continue;
+    }
+    const t1 = (low - start) / delta;
+    const t2 = (high - start) / delta;
+    near = Math.max(near, Math.min(t1, t2));
+    far = Math.min(far, Math.max(t1, t2));
+    if (near > far) return null;
+  }
+  return far < 0 ? null : near;
 }

@@ -142,10 +142,10 @@ export class Mob implements Damageable {
     if (this.state === 'flee' && this.stateTimer <= 0) this.state = 'wander';
 
     if (this.state === 'chase') {
-      this.steerTowards(player.x, player.z, this.def.speed);
+      this.steerTowards(player.x, player.z, this.def.speed, dt);
       if (this.def.ranged) {
         // Keep a comfortable shooting distance.
-        if (distance < 5) this.steerTowards(player.x, player.z, -this.def.speed);
+        if (distance < 5) this.steerTowards(player.x, player.z, -this.def.speed, dt);
         if (distance < this.def.attackRange && this.attackTimer <= 0) {
           this.attackTimer = this.def.attackCooldown;
           ctx.shoot(this, this.def.attackDamage);
@@ -158,7 +158,7 @@ export class Mob implements Damageable {
     }
 
     if (this.state === 'flee') {
-      this.steerTowards(player.x, player.z, -this.def.speed * 1.4);
+      this.steerTowards(player.x, player.z, -this.def.speed * 1.4, dt);
       return;
     }
 
@@ -179,12 +179,12 @@ export class Mob implements Damageable {
     if (this.kind === 'villager') {
       const fromHome = Math.hypot(this.x - this.homeX, this.z - this.homeZ);
       if (fromHome > 22) {
-        this.steerTowards(this.homeX, this.homeZ, this.def.speed);
+        this.steerTowards(this.homeX, this.homeZ, this.def.speed, dt);
         return;
       }
     }
     if (this.state === 'wander') {
-      this.accelerate(this.wanderX, this.wanderZ, this.def.speed * 0.6);
+      this.accelerate(this.wanderX, this.wanderZ, this.def.speed * 0.6, dt);
     }
   }
 
@@ -196,17 +196,17 @@ export class Mob implements Damageable {
     }
   }
 
-  private steerTowards(targetX: number, targetZ: number, speed: number): void {
+  private steerTowards(targetX: number, targetZ: number, speed: number, dt: number): void {
     const dx = targetX - this.x;
     const dz = targetZ - this.z;
     const length = Math.hypot(dx, dz);
     if (length < 1e-3) return;
-    this.accelerate(dx / length, dz / length, speed);
+    this.accelerate(dx / length, dz / length, speed, dt);
   }
 
-  private accelerate(dirX: number, dirZ: number, speed: number): void {
-    this.vx += dirX * speed * 8 * 0.016;
-    this.vz += dirZ * speed * 8 * 0.016;
+  private accelerate(dirX: number, dirZ: number, speed: number, dt: number): void {
+    this.vx += dirX * speed * 8 * dt;
+    this.vz += dirZ * speed * 8 * dt;
     if (Math.abs(dirX) + Math.abs(dirZ) > 0) this.yaw = Math.atan2(-dirX, -dirZ);
   }
 

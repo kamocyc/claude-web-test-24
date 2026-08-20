@@ -141,6 +141,7 @@ export class ScreenManager {
       title: 'かまど',
       atlas: this.atlas,
       playerInventory: this.player.inventory,
+      storage: furnace.slots,
       onChanged: () => container.refresh(),
     });
     const row = el('div', 'panel-row furnace');
@@ -179,6 +180,7 @@ export class ScreenManager {
       title: 'チェスト',
       atlas: this.atlas,
       playerInventory: this.player.inventory,
+      storage: chest,
       onChanged: () => container.refresh(),
     });
     container.addGrid(chest, 0, chest.size, 9, { label: '収納' });
