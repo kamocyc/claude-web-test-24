@@ -41,6 +41,19 @@ export function levelOffset(wetness: number): number {
   return wetness >= 0 ? wetness * RIVER_FLOOD : wetness * RIVER_DROUGHT;
 }
 
+/** Where a river's water sits this season. Never below the sea, which does not have
+ *  seasons: that also tapers the drop away to nothing as the river nears its mouth,
+ *  instead of leaving a step where the two meet. */
+export function seasonalSurface(base: number, wetness: number): number {
+  return Math.max(SEA_LEVEL + 1, base + levelOffset(wetness));
+}
+
+/** Recovers how far inland a column is from the height of its river. The two are tied
+ *  together by `surfaceLevel`, so a chunk only has to remember the one number. */
+export function inlandOfSurface(surface: number): number {
+  return clamp((surface - SEA_LEVEL - 1) / RIVER_CLIMB, 0, 1);
+}
+
 export interface RiverSample {
   /** 0 outside the river, 1 in the middle of the channel. */
   strength: number;

@@ -76,6 +76,11 @@ export class WaterSimulator {
   private centerZ = 0;
   private limited = false;
 
+  /** How hard the springs are running, by column. A drought upstream reaches them the
+   *  same way it reaches the river, so a reservoir fed by a spring fills slowly in a dry
+   *  season and quickly in a wet one. */
+  flowFactor: (x: number, z: number) => number = () => 1;
+
   constructor(private readonly world: World) {}
 
   /** Restricts the simulation to the area around the player. Without a centre the
@@ -243,7 +248,8 @@ export class WaterSimulator {
       // A spring keeps its own pool topped up rather than pumping without limit, so a
       // river always flows but a blocked one never floods the valley.
       const level = this.world.getWater(x, y + 1, z);
-      if (level < WATER_FULL) this.give(x, y + 1, z, Math.min(SPRING_RATE, WATER_FULL - level));
+      const rate = SPRING_RATE * this.flowFactor(x, z);
+      if (level < WATER_FULL) this.give(x, y + 1, z, Math.min(rate, WATER_FULL - level));
     }
   }
 

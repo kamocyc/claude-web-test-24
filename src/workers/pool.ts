@@ -16,6 +16,9 @@ export class ChunkWorkerPool {
   private readonly queue = new Map<string, Job>();
   private readonly inFlight = new Set<string>();
   private onChunk: ((message: ChunkReadyMessage) => void) | null = null;
+  /** World clock sent with every generation request, so chunks arrive with their water
+   *  at the level this season calls for. */
+  weatherSeconds = 0;
 
   constructor(seed: number, size = Math.max(2, Math.min(6, (navigator.hardwareConcurrency || 4) - 1))) {
     for (let i = 0; i < size; i++) {
@@ -78,7 +81,12 @@ export class ChunkWorkerPool {
       this.queue.delete(bestKey);
       this.inFlight.add(bestKey);
       const worker = this.idle.pop()!;
-      this.post(worker, { type: 'generate', cx: best.cx, cz: best.cz });
+      this.post(worker, {
+        type: 'generate',
+        cx: best.cx,
+        cz: best.cz,
+        weatherSeconds: this.weatherSeconds,
+      });
     }
   }
 

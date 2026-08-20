@@ -59,6 +59,16 @@ import { tickFurnace } from './smelting';
 import { tradesFromJSON, tradesToJSON } from './trading';
 import { biomeDef } from '../world/generation/biome';
 import { riverCovers } from '../world/generation/rivers';
+import { RiverFlow } from '../world/riverFlow';
+import {
+  SEASON_LENGTH_SECONDS,
+  type Forecast,
+  type Season,
+  forecastAt,
+  localWetness,
+  seasonAt,
+  travelDelay,
+} from '../world/weather';
 
 const UNLOAD_MARGIN = 2;
 const REACH = 5;
@@ -94,6 +104,9 @@ export class Game {
   private readonly sky: Sky;
   private readonly light: LightEngine;
   private readonly water: WaterSimulator;
+  private readonly riverFlow: RiverFlow;
+  /** Seconds of world time, which is what the weather upstream runs on. */
+  private weatherSeconds = 0;
   private readonly generator: TerrainGenerator;
   private readonly pool: ChunkWorkerPool;
   private readonly mobs: MobManager;
@@ -129,6 +142,7 @@ export class Game {
     this.generator = new TerrainGenerator(options.seed);
     this.light = new LightEngine(this.world);
     this.water = new WaterSimulator(this.world);
+    this.riverFlow = new RiverFlow(this.world);
     this.world.onBlockChange((x, y, z, previous, next) => {
       this.light.onBlockChanged(x, y, z, previous, next);
       this.water.onBlockChanged(x, y, z, previous, next);
@@ -243,8 +257,10 @@ export class Game {
     }
 
     this.player.autoStep = this.options.settings.autoStep;
+    this.advanceWeather(this.weatherSeconds + dt);
     this.water.setCenter(this.player.x, this.player.z);
     this.water.update(dt);
+    this.riverFlow.update(dt);
     this.day.update(dt);
     this.materials.setSun(Math.max(0.06, this.day.sunLight));
 
@@ -292,6 +308,29 @@ export class Game {
       this.autosaveTimer = 0;
       this.save(false);
     }
+  }
+
+  /** Moves the world clock the weather runs on. Everything that reads it is updated
+   *  here, so a jump — loading a save, or the debug controls — lands every loaded river
+   *  at the right level in one step instead of creeping there. */
+  private advanceWeather(seconds: number): void {
+    const jumped = Math.abs(seconds - this.weatherSeconds) > 5;
+    this.weatherSeconds = seconds;
+    this.generator.weatherSeconds = seconds;
+    this.pool.weatherSeconds = seconds;
+    this.riverFlow.seconds = seconds;
+    this.water.flowFactor = (x, z) =>
+      springRate(localWetness(this.options.seed, seconds, this.generator.inlandAt(x, z)));
+    if (jumped) this.riverFlow.sweepAll();
+  }
+
+  /** What the weather is doing where the player is standing. */
+  private forecast(): Forecast {
+    return forecastAt(
+      this.options.seed,
+      this.weatherSeconds,
+      this.generator.inlandAt(this.player.x, this.player.z),
+    );
   }
 
   /** Safety net: if the player ends up inside terrain, lift them out. */
@@ -366,6 +405,7 @@ export class Game {
       const distance = (chunk.cx - pcx) ** 2 + (chunk.cz - pcz) ** 2;
       if (distance <= limit) continue;
       this.chunkRenderer.remove(chunk.key);
+      this.riverFlow.forgetChunk(chunk.key);
       this.world.removeChunk(chunk.cx, chunk.cz);
     }
   }
@@ -373,9 +413,11 @@ export class Game {
   private onChunkReady(message: ChunkReadyMessage): void {
     const chunk = new Chunk(message.cx, message.cz, message.blocks, message.water);
     chunk.generated = true;
+    if (message.riverSurface) chunk.riverSurface = message.riverSurface;
     this.world.addChunk(chunk);
     this.light.seedChunk(chunk);
     this.water.registerChunk(chunk, message.springs ?? []);
+    this.riverFlow.registerChunk(chunk, message.weatherSeconds ?? 0);
 
     const key = chunkKey(message.cx, message.cz);
     if (!this.populatedChunks.has(key)) {
@@ -950,6 +992,7 @@ export class Game {
       version: SAVE_VERSION,
       seed: this.options.seed,
       time: this.day.time,
+      weatherSeconds: this.weatherSeconds,
       savedAt: Date.now(),
       player: {
         x: this.player.x,
@@ -1082,6 +1125,43 @@ export class Game {
       },
       /** River channel data at a column, for tests and debugging. */
       riverAt: (x: number, z: number) => this.generator.riverAt(x, z),
+      /** The weather where the player is standing. */
+      weather: () => {
+        const forecast = this.forecast();
+        return {
+          here: forecast.here.kind,
+          endsIn: Math.round(forecast.here.endsIn),
+          next: forecast.next,
+          upstream: forecast.upstream,
+          delay: Math.round(forecast.delay),
+          wetness: Number(forecast.wetness.toFixed(3)),
+          seconds: Math.round(this.weatherSeconds),
+        };
+      },
+      /** Jumps the clock to the middle of the next season of a kind, allowing for how
+       *  long the water takes to reach the player. Used by the browser tests, which
+       *  cannot wait ten minutes for a drought. */
+      setWeather: (kind: Season): number => {
+        const delay = travelDelay(this.generator.inlandAt(this.player.x, this.player.z));
+        const from = Math.floor(Math.max(0, this.weatherSeconds - delay) / SEASON_LENGTH_SECONDS);
+        for (let step = 0; step < 8; step++) {
+          const index = from + step;
+          if (seasonAt(this.options.seed, (index + 0.5) * SEASON_LENGTH_SECONDS).kind !== kind) {
+            continue;
+          }
+          this.advanceWeather((index + 0.5) * SEASON_LENGTH_SECONDS + delay);
+          break;
+        }
+        return this.weatherSeconds;
+      },
+      /** Height of the water's top face in a column, or null when it is dry. */
+      waterSurface: (x: number, z: number): number | null => {
+        for (let y = CHUNK_HEIGHT - 1; y > 0; y--) {
+          const level = this.world.getWater(x, y, z);
+          if (level > 0) return Number((y + Math.min(1, level / WATER_FULL)).toFixed(3));
+        }
+        return null;
+      },
       /** Drops the player into the nearest cave below, for testing underground light. */
       findCave: (): { x: number; y: number; z: number } | null => {
         const x = Math.floor(this.player.x);
@@ -1109,6 +1189,8 @@ export class Game {
 
   private applySave(data: SaveData): void {
     this.day.time = data.time;
+    // Saves made before the weather existed simply start the cycle over.
+    this.advanceWeather(data.weatherSeconds ?? 0);
     const player = data.player;
     this.player.x = player.x;
     this.player.y = player.y;
@@ -1179,4 +1261,10 @@ function rayBoxDistance(
     if (near > far) return null;
   }
   return far < 0 ? null : near;
+}
+
+/** How hard a spring runs for a given wetness. It never stops altogether: a drought
+ *  makes the water worth saving, not impossible to get. */
+function springRate(wetness: number): number {
+  return Math.max(0.25, Math.min(1.75, 1 + wetness * 0.75));
 }

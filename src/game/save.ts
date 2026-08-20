@@ -43,6 +43,9 @@ export interface SaveData {
   version: number;
   seed: number;
   time: number;
+  /** Seconds of world time, which the weather cycle runs on. Absent in saves written
+   *  before the seasons existed, where the cycle simply starts over. */
+  weatherSeconds?: number;
   savedAt: number;
   player: SavedPlayer;
   /** Chunk key -> base64 encoded (blockIndex, blockId) pairs. */

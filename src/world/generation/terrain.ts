@@ -10,9 +10,10 @@ import {
   RIVER_CLIMB,
   RiverField,
   type RiverSample,
+  inlandOfSurface,
   inlandness,
-  levelOffset,
   riverCovers,
+  seasonalSurface,
 } from './rivers';
 import { localWetness } from '../weather';
 import {
@@ -33,6 +34,12 @@ export interface ChunkGenResult {
   blocks: Uint16Array;
   /** Fill level per voxel, matching the WATER blocks in `blocks`. */
   water: Uint8Array;
+  /** Per column, the height of the river's water in a normal season, or 0 where there
+   *  is no river. The weather moves the water up and down from here without the
+   *  terrain having to be worked out all over again. */
+  riverSurface: Float32Array;
+  /** World clock the water in `water` was filled for. */
+  weatherSeconds: number;
   /** Positions of generated spring blocks. */
   springs: { x: number; y: number; z: number }[];
   villagers: VillagerMarker[];
@@ -51,19 +58,30 @@ const MIN_HEIGHT = 4;
  *  is invisible, so the surface is left flush with the block boundary instead. */
 const MIN_FILM = 10;
 
-/** Lays a river column's water, from the ground up to a surface given as a fraction.
- *  The topmost cell is only part filled, which is what turns the water into a smooth
- *  ramp instead of a staircase of whole blocks. Shared with the code that follows the
- *  weather, so a generated river and a river whose level has moved look the same. */
+/** How full one cell of a river column is, for a surface given as a fraction of a
+ *  block. The topmost cell is only part filled, which is what turns the water into a
+ *  smooth ramp instead of a staircase of whole blocks. Shared with the code that follows
+ *  the weather, so a generated river and a river whose level has moved agree exactly. */
+export function riverCellLevel(surface: number, ground: number, y: number): number {
+  const top = Math.floor(surface);
+  if (y <= ground || y > top) return 0;
+  if (y < top) return WATER_FULL;
+  const film = Math.round((surface - top) * WATER_FULL);
+  // A film thinner than this is invisible, so the surface is left flush with the block
+  // boundary rather than costing a draw call for nothing.
+  return film >= MIN_FILM ? film : 0;
+}
+
+/** Lays a river column's water, from the ground up to the surface. */
 export function fillRiverColumn(
   surface: number,
   ground: number,
   put: (y: number, level: number) => void,
 ): void {
-  const top = Math.floor(surface);
-  for (let y = ground + 1; y < top; y++) put(y, WATER_FULL);
-  const film = Math.round((surface - top) * WATER_FULL);
-  if (top > ground && film >= MIN_FILM) put(top, film);
+  for (let y = ground + 1; y <= Math.floor(surface); y++) {
+    const level = riverCellLevel(surface, ground, y);
+    if (level > 0) put(y, level);
+  }
 }
 const MAX_HEIGHT = CHUNK_HEIGHT - 12;
 
@@ -145,6 +163,12 @@ export class TerrainGenerator {
     );
   }
 
+  /** How far inland a column is, 0 at the coast and 1 deep in the interior. The further
+   *  downstream a place is, the later the weather in the headwaters reaches it. */
+  inlandAt(x: number, z: number): number {
+    return inlandness(this.continentalness(x, z));
+  }
+
   /** Continentalness drives both the coastline and the height of every river. */
   private continentalness(x: number, z: number): number {
     return this.continent.fbm2(x * 0.0011, z * 0.0011, 4);
@@ -160,12 +184,16 @@ export class TerrainGenerator {
    *  river can be in different seasons. */
   riverOffset(sample: RiverSample): number {
     if (sample.strength <= 0) return 0;
-    return levelOffset(localWetness(this.seed, this.weatherSeconds, sample.inland));
+    return this.riverSurfaceNow(sample) - sample.surface;
   }
 
   /** Where the water's top face actually is at a column, weather included. */
   riverSurfaceNow(sample: RiverSample): number {
-    return sample.surface + this.riverOffset(sample);
+    if (sample.strength <= 0) return sample.surface;
+    return seasonalSurface(
+      sample.surface,
+      localWetness(this.seed, this.weatherSeconds, sample.inland),
+    );
   }
 
   /** River channel at a column, or a dry sample outside one. Already clamped so the
@@ -332,6 +360,7 @@ export class TerrainGenerator {
   generateChunk(cx: number, cz: number): ChunkGenResult {
     const blocks = new Uint16Array(CHUNK_VOLUME);
     const water = new Uint8Array(CHUNK_VOLUME);
+    const riverSurface = new Float32Array(CHUNK_SIZE * CHUNK_SIZE);
     const springs: { x: number; y: number; z: number }[] = [];
     const originX = cx * CHUNK_SIZE;
     const originZ = cz * CHUNK_SIZE;
@@ -387,11 +416,19 @@ export class TerrainGenerator {
         const river = this.riverSample(x, z, cont, this.baseHeight(x, z, cont));
         // Only the channel itself holds water; its banks are carved to stay above the
         // water line, so the two thresholds have to be the same one.
-        const offset = this.riverOffset(river);
-        if (riverCovers(river, h, offset)) {
-          fillRiverColumn(river.surface + offset, h, (y, level) =>
-            setLocal(lx, y, lz, Block.WATER, level),
+        if (river.strength >= CHANNEL_CORE) {
+          // Stored at single precision and read straight back, so the code that later
+          // follows the weather works from exactly the same number and can tell its own
+          // water apart from anything the player has changed.
+          riverSurface[lz * CHUNK_SIZE + lx] = river.surface;
+          const base = riverSurface[lz * CHUNK_SIZE + lx];
+          const surface = seasonalSurface(
+            base,
+            localWetness(this.seed, this.weatherSeconds, inlandOfSurface(base)),
           );
+          if (surface > h + 1) {
+            fillRiverColumn(surface, h, (y, level) => setLocal(lx, y, lz, Block.WATER, level));
+          }
         }
         // A spring is placed for the channel itself, not for whatever the weather is
         // doing today, so a drought never moves one.
@@ -464,7 +501,7 @@ export class TerrainGenerator {
       }
     }
 
-    return { blocks, water, springs, villagers, chests };
+    return { blocks, water, riverSurface, weatherSeconds: this.weatherSeconds, springs, villagers, chests };
   }
 
   /** Villages whose block list can reach into this chunk (plateau radius plus slack). */
