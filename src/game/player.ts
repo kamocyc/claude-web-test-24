@@ -1,4 +1,4 @@
-import { type EntityBox, stepUpMove, sweepMove } from '../core/aabb';
+import { type EntityBox, STEP_HEIGHT, stepUpMove, sweepMove } from '../core/aabb';
 import { blockDef } from '../world/blocks';
 import { WATER_FULL } from '../world/water';
 import type { World } from '../world/world';
@@ -12,8 +12,10 @@ export const EYE_HEIGHT = 1.62;
 
 const GRAVITY = 28;
 const JUMP_SPEED = 8.4;
-const WALK_SPEED = 4.3;
-const SPRINT_SPEED = 5.6;
+/** Twice a Minecraft walk. The world is large and the villages are hundreds of blocks
+ *  apart, so travel is deliberately brisk; sneaking stays slow, which is the point of it. */
+const WALK_SPEED = 8.6;
+const SPRINT_SPEED = 11.2;
 const SNEAK_SPEED = 1.8;
 const SWIM_SPEED = 2.6;
 const GROUND_ACCEL = 45;
@@ -38,6 +40,15 @@ const SWIM_UP_ACCEL = 22;
 const WATER_VERTICAL_DRAG = 5;
 /** Vertical speed water allows at all: a dive carries some way past the surface. */
 const MAX_WATER_FALL = 8;
+
+/** Tallest ledge the player walks up without jumping, in blocks. */
+export const AUTO_STEP_BLOCKS = 3;
+/** Each climb height to try, shortest first. */
+const AUTO_STEP_HEIGHTS = Array.from(
+  { length: AUTO_STEP_BLOCKS },
+  (_, i) => STEP_HEIGHT + i,
+);
+const SINGLE_STEP = [STEP_HEIGHT];
 
 export interface PlayerInput {
   forward: boolean;
@@ -234,9 +245,9 @@ export class Player implements Damageable {
     this.onGround = move.onGround || this.flying;
 
     // --- walking up a step, and climbing out of the water --------------------
-    // A wall one block high is a kerb, not an obstacle: retry the same move from a
-    // block higher and drop back down. Swimming into the bank uses the same move,
-    // which is the only way out of the water when the bank stands above it.
+    // A ledge up to AUTO_STEP_BLOCKS high is a kerb, not an obstacle: retry the same
+    // move from that much higher and drop back down. Swimming into the bank uses the
+    // same move, which is the only way out of the water when the bank stands above it.
     const swimmingOut = this.inWater && !this.submerged;
     if (
       (move.collidedX || move.collidedZ) &&
@@ -252,12 +263,17 @@ export class Player implements Damageable {
         height: PLAYER_HEIGHT,
       };
       const achieved = Math.hypot(this.x - beforeX, this.z - beforeZ);
-      if (stepUpMove(world, box, attemptedX, attemptedZ, wishX, wishZ, achieved)) {
+      // Shortest climb first: raising the whole box needs headroom above it, so trying
+      // three blocks straight away would refuse kerbs that fit under a low ceiling.
+      const heights = this.autoStep ? AUTO_STEP_HEIGHTS : SINGLE_STEP;
+      for (const height of heights) {
+        if (!stepUpMove(world, box, attemptedX, attemptedZ, wishX, wishZ, achieved, height)) continue;
         this.x = box.x;
         this.y = box.y;
         this.z = box.z;
         this.onGround = true;
         this.vy = Math.max(this.vy, 0);
+        break;
       }
     }
 

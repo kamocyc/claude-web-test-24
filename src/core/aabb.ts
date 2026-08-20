@@ -102,19 +102,26 @@ export function sweepMove(
   return result;
 }
 
-/** How high a single step an entity walks up without jumping. */
+/** How high a single step an entity walks up without jumping. Mobs keep to this; the
+ *  player climbs taller ledges by retrying the move at each height in turn. */
 export const STEP_HEIGHT = 1.02;
 
-/** Whether the entity can step up onto the block directly in front of it. */
-export function canStepUp(world: VoxelCollider, box: EntityBox, dirX: number, dirZ: number): boolean {
+/** Whether the entity can step up onto the ledge directly in front of it. */
+export function canStepUp(
+  world: VoxelCollider,
+  box: EntityBox,
+  dirX: number,
+  dirZ: number,
+  stepHeight = STEP_HEIGHT,
+): boolean {
   const ahead: EntityBox = { ...box, x: box.x + dirX * 0.6, z: box.z + dirZ * 0.6 };
   if (!overlapsSolid(world, ahead)) return false;
-  const stepped: EntityBox = { ...ahead, y: box.y + STEP_HEIGHT + 0.03 };
+  const stepped: EntityBox = { ...ahead, y: box.y + stepHeight + 0.03 };
   return !overlapsSolid(world, stepped);
 }
 
-/** Walks a blocked horizontal move up a single block step: the same move is retried
- *  one step higher and then settles back down onto whatever was climbed. `box` holds
+/** Walks a blocked horizontal move up a ledge: the same move is retried `stepHeight`
+ *  higher and then settles back down onto whatever was climbed. `box` holds
  *  the position from before the move and is updated in place when the step succeeds.
  *  `achieved` is how far the blocked move actually got, so a step is only taken when
  *  it gains ground. This is what lets a walker cross a kerb without jumping and a
@@ -127,16 +134,17 @@ export function stepUpMove(
   dirX: number,
   dirZ: number,
   achieved: number,
+  stepHeight = STEP_HEIGHT,
 ): boolean {
-  if (!canStepUp(world, box, dirX, dirZ)) return false;
+  if (!canStepUp(world, box, dirX, dirZ, stepHeight)) return false;
   const fromX = box.x;
   const fromZ = box.z;
-  const raised: EntityBox = { ...box, y: box.y + STEP_HEIGHT };
+  const raised: EntityBox = { ...box, y: box.y + stepHeight };
   if (overlapsSolid(world, raised)) return false;
   sweepMove(world, raised, dx, 0, dz);
   if (Math.hypot(raised.x - fromX, raised.z - fromZ) <= achieved + 0.001) return false;
-  // Fall back onto the step so nothing is left hovering a block up.
-  sweepMove(world, raised, 0, -STEP_HEIGHT, 0);
+  // Fall back onto the step so nothing is left hovering above it.
+  sweepMove(world, raised, 0, -stepHeight, 0);
   box.x = raised.x;
   box.y = raised.y;
   box.z = raised.z;

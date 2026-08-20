@@ -3,7 +3,7 @@ import { Block } from '../world/blocks';
 import { CHUNK_SIZE, Chunk } from '../world/chunk';
 import { World } from '../world/world';
 import { WATER_FULL } from '../world/water';
-import { MAX_AIR, NO_INPUT, Player, movementDirection } from '../game/player';
+import { AUTO_STEP_BLOCKS, MAX_AIR, NO_INPUT, Player, movementDirection } from '../game/player';
 
 function flatWorld(groundY = 20): World {
   const world = new World(1);
@@ -36,11 +36,14 @@ function poolWithBank(): World {
   return world;
 }
 
-/** Flat ground with a one block kerb running along x = 3. */
-function worldWithStep(groundY = 20): World {
+/** Flat ground that steps up by `height` blocks at x = 3 and stays up: a second of
+ *  walking covers a dozen blocks, so the raised half has to be wider than that. */
+function worldWithStep(groundY = 20, height = 1): World {
   const world = flatWorld(groundY);
   for (let z = -20; z < 20; z++) {
-    for (let x = 3; x < 8; x++) world.setBlock(x, groundY + 1, z, Block.STONE);
+    for (let x = 3; x < 40; x++) {
+      for (let y = groundY + 1; y <= groundY + height; y++) world.setBlock(x, y, z, Block.STONE);
+    }
   }
   return world;
 }
@@ -214,14 +217,29 @@ describe('water', () => {
     expect(blocked.y).toBeCloseTo(21, 1);
   });
 
-  it('does not climb a two block wall', () => {
-    const world = worldWithStep();
-    for (let z = -20; z < 20; z++) {
-      for (let x = 3; x < 8; x++) world.setBlock(x, 22, z, Block.STONE);
-    }
-    const player = walkEast(world, true);
+  it('walks up a three block ledge, which is as high as auto stepping goes', () => {
+    const climbed = walkEast(worldWithStep(20, AUTO_STEP_BLOCKS), true);
+    expect(climbed.x).toBeGreaterThan(4);
+    expect(climbed.y).toBeCloseTo(20 + AUTO_STEP_BLOCKS + 1, 1);
+    expect(climbed.onGround).toBe(true);
+  });
+
+  it('does not climb a wall one block taller than that', () => {
+    const player = walkEast(worldWithStep(20, AUTO_STEP_BLOCKS + 1), true);
     expect(player.x).toBeLessThan(3);
     expect(player.y).toBeCloseTo(21, 1);
+  });
+
+  it('still crosses a kerb tucked under a low ceiling', () => {
+    // Raising the whole player three blocks needs headroom, so the climb has to fall
+    // back to the shortest step that fits rather than give up.
+    const world = worldWithStep();
+    for (let z = -20; z < 20; z++) {
+      for (let x = -20; x < 40; x++) world.setBlock(x, 24, z, Block.STONE);
+    }
+    const climbed = walkEast(world, true);
+    expect(climbed.x).toBeGreaterThan(4);
+    expect(climbed.y).toBeCloseTo(22, 1);
   });
 
   it('climbs out of the water onto the bank', () => {

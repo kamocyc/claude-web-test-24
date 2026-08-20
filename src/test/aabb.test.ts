@@ -57,6 +57,19 @@ describe('canStepUp', () => {
     expect(canStepUp(oneHigh, player(0.7, 0, 0.5), 1, 0)).toBe(true);
     expect(canStepUp(twoHigh, player(0.7, 0, 0.5), 1, 0)).toBe(false);
   });
+
+  it('clears a taller wall only when asked for a taller step', () => {
+    const threeHigh = collider((x, y) => y < 0 || (x === 1 && y <= 2));
+    expect(canStepUp(threeHigh, player(0.7, 0, 0.5), 1, 0, 3.02)).toBe(true);
+    expect(canStepUp(threeHigh, player(0.7, 0, 0.5), 1, 0, 2.02)).toBe(false);
+  });
+
+  it('refuses a step it cannot fit under, however low the wall', () => {
+    // A one block kerb with a ceiling that leaves no room to be lifted three blocks.
+    const lowRoof = collider((x, y) => y < 0 || (x === 1 && y === 0) || y === 3);
+    expect(canStepUp(lowRoof, player(0.7, 0, 0.5), 1, 0)).toBe(true);
+    expect(canStepUp(lowRoof, player(0.7, 0, 0.5), 1, 0, 3.02)).toBe(false);
+  });
 });
 
 describe('boxIntersectsWorld', () => {
