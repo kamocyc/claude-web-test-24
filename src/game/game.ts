@@ -219,6 +219,7 @@ export class Game {
       return;
     }
 
+    this.water.setCenter(this.player.x, this.player.z);
     this.water.update(dt);
     this.day.update(dt);
     this.materials.setSun(Math.max(0.06, this.day.sunLight));

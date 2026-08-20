@@ -5,6 +5,7 @@ import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey
 import { WATER_FULL } from '../water';
 import { Biome, type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
 import { ORES, placeCactus, placeSugarCane, placeTree, treeCandidates } from './features';
+import { RiverField, type RiverSample } from './rivers';
 import {
   type ChestMarker,
   type VillagePlan,
@@ -50,6 +51,7 @@ export class TerrainGenerator {
   private readonly cave1: Noise;
   private readonly cave2: Noise;
   private readonly cavern: Noise;
+  private readonly rivers: RiverField;
 
   private readonly villageInfoCache = new Map<string, VillageInfo>();
   private readonly villagePlanCache = new Map<string, VillagePlan>();
@@ -64,6 +66,7 @@ export class TerrainGenerator {
     this.cave1 = new Noise(seed ^ 0x7007);
     this.cave2 = new Noise(seed ^ 0x8008);
     this.cavern = new Noise(seed ^ 0x9009);
+    this.rivers = new RiverField(seed);
   }
 
   /** Terrain height before villages flatten anything. */
@@ -80,11 +83,47 @@ export class TerrainGenerator {
     const hilly = smoothstep(-0.15, 0.28, ero);
     const mountain = smoothstep(0.15, 0.42, ero) * smoothstep(0.3, 0.68, ridge);
 
-    let h = SEA_LEVEL - 14 + land * 17;
-    h += land * hilly * (6 + detail * 6);
-    h += land * mountain * (26 + ridge * 30);
-    h += detail * 2;
+    let base = SEA_LEVEL - 14 + land * 17;
+    base += land * hilly * (6 + detail * 6);
+    base += land * mountain * (26 + ridge * 30);
+    // The fine detail is left out of `base` so the river surface, which is derived
+    // from it, does not jitter up and down along the channel.
+    const h = this.carveRiver(base + detail * 2, base, x, z, cont);
     return clamp(Math.round(h), MIN_HEIGHT, MAX_HEIGHT);
+  }
+
+  /** Continentalness drives both the coastline and the height of every river. */
+  private continentalness(x: number, z: number): number {
+    return this.continent.fbm2(x * 0.0011, z * 0.0011, 4);
+  }
+
+  /** River channel at a column, or a dry sample outside one. Already clamped so the
+   *  water surface always sits below the surrounding land. */
+  riverAt(x: number, z: number): RiverSample {
+    const cont = this.continentalness(x, z);
+    return this.rivers.sample(x, z, cont, this.smoothHeight(x, z, cont));
+  }
+
+  /** Terrain height without the fine detail, which is what the river surface follows. */
+  private smoothHeight(x: number, z: number, cont: number): number {
+    const ero = this.erosion.fbm2(x * 0.0027, z * 0.0027, 3);
+    const ridge = this.ridge.ridged2(x * 0.0042, z * 0.0042, 4);
+    const detail = this.detail.fbm2(x * 0.02, z * 0.02, 3);
+    const land = smoothstep(-0.22, 0.05, cont + 0.16);
+    const hilly = smoothstep(-0.15, 0.28, ero);
+    const mountain = smoothstep(0.15, 0.42, ero) * smoothstep(0.3, 0.68, ridge);
+    return SEA_LEVEL - 14 + land * 17 + land * hilly * (6 + detail * 6) + land * mountain * (26 + ridge * 30);
+  }
+
+  /** Cuts the river channel into the land. Rivers fade out rather than slicing a
+   *  canyon through a mountain range. */
+  private carveRiver(height: number, base: number, x: number, z: number, cont: number): number {
+    const river = this.rivers.sample(x, z, cont, base);
+    if (river.strength <= 0) return height;
+    const reach = 1 - smoothstep(16, 30, base - river.surface);
+    const strength = river.strength * reach;
+    if (strength <= 0) return height;
+    return lerp(height, Math.min(height, river.floor), strength);
   }
 
   /** Terrain height including the flat plateau a village sits on. */
@@ -147,6 +186,8 @@ export class TerrainGenerator {
     const def = biomeDef(biome);
     // Villages need reasonably flat, dry, buildable ground.
     let valid = def.allowsVillage && baseY > SEA_LEVEL + 2 && baseY < SEA_LEVEL + 24;
+    // Never flatten a village over a river: the plateau would dam it.
+    if (valid && this.riverAt(site.x, site.z).strength > 0.1) valid = false;
     if (valid) {
       // Reject sites where the surrounding land is too steep to plausibly flatten.
       let min = baseY;
@@ -200,6 +241,7 @@ export class TerrainGenerator {
   generateChunk(cx: number, cz: number): ChunkGenResult {
     const blocks = new Uint16Array(CHUNK_VOLUME);
     const water = new Uint8Array(CHUNK_VOLUME);
+    const springs: { x: number; y: number; z: number }[] = [];
     const originX = cx * CHUNK_SIZE;
     const originZ = cz * CHUNK_SIZE;
     const heights = new Int16Array(CHUNK_SIZE * CHUNK_SIZE);
@@ -248,6 +290,17 @@ export class TerrainGenerator {
         }
         for (let y = h + 1; y <= SEA_LEVEL; y++) setLocal(lx, y, lz, Block.WATER);
         if (h < SEA_LEVEL && isSnowy(biome)) setLocal(lx, SEA_LEVEL, lz, Block.ICE);
+
+        // Rivers run above sea level, so they are filled from their own surface.
+        const cont = this.continentalness(x, z);
+        const river = this.rivers.sample(x, z, cont, this.smoothHeight(x, z, cont));
+        if (river.strength > 0.2 && h < river.surface) {
+          for (let y = h + 1; y <= river.surface; y++) setLocal(lx, y, lz, Block.WATER);
+          if (this.rivers.isSpringSite(this.seed, x, z, river, cont)) {
+            setLocal(lx, h, lz, Block.SPRING);
+            springs.push({ x, y: h, z });
+          }
+        }
       }
     }
 
@@ -297,7 +350,6 @@ export class TerrainGenerator {
     // --- 5. villages (last, so they overwrite trees and grass) --------------
     const villagers: VillagerMarker[] = [];
     const chests: ChestMarker[] = [];
-    const springs: { x: number; y: number; z: number }[] = [];
     const key = chunkKey(cx, cz);
     for (const info of this.villagesForChunk(cx, cz)) {
       if (!info.valid) continue;
@@ -358,6 +410,8 @@ export class TerrainGenerator {
           const localDef = biomeDef(localBiome);
           if (localDef.treeDensity <= 0) continue;
           if (this.insideVillage(candidate.x, candidate.z)) continue;
+          // Trees do not grow in the river bed.
+          if (this.riverAt(candidate.x, candidate.z).strength > 0.2) continue;
           placeTree(put, candidate.rng, candidate.x, groundY, candidate.z, {
             log: localDef.treeLog,
             leaves: localDef.treeLeaves,
@@ -382,6 +436,7 @@ export class TerrainGenerator {
         const def = biomeDef(biomes[lz * CHUNK_SIZE + lx]);
         const rng = mulberry32(hashInts(this.seed ^ 0xc0ffee, x, z));
         if (this.insideVillage(x, z)) continue;
+        if (this.riverAt(x, z).strength > 0.2) continue;
         const roll = rng();
         if (surface === Block.GRASS) {
           if (roll < def.flowerDensity) {

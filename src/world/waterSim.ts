@@ -9,6 +9,8 @@ export const WATER_TICK_SECONDS = 0.1;
 const MAX_CELLS_PER_TICK = 20000;
 /** Steps allowed in a single frame, so a slow frame cannot spiral. */
 const MAX_TICKS_PER_FRAME = 2;
+/** Water further than this from the player is left alone until they come back. */
+const SIMULATION_RADIUS = 96;
 /** Most a single cell can give away per step. */
 const MAX_FLOW = WATER_FULL;
 /** Water added by a spring each step. */
@@ -69,8 +71,27 @@ export class WaterSimulator {
   private parity = 0;
   /** Water removed by sinks, for tests and debugging. */
   drained = 0;
+  /** Centre of the simulated area; cells beyond the radius are left frozen. */
+  private centerX = 0;
+  private centerZ = 0;
+  private limited = false;
 
   constructor(private readonly world: World) {}
+
+  /** Restricts the simulation to the area around the player. Without a centre the
+   *  whole loaded world is simulated, which is what the tests want. */
+  setCenter(x: number, z: number): void {
+    this.centerX = x;
+    this.centerZ = z;
+    this.limited = true;
+  }
+
+  private inRange(x: number, z: number): boolean {
+    if (!this.limited) return true;
+    const dx = x - this.centerX;
+    const dz = z - this.centerZ;
+    return dx * dx + dz * dz <= SIMULATION_RADIUS * SIMULATION_RADIUS;
+  }
 
   get activeCount(): number {
     return this.active.size;
@@ -183,6 +204,10 @@ export class WaterSimulator {
         this.active.add(key);
         continue;
       }
+      const x = unpackX(key);
+      const z = unpackZ(key);
+      // Far away water is simply parked: it wakes again when the player returns.
+      if (!this.inRange(x, z)) continue;
       processed++;
       this.simulateCell(key);
     }
@@ -193,6 +218,7 @@ export class WaterSimulator {
       const x = unpackX(key);
       const y = unpackY(key);
       const z = unpackZ(key);
+      if (!this.inRange(x, z)) continue;
       if (this.world.getBlock(x, y, z) !== Block.SPRING) {
         this.springs.delete(key);
         continue;
@@ -209,6 +235,7 @@ export class WaterSimulator {
       const x = unpackX(key);
       const y = unpackY(key);
       const z = unpackZ(key);
+      if (!this.inRange(x, z)) continue;
       if (this.world.getBlock(x, y, z) !== Block.PUMP) {
         this.pumps.delete(key);
         continue;
