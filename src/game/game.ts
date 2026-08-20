@@ -1182,18 +1182,22 @@ export class Game {
             // actually cut below its own water line.
             if (river.surface <= SEA_LEVEL + 4) continue;
             if (!riverCovers(river, this.generator.height(x, z))) continue;
-            // Land on the nearest dry bank rather than in the water.
-            for (let offset = 4; offset < 14; offset++) {
+            // Land on the water's edge looking at the river, not on the hillside above
+            // it: the lowest dry column near the channel, which is the bank itself.
+            let best: { x: number; z: number; y: number } | null = null;
+            for (let offset = 3; offset < 16; offset++) {
               for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
                 const bx = x + dx * offset;
                 const bz = z + dz * offset;
-                if (this.generator.height(bx, bz) + 1 >= river.surface) {
-                  this.debug.teleport(bx, bz);
-                  return { x, z, surface: river.surface };
-                }
+                const y = this.generator.height(bx, bz);
+                if (y + 1 < river.surface) continue;
+                if (!best || y < best.y) best = { x: bx, z: bz, y };
               }
             }
-            this.debug.teleport(x, z);
+            const stand = best ?? { x, z, y: this.generator.height(x, z) };
+            this.debug.teleport(stand.x, stand.z);
+            this.player.yaw = Math.atan2(stand.x - x, stand.z - z);
+            this.player.pitch = -0.25;
             return { x, z, surface: river.surface };
           }
         }
