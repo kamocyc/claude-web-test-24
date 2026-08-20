@@ -1,4 +1,4 @@
-import { type EntityBox, sweepMove } from '../../core/aabb';
+import { type EntityBox, stepUpMove, sweepMove } from '../../core/aabb';
 import type { Rng } from '../../core/rng';
 import { WATER_FULL } from '../../world/water';
 import type { World } from '../../world/world';
@@ -10,6 +10,11 @@ import { type MobDef, type MobKind, mobDef } from './types';
 
 const GRAVITY = 26;
 const JUMP_SPEED = 7.6;
+/** Water is thick: animals bob rather than sink, and never plummet through it. */
+const SWIM_UP_ACCEL = 14;
+const WATER_VERTICAL_DRAG = 5;
+const SWIM_UP_SPEED = 2.5;
+const MAX_WATER_FALL = 8;
 
 export type MobState = 'idle' | 'wander' | 'chase' | 'flee';
 
@@ -227,8 +232,9 @@ export class Mob implements Damageable {
       }
     }
     if (inWater) {
-      this.vy += 12 * dt;
-      this.vy = Math.min(this.vy, 2.5);
+      this.vy += SWIM_UP_ACCEL * dt;
+      this.vy *= Math.max(0, 1 - WATER_VERTICAL_DRAG * dt);
+      this.vy = Math.max(-MAX_WATER_FALL, Math.min(SWIM_UP_SPEED, this.vy));
     } else {
       this.vy -= GRAVITY * dt;
     }
@@ -243,16 +249,40 @@ export class Mob implements Damageable {
 
     const box = this.box();
     const beforeX = this.x;
+    const beforeY = this.y;
     const beforeZ = this.z;
-    const result = sweepMove(world, box, this.vx * dt, this.vy * dt, this.vz * dt);
+    const attemptedX = this.vx * dt;
+    const attemptedZ = this.vz * dt;
+    const result = sweepMove(world, box, attemptedX, this.vy * dt, attemptedZ);
     this.x = box.x;
     this.y = box.y;
     this.z = box.z;
     this.onGround = result.onGround;
     if (result.collidedY) this.vy = 0;
 
+    const blocked = result.collidedX || result.collidedZ;
+    // Swimming into the bank climbs out of the water. Without this an animal that
+    // wanders into a river bobs against the shore forever.
+    if (blocked && inWater) {
+      const from: EntityBox = {
+        x: beforeX,
+        y: beforeY,
+        z: beforeZ,
+        width: this.def.width,
+        height: this.def.height,
+      };
+      const speed = Math.hypot(attemptedX, attemptedZ) || 1;
+      const achieved = Math.hypot(this.x - beforeX, this.z - beforeZ);
+      if (stepUpMove(world, from, attemptedX, attemptedZ, attemptedX / speed, attemptedZ / speed, achieved)) {
+        this.x = from.x;
+        this.y = from.y;
+        this.z = from.z;
+        this.onGround = true;
+        this.vy = Math.max(this.vy, 0);
+      }
+    }
     // Hop over single block obstacles instead of getting stuck on them.
-    if ((result.collidedX || result.collidedZ) && this.onGround && this.jumpCooldown <= 0) {
+    if (blocked && this.onGround && this.jumpCooldown <= 0) {
       this.vy = JUMP_SPEED;
       this.jumpCooldown = 0.4;
     }

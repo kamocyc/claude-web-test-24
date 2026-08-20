@@ -21,6 +21,21 @@ function flatWorld(groundY = 20): World {
   return world;
 }
 
+/** A pool three blocks deep with a bank standing one block clear of the water, which
+ *  is the shape the river generator now produces. */
+function poolWithBank(): World {
+  const world = flatWorld(20);
+  for (let z = -12; z < 12; z++) {
+    for (let x = 6; x < 40; x++) {
+      for (let y = 21; y <= 23; y++) world.setBlock(x, y, z, Block.STONE);
+    }
+    for (let x = -12; x < 6; x++) {
+      for (let y = 21; y <= 23; y++) world.setWater(x, y, z, WATER_FULL);
+    }
+  }
+  return world;
+}
+
 /** Flat ground with a one block kerb running along x = 3. */
 function worldWithStep(groundY = 20): World {
   const world = flatWorld(groundY);
@@ -206,6 +221,57 @@ describe('water', () => {
     }
     const player = walkEast(world, true);
     expect(player.x).toBeLessThan(3);
+    expect(player.y).toBeCloseTo(21, 1);
+  });
+
+  it('climbs out of the water onto the bank', () => {
+    const world = poolWithBank();
+    const player = new Player();
+    player.x = 1.5;
+    player.y = 24;
+    player.z = 0.5;
+    // Yaw -PI/2 looks towards +X, which is where the bank is.
+    player.yaw = -Math.PI / 2;
+    for (let i = 0; i < 180; i++) {
+      // Swim forwards while holding jump, then stand still once out on the bank.
+      const ashore = !player.inWater && player.y > 23.5;
+      player.update(1 / 60, world, { ...NO_INPUT, forward: !ashore, jump: !ashore });
+    }
+    // Out of the water, standing on top of the bank rather than bobbing against it.
+    expect(player.x).toBeGreaterThan(6.5);
+    expect(player.y).toBeGreaterThan(23.5);
+    expect(player.onGround).toBe(true);
+    expect(player.inWater).toBe(false);
+  });
+
+  it('sinks slowly instead of dropping through the water', () => {
+    const world = poolWithBank();
+    const player = new Player();
+    player.x = 1.5;
+    player.y = 23.5;
+    player.z = 0.5;
+    for (let i = 0; i < 30; i++) player.update(1 / 60, world, NO_INPUT);
+    const startY = player.y;
+    for (let i = 0; i < 60; i++) player.update(1 / 60, world, NO_INPUT);
+    const sank = startY - player.y;
+    // Roughly a block a second, where air would be more than ten times that.
+    expect(sank).toBeGreaterThan(0.4);
+    expect(sank).toBeLessThan(2);
+  });
+
+  it('slows a dive rather than stopping it dead at the surface', () => {
+    const world = poolWithBank();
+    const player = new Player();
+    player.x = 1.5;
+    player.y = 30;
+    player.z = 0.5;
+    let deepest = player.y;
+    for (let i = 0; i < 240; i++) {
+      player.update(1 / 60, world, NO_INPUT);
+      deepest = Math.min(deepest, player.y);
+    }
+    // The fall carries on past the surface and then settles on the bottom.
+    expect(deepest).toBeLessThan(22);
     expect(player.y).toBeCloseTo(21, 1);
   });
 });

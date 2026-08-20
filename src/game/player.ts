@@ -1,4 +1,4 @@
-import { type EntityBox, canStepUp, sweepMove } from '../core/aabb';
+import { type EntityBox, stepUpMove, sweepMove } from '../core/aabb';
 import { blockDef } from '../world/blocks';
 import { WATER_FULL } from '../world/water';
 import type { World } from '../world/world';
@@ -29,8 +29,15 @@ export const MAX_AIR = 10;
 const DROWN_INTERVAL = 1.5;
 /** How hard a flowing current pushes, in blocks per second per unit of flow. */
 const CURRENT_STRENGTH = 26;
-/** How high a single step the player walks up without jumping. */
-const STEP_HEIGHT = 1.02;
+/** Upward speed while holding jump under water. */
+const SWIM_UP_SPEED = 4;
+/** Acceleration towards those speeds, and the drag that bleeds off the speed of a
+ *  fall so entering water slows the player instead of stopping them dead. */
+const SINK_ACCEL = 6;
+const SWIM_UP_ACCEL = 22;
+const WATER_VERTICAL_DRAG = 5;
+/** Vertical speed water allows at all: a dive carries some way past the surface. */
+const MAX_WATER_FALL = 8;
 
 export interface PlayerInput {
   forward: boolean;
@@ -126,34 +133,6 @@ export class Player implements Damageable {
     };
   }
 
-  /** Retries a blocked horizontal move from one block higher, then settles back down
-   *  onto whatever the player just climbed. Returns whether it got any further. */
-  private stepUp(
-    world: World,
-    fromX: number,
-    fromY: number,
-    fromZ: number,
-    wishX: number,
-    wishZ: number,
-    attemptedX: number,
-    attemptedZ: number,
-  ): boolean {
-    const foot: EntityBox = { x: fromX, y: fromY, z: fromZ, width: PLAYER_WIDTH, height: PLAYER_HEIGHT };
-    if (!canStepUp(world, foot, wishX, wishZ)) return false;
-
-    const achieved = Math.hypot(this.x - fromX, this.z - fromZ);
-    const raised: EntityBox = { ...foot, y: fromY + STEP_HEIGHT };
-    sweepMove(world, raised, attemptedX, 0, attemptedZ);
-    if (Math.hypot(raised.x - fromX, raised.z - fromZ) <= achieved + 0.001) return false;
-
-    // Fall back onto the step so the player is not left hovering a block up.
-    sweepMove(world, raised, 0, -STEP_HEIGHT, 0);
-    this.x = raised.x;
-    this.y = raised.y;
-    this.z = raised.z;
-    return true;
-  }
-
   update(
     dt: number,
     world: World,
@@ -219,8 +198,13 @@ export class Player implements Damageable {
     if (this.flying) {
       this.vy = input.jump ? 8 : input.sneak ? -8 : 0;
     } else if (this.inWater) {
-      this.vy += (input.jump ? 14 : -6) * dt;
-      this.vy = Math.max(-4, Math.min(4, this.vy));
+      // Water is thick. The player sinks slowly rather than dropping like a stone, and
+      // a dive carries on past the surface before the drag brings it to a crawl.
+      this.vy += (input.jump ? SWIM_UP_ACCEL : -SINK_ACCEL) * dt;
+      this.vy *= Math.max(0, 1 - WATER_VERTICAL_DRAG * dt);
+      // Drag alone settles the sink at SINK_ACCEL / WATER_VERTICAL_DRAG blocks a
+      // second; the clamp only caps how fast a dive can still be travelling.
+      this.vy = Math.max(-MAX_WATER_FALL, Math.min(SWIM_UP_SPEED, this.vy));
     } else {
       if (input.jump && this.onGround) {
         this.vy = JUMP_SPEED;
@@ -249,19 +233,32 @@ export class Player implements Damageable {
     if (move.collidedY) this.vy = 0;
     this.onGround = move.onGround || this.flying;
 
-    // --- walking up a step ---------------------------------------------------
+    // --- walking up a step, and climbing out of the water --------------------
     // A wall one block high is a kerb, not an obstacle: retry the same move from a
-    // block higher and drop back down, so the player never has to jump on the spot.
+    // block higher and drop back down. Swimming into the bank uses the same move,
+    // which is the only way out of the water when the bank stands above it.
+    const swimmingOut = this.inWater && !this.submerged;
     if (
-      this.autoStep &&
       (move.collidedX || move.collidedZ) &&
-      wasOnGround &&
+      (this.autoStep ? wasOnGround || swimmingOut : swimmingOut) &&
       !this.flying &&
-      !this.inWater &&
       inputLength > 0
     ) {
-      const climbed = this.stepUp(world, beforeX, beforeY, beforeZ, wishX, wishZ, attemptedX, attemptedZ);
-      if (climbed) this.onGround = true;
+      const box: EntityBox = {
+        x: beforeX,
+        y: beforeY,
+        z: beforeZ,
+        width: PLAYER_WIDTH,
+        height: PLAYER_HEIGHT,
+      };
+      const achieved = Math.hypot(this.x - beforeX, this.z - beforeZ);
+      if (stepUpMove(world, box, attemptedX, attemptedZ, wishX, wishZ, achieved)) {
+        this.x = box.x;
+        this.y = box.y;
+        this.z = box.z;
+        this.onGround = true;
+        this.vy = Math.max(this.vy, 0);
+      }
     }
 
     // --- fall damage ---------------------------------------------------------

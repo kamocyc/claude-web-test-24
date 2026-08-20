@@ -219,3 +219,39 @@ function columnHeight(r: Rig, x: number): number {
   for (let y = 10; y < 30; y++) height += Math.min(1, r.world.getWater(x, y, 0) / WATER_FULL);
   return height;
 }
+
+describe('loading a chunk', () => {
+  /** A chunk holding a pool that stands above the open ground of its neighbour, the
+   *  way a generated river sits above the land it steps down towards. */
+  function pair(): { world: World; sim: WaterSimulator; loaded: Chunk } {
+    const world = new World(1);
+    const sim = new WaterSimulator(world);
+    const left = new Chunk(-1, 0);
+    const right = new Chunk(0, 0);
+    world.addChunk(left);
+    world.addChunk(right);
+    for (let z = 0; z < CHUNK_SIZE; z++) {
+      for (let x = 0; x < CHUNK_SIZE; x++) {
+        left.set(x, 10, z, Block.STONE);
+        right.set(x, 10, z, Block.STONE);
+        left.setWater(x, 11, z, WATER_FULL);
+      }
+    }
+    left.syncWaterMarkers();
+    return { world, sim, loaded: right };
+  }
+
+  it('leaves untouched generated water exactly as it was made', () => {
+    const { sim, loaded } = pair();
+    sim.registerChunk(loaded, []);
+    expect(sim.activeCount).toBe(0);
+  });
+
+  it('wakes the water when the player has changed one of the chunks', () => {
+    const { world, sim, loaded } = pair();
+    // Any recorded edit means the water may no longer match the generator.
+    world.setBlock(-3, 12, 3, Block.COBBLESTONE);
+    sim.registerChunk(loaded, []);
+    expect(sim.activeCount).toBeGreaterThan(0);
+  });
+});

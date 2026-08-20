@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { TerrainGenerator } from '../world/generation/terrain';
 import { Block } from '../world/blocks';
-import { CHUNK_HEIGHT, CHUNK_SIZE, SEA_LEVEL, blockIndex } from '../world/chunk';
+import { CHUNK_HEIGHT, CHUNK_SIZE, Chunk, SEA_LEVEL, blockIndex } from '../world/chunk';
+import { World } from '../world/world';
+import { blocksWater } from '../world/blocks';
 
 describe('TerrainGenerator', () => {
   it('is deterministic for a given seed', () => {
@@ -80,6 +82,47 @@ describe('TerrainGenerator', () => {
     }
     expect(core).toBeGreaterThan(50);
     expect(dry / core).toBeLessThan(0.05);
+  });
+
+  it('never leaves generated water standing over dry land', () => {
+    // A river surface that sat above its own banks left a film of water on every
+    // terrace of the slope, which looked like the river climbing the hillside. Water
+    // may only ever spill one block down into the next pool, never sideways onto land.
+    const gen = new TerrainGenerator(2061350291);
+    const world = new World(2061350291);
+    for (let cz = -1; cz <= 1; cz++) {
+      for (let cx = -1; cx <= 1; cx++) {
+        const generated = gen.generateChunk(cx, cz);
+        const chunk = new Chunk(cx, cz);
+        chunk.blocks.set(generated.blocks);
+        chunk.water.set(generated.water);
+        chunk.syncWaterMarkers();
+        world.addChunk(chunk);
+      }
+    }
+
+    let surfaceCells = 0;
+    let spills = 0;
+    for (let z = -CHUNK_SIZE + 1; z < CHUNK_SIZE * 2 - 1; z++) {
+      for (let x = -CHUNK_SIZE + 1; x < CHUNK_SIZE * 2 - 1; x++) {
+        for (let y = 1; y < CHUNK_HEIGHT - 1; y++) {
+          if (world.getWater(x, y, z) <= 0) continue;
+          if (world.getWater(x, y + 1, z) > 0) continue;
+          surfaceCells++;
+          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+            const nx = x + dx;
+            const nz = z + dz;
+            if (world.getWater(nx, y, nz) > 0) continue;
+            if (blocksWater(world.getBlock(nx, y, nz))) continue;
+            // Open and dry. A pool one block down is a little waterfall and fine;
+            // anything else is water perched above ground it should have run off.
+            if (world.getWater(nx, y - 1, nz) <= 0) spills++;
+          }
+        }
+      }
+    }
+    expect(surfaceCells).toBeGreaterThan(100);
+    expect(spills).toBe(0);
   });
 
   it('never flattens a village over a river', () => {

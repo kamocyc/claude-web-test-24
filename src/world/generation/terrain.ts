@@ -150,7 +150,11 @@ export class TerrainGenerator {
     // used to, left the bed above the water line wherever the land around it rose
     // more than a block or two, which broke the river into disconnected pools.
     if (river.strength >= CHANNEL_CORE) return bed;
-    return lerp(height, bed, river.strength / CHANNEL_CORE);
+    // Outside the channel the land is only eased down to a lip one block clear of the
+    // water. Letting the bank dip below the water line left a one block film of water
+    // lying on every terrace of the slope, which read as the river climbing the hill.
+    const lip = Math.max(river.surface + 1, bed);
+    return lerp(height, Math.min(height, lip), river.strength / CHANNEL_CORE);
   }
 
   /** Terrain height including the flat plateau a village sits on. */
@@ -336,7 +340,9 @@ export class TerrainGenerator {
         // Rivers run above sea level, so they are filled from their own surface.
         const cont = this.continentalness(x, z);
         const river = this.riverSample(x, z, cont, this.baseHeight(x, z, cont));
-        if (river.strength > 0.2 && h < river.surface) {
+        // Only the channel itself holds water; its banks are carved to stay above the
+        // water line, so the two thresholds have to be the same one.
+        if (river.strength >= CHANNEL_CORE && h < river.surface) {
           for (let y = h + 1; y <= river.surface; y++) setLocal(lx, y, lz, Block.WATER);
           if (this.rivers.isSpringSite(this.seed, x, z, river, cont)) {
             setLocal(lx, h, lz, Block.SPRING);

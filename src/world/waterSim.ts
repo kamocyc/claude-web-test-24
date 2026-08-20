@@ -143,8 +143,25 @@ export class WaterSimulator {
       }
     }
 
-    // Wake the water along the seams so it can spill into the new chunk.
-    this.wakeSeams(chunk);
+    // Wake the water along the seams so it can spill into the new chunk. Chunks that
+    // nobody has touched are skipped: generated rivers already hold the water the
+    // generator meant them to, and waking them would let the simulator level a sloping
+    // channel into one flat pond that creeps up the banks and never settles.
+    if (this.wasTouched(chunk) || this.touchesEditedChunk(chunk)) this.wakeSeams(chunk);
+  }
+
+  /** True when the player has changed a chunk, which is the only reason its water can
+   *  disagree with what the generator produced. */
+  private wasTouched(chunk: Chunk): boolean {
+    return this.world.edits.has(chunk.key);
+  }
+
+  private touchesEditedChunk(chunk: Chunk): boolean {
+    for (const [dx, dz] of NEIGHBORS) {
+      const neighbor = this.world.getChunk(chunk.cx + dx, chunk.cz + dz);
+      if (neighbor && this.world.edits.has(neighbor.key)) return true;
+    }
+    return false;
   }
 
   /** Wakes water along a chunk seam, but only where the two sides disagree. Waking

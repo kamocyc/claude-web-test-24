@@ -102,10 +102,43 @@ export function sweepMove(
   return result;
 }
 
+/** How high a single step an entity walks up without jumping. */
+export const STEP_HEIGHT = 1.02;
+
 /** Whether the entity can step up onto the block directly in front of it. */
 export function canStepUp(world: VoxelCollider, box: EntityBox, dirX: number, dirZ: number): boolean {
   const ahead: EntityBox = { ...box, x: box.x + dirX * 0.6, z: box.z + dirZ * 0.6 };
   if (!overlapsSolid(world, ahead)) return false;
-  const stepped: EntityBox = { ...ahead, y: box.y + 1.05 };
+  const stepped: EntityBox = { ...ahead, y: box.y + STEP_HEIGHT + 0.03 };
   return !overlapsSolid(world, stepped);
+}
+
+/** Walks a blocked horizontal move up a single block step: the same move is retried
+ *  one step higher and then settles back down onto whatever was climbed. `box` holds
+ *  the position from before the move and is updated in place when the step succeeds.
+ *  `achieved` is how far the blocked move actually got, so a step is only taken when
+ *  it gains ground. This is what lets a walker cross a kerb without jumping and a
+ *  swimmer haul itself out onto the bank. */
+export function stepUpMove(
+  world: VoxelCollider,
+  box: EntityBox,
+  dx: number,
+  dz: number,
+  dirX: number,
+  dirZ: number,
+  achieved: number,
+): boolean {
+  if (!canStepUp(world, box, dirX, dirZ)) return false;
+  const fromX = box.x;
+  const fromZ = box.z;
+  const raised: EntityBox = { ...box, y: box.y + STEP_HEIGHT };
+  if (overlapsSolid(world, raised)) return false;
+  sweepMove(world, raised, dx, 0, dz);
+  if (Math.hypot(raised.x - fromX, raised.z - fromZ) <= achieved + 0.001) return false;
+  // Fall back onto the step so nothing is left hovering a block up.
+  sweepMove(world, raised, 0, -STEP_HEIGHT, 0);
+  box.x = raised.x;
+  box.y = raised.y;
+  box.z = raised.z;
+  return true;
 }

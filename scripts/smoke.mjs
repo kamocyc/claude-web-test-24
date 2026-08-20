@@ -495,6 +495,48 @@ await page.waitForTimeout(3000);
 await shot('11-water');
 console.log('in water:', await evaluate(() => window.voxelcraft.player.inWater));
 
+// --- swimming back out ------------------------------------------------------
+// Drop the player into the sea and swim towards the shore: they have to end up
+// standing on dry land rather than bobbing against the bank forever.
+const swim = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  // Face the nearest dry ground.
+  let best = null;
+  for (let r = 3; r < 40 && !best; r += 1) {
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 16) {
+      const x = Math.round(g.player.x + Math.cos(a) * r);
+      const z = Math.round(g.player.z + Math.sin(a) * r);
+      const top = g.world.heightAt(x, z);
+      if (top > 46 && g.world.getWater(x, top + 1, z) === 0) { best = { x, z, top, r }; break; }
+    }
+  }
+  if (!best) return null;
+  g.player.yaw = Math.atan2(-(best.x - g.player.x), -(best.z - g.player.z));
+  g.player.pitch = 0;
+  return { ...best, from: [Math.round(g.player.x), Math.round(g.player.y), Math.round(g.player.z)] };
+});
+if (swim) {
+  await page.keyboard.down('KeyW');
+  await page.keyboard.down('Space');
+  await page.waitForFunction(
+    () => {
+      const p = window.voxelcraft?.player;
+      return p ? p.onGround && !p.inWater && p.y > 47 : false;
+    },
+    null,
+    { timeout: 40000 },
+  ).catch(() => {});
+  await page.keyboard.up('Space');
+  await page.keyboard.up('KeyW');
+  await page.waitForTimeout(600);
+  const ashore = await evaluate(() => {
+    const p = window.voxelcraft.player;
+    return { y: +p.y.toFixed(1), onGround: p.onGround, inWater: p.inWater };
+  });
+  console.log('swam to shore:', JSON.stringify(swim), '->', JSON.stringify(ashore));
+  await shot('11b-ashore');
+}
+
 // --- death and respawn -------------------------------------------------------
 await evaluate(() => {
   window.voxelcraft.player.health = 0;
