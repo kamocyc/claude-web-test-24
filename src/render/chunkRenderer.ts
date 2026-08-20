@@ -121,10 +121,17 @@ export class ChunkRenderer {
     return this.meshes.has(key);
   }
 
-  /** Rebuilds up to `budget` dirty chunks, nearest to the camera first. */
-  processDirty(budget: number, cameraX: number, cameraZ: number): number {
+  /** Rebuilds up to `budget` dirty chunks, nearest to the camera first. Chunks further
+   *  than `range` blocks away are dropped from the queue instead: they have no mesh to
+   *  keep up to date, and they are marked dirty again when the player comes back. */
+  processDirty(budget: number, cameraX: number, cameraZ: number, range: number): number {
     if (this.world.dirtyChunks.size === 0) return 0;
-    const keys = [...this.world.dirtyChunks];
+    const limit = range * range;
+    const keys: string[] = [];
+    for (const key of this.world.dirtyChunks) {
+      if (distanceOf(key, cameraX, cameraZ) > limit) this.world.dirtyChunks.delete(key);
+      else keys.push(key);
+    }
     keys.sort((a, b) => distanceOf(a, cameraX, cameraZ) - distanceOf(b, cameraX, cameraZ));
     let built = 0;
     for (const key of keys) {
@@ -139,11 +146,16 @@ export class ChunkRenderer {
   }
 
   /** Rebuilds chunks where only the water level changed. */
-  processWaterDirty(budget: number): number {
+  processWaterDirty(budget: number, cameraX: number, cameraZ: number, range: number): number {
     if (this.world.dirtyWaterChunks.size === 0) return 0;
+    const limit = range * range;
     let built = 0;
     for (const key of [...this.world.dirtyWaterChunks]) {
       if (built >= budget) break;
+      if (distanceOf(key, cameraX, cameraZ) > limit) {
+        this.world.dirtyWaterChunks.delete(key);
+        continue;
+      }
       this.world.dirtyWaterChunks.delete(key);
       const chunk = this.world.chunks.get(key);
       // A chunk queued for a full rebuild does not need the water-only pass as well.

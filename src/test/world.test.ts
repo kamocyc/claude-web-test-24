@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { World } from '../world/world';
-import { Chunk, CHUNK_SIZE, toChunkCoord, toLocalCoord } from '../world/chunk';
+import {
+  Chunk,
+  CHUNK_SIZE,
+  WORLD_CHUNK_COUNT,
+  WORLD_MAX,
+  WORLD_MIN,
+  WORLD_RADIUS_CHUNKS,
+  isInsideWorld,
+  toChunkCoord,
+  toLocalCoord,
+} from '../world/chunk';
 import { Block } from '../world/blocks';
 
 function worldWithChunks(range = 1): World {
@@ -77,5 +87,21 @@ describe('World', () => {
     world.onBlockChange((_x, _y, _z, previous, next) => seen.push(previous, next));
     world.setBlock(0, 0, 0, Block.STONE);
     expect(seen).toEqual([Block.AIR, Block.STONE]);
+  });
+});
+
+describe('world bounds', () => {
+  it('covers exactly the blocks its chunks cover', () => {
+    expect(isInsideWorld(-WORLD_RADIUS_CHUNKS, 0)).toBe(true);
+    expect(isInsideWorld(WORLD_RADIUS_CHUNKS - 1, 0)).toBe(true);
+    expect(isInsideWorld(-WORLD_RADIUS_CHUNKS - 1, 0)).toBe(false);
+    expect(isInsideWorld(0, WORLD_RADIUS_CHUNKS)).toBe(false);
+    // Every block between the limits belongs to a chunk that exists, and the ones just
+    // outside them do not: the player is stopped exactly where the world ends.
+    expect(isInsideWorld(toChunkCoord(WORLD_MIN), toChunkCoord(WORLD_MIN))).toBe(true);
+    expect(isInsideWorld(toChunkCoord(WORLD_MAX), toChunkCoord(WORLD_MAX))).toBe(true);
+    expect(isInsideWorld(toChunkCoord(WORLD_MIN - 1), 0)).toBe(false);
+    expect(isInsideWorld(toChunkCoord(WORLD_MAX + 1), 0)).toBe(false);
+    expect(WORLD_CHUNK_COUNT).toBe(((WORLD_MAX - WORLD_MIN + 1) / CHUNK_SIZE) ** 2);
   });
 });

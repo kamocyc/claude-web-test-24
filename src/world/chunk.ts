@@ -8,6 +8,25 @@ export const CHUNK_VOLUME = CHUNK_AREA * CHUNK_HEIGHT;
 /** Y level of the ocean surface. */
 export const SEA_LEVEL = 46;
 
+/** The world is a fixed island rather than an endless one. Every chunk inside these
+ *  bounds is generated once and never thrown away, because the water is simulated
+ *  across all of it at once: an unloaded chunk is a wall, and a wall in the middle of a
+ *  river would stop the water arriving from upstream. */
+export const WORLD_RADIUS_CHUNKS = 12;
+export const WORLD_CHUNK_COUNT = (WORLD_RADIUS_CHUNKS * 2) ** 2;
+/** Lowest and highest block coordinate, on both horizontal axes. */
+export const WORLD_MIN = -WORLD_RADIUS_CHUNKS * CHUNK_SIZE;
+export const WORLD_MAX = WORLD_RADIUS_CHUNKS * CHUNK_SIZE - 1;
+
+export function isInsideWorld(cx: number, cz: number): boolean {
+  return (
+    cx >= -WORLD_RADIUS_CHUNKS &&
+    cx < WORLD_RADIUS_CHUNKS &&
+    cz >= -WORLD_RADIUS_CHUNKS &&
+    cz < WORLD_RADIUS_CHUNKS
+  );
+}
+
 export function blockIndex(x: number, y: number, z: number): number {
   return (y * CHUNK_SIZE + z) * CHUNK_SIZE + x;
 }

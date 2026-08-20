@@ -15,6 +15,10 @@ import {
   CHUNK_VOLUME,
   Chunk,
   SEA_LEVEL,
+  WORLD_CHUNK_COUNT,
+  WORLD_MAX,
+  WORLD_MIN,
+  WORLD_RADIUS_CHUNKS,
   chunkKey,
   toChunkCoord,
 } from '../world/chunk';
@@ -72,6 +76,8 @@ import {
 } from '../world/weather';
 
 const UNLOAD_MARGIN = 2;
+/** Light propagation steps allowed per frame during play. */
+const LIGHT_BUDGET = 20000;
 const REACH = 5;
 const ATTACK_REACH = 3.6;
 const AUTOSAVE_SECONDS = 30;
@@ -226,21 +232,27 @@ export class Game {
     this.lastFrame = now;
     this.fps = this.fps * 0.9 + (1 / Math.max(dt, 1e-4)) * 0.1;
     this.update(dt);
-    this.render(dt);
+    // Nothing of the scene is visible behind the loading screen, and drawing it anyway
+    // is what starves the main thread of the time it needs to take delivery of chunks.
+    if (this.ready) this.render(dt);
     this.options.input.endFrame();
   };
 
   private update(dt: number): void {
     this.streamChunks();
-    this.light.update(20000);
-    this.chunkRenderer.processDirty(MESH_BUDGET, this.player.x, this.player.z);
-    this.chunkRenderer.processWaterDirty(WATER_MESH_BUDGET);
+    // While the island is still being built there is nothing to compete with, so the
+    // light is propagated in far bigger bites than during play.
+    this.light.update(this.ready ? LIGHT_BUDGET : LIGHT_BUDGET * 16);
+    const meshRange = (this.renderDistance + UNLOAD_MARGIN) * CHUNK_SIZE;
+    this.chunkRenderer.processDirty(MESH_BUDGET, this.player.x, this.player.z, meshRange);
+    this.chunkRenderer.processWaterDirty(WATER_MESH_BUDGET, this.player.x, this.player.z, meshRange);
 
     if (!this.ready) {
       // Wait until the ground under the player exists before handing over control.
-      const loaded = this.world.hasChunk(toChunkCoord(this.player.x), toChunkCoord(this.player.z));
+      // Every chunk has to exist before play starts: the water is simulated across the
+      // whole island, and a chunk that is still missing acts as a dam.
       this.options.menus.showLoading(true, `地形を生成しています... 残り ${this.pool.pending} チャンク`);
-      if (loaded && this.pool.pending < 40) {
+      if (this.world.chunks.size >= WORLD_CHUNK_COUNT) {
         this.ready = true;
         this.options.menus.showLoading(false);
         this.options.menus.hideAll();
@@ -262,7 +274,6 @@ export class Game {
 
     this.player.autoStep = this.options.settings.autoStep;
     this.advanceWeather(this.weatherSeconds + dt);
-    this.water.setCenter(this.player.x, this.player.z);
     this.water.update(dt);
     this.riverFlow.update(dt);
     this.day.update(dt);
@@ -280,6 +291,7 @@ export class Game {
       Math.floor(this.player.z),
     );
     const events = this.player.update(dt, this.world, input, current);
+    this.keepInsideWorld();
     this.unstick();
     if (events.tookDamage > 0) this.hud.flashDamage();
 
@@ -335,6 +347,21 @@ export class Game {
       this.weatherSeconds,
       this.generator.inlandAt(this.player.x, this.player.z),
     );
+  }
+
+  /** The island has an edge. Walking off it would take the player into chunks that do
+   *  not exist, where the world is solid nothing. */
+  private keepInsideWorld(): void {
+    const low = WORLD_MIN + 1;
+    const high = WORLD_MAX;
+    if (this.player.x < low || this.player.x > high) {
+      this.player.x = Math.max(low, Math.min(high, this.player.x));
+      this.player.vx = 0;
+    }
+    if (this.player.z < low || this.player.z > high) {
+      this.player.z = Math.max(low, Math.min(high, this.player.z));
+      this.player.vz = 0;
+    }
   }
 
   /** Safety net: if the player ends up inside terrain, lift them out. */
@@ -402,26 +429,29 @@ export class Game {
   private streamChunks(): void {
     const pcx = toChunkCoord(this.player.x);
     const pcz = toChunkCoord(this.player.z);
-    const radius = this.renderDistance;
-    for (let dz = -radius; dz <= radius; dz++) {
-      for (let dx = -radius; dx <= radius; dx++) {
-        const distance = dx * dx + dz * dz;
-        if (distance > radius * radius) continue;
-        const cx = pcx + dx;
-        const cz = pcz + dz;
-        if (this.world.hasChunk(cx, cz) || this.pool.isBusyWith(cx, cz)) continue;
-        this.pool.request(cx, cz, distance);
+    // The whole island is generated once, nearest first, and nothing is ever unloaded:
+    // the water runs across all of it, and a missing chunk would dam a river.
+    if (this.world.chunks.size + this.pool.pending < WORLD_CHUNK_COUNT) {
+      for (let cz = -WORLD_RADIUS_CHUNKS; cz < WORLD_RADIUS_CHUNKS; cz++) {
+        for (let cx = -WORLD_RADIUS_CHUNKS; cx < WORLD_RADIUS_CHUNKS; cx++) {
+          if (this.world.hasChunk(cx, cz) || this.pool.isBusyWith(cx, cz)) continue;
+          this.pool.request(cx, cz, (cx - pcx) ** 2 + (cz - pcz) ** 2);
+        }
       }
     }
 
-    const limit = (radius + UNLOAD_MARGIN) * (radius + UNLOAD_MARGIN);
-    this.pool.cancelFarther((cx, cz) => (cx - pcx) ** 2 + (cz - pcz) ** 2 <= limit);
-    for (const chunk of [...this.world.chunks.values()]) {
+    // The meshes, unlike the chunks themselves, still follow the player: keeping
+    // geometry for the whole island on the GPU would cost far more than building it.
+    const radius = this.renderDistance;
+    const keep = (radius + UNLOAD_MARGIN) * (radius + UNLOAD_MARGIN);
+    for (const chunk of this.world.chunks.values()) {
       const distance = (chunk.cx - pcx) ** 2 + (chunk.cz - pcz) ** 2;
-      if (distance <= limit) continue;
-      this.chunkRenderer.remove(chunk.key);
-      this.riverFlow.forgetChunk(chunk.key);
-      this.world.removeChunk(chunk.cx, chunk.cz);
+      const meshed = this.chunkRenderer.has(chunk.key);
+      if (distance <= radius * radius) {
+        if (!meshed) this.world.markDirty(chunk.cx, chunk.cz);
+      } else if (distance > keep && meshed) {
+        this.chunkRenderer.remove(chunk.key);
+      }
     }
   }
 
