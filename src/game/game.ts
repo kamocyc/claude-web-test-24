@@ -151,8 +151,13 @@ export class Game {
       this.onBlockChanged(x, y, z, previous, next);
     });
 
-    this.renderer = new THREE.WebGLRenderer({ canvas: options.canvas, antialias: false, powerPreference: 'high-performance' });
+    this.renderer = new THREE.WebGLRenderer({ canvas: options.canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // Everything is lit and composed in linear light and only squeezed into display
+    // range at the very end, which is what keeps a bright sky from flattening into
+    // white and a torchlit cave from crushing to black.
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderDistance = options.settings.renderDistance;
     this.camera = new THREE.PerspectiveCamera(75, 1, 0.1, this.renderDistance * CHUNK_SIZE * 1.4);
 
@@ -350,7 +355,8 @@ export class Game {
     this.camera.position.set(this.player.x, this.player.eyeY, this.player.z);
     this.camera.rotation.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
     const wetness = this.forecast().wetness;
-    this.sky.update(this.day, this.camera, this.renderer, wetness);
+    this.sky.update(this.day, this.camera, this.renderer, wetness, dt);
+    this.materials.setSunLight(this.sky.sunDirection, this.sky.sunColor);
     this.rain.update(dt, this.camera, wetness, this.day.sunLight);
     this.renderer.render(this.scene, this.camera);
   }

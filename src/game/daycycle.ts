@@ -33,9 +33,12 @@ export class DayCycle {
     return this.sunLight < 0.25;
   }
 
-  /** Angle of the sun above the horizon, in radians. */
+  /** Angle of the sun above the horizon, in radians: 0 as it clears the eastern
+   *  horizon at t=0, a quarter turn overhead at noon, half a turn as it sets. This has
+   *  to agree with sunLight, which fades out either side of t=0.5, or the world would
+   *  be lit from the horizon at midday. */
   get sunAngle(): number {
-    return (this.time - 0.25) * Math.PI * 2;
+    return this.time * Math.PI * 2;
   }
 
   /** Human readable clock, where 0.25 of the day is noon. */

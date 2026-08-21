@@ -17,11 +17,15 @@ export interface GeometryArrays {
   uv: Float32Array;
   /** Per vertex: skylight and block light, both 0..1. */
   light: Float32Array;
-  /** Per vertex: ambient occlusion times face shading, 0..1. */
+  /** Per vertex: ambient occlusion alone, 0..1. Directional shading is no longer
+   *  baked in: the shader lights each face against the real sun direction. */
   shade: Float32Array;
   /** Per vertex: where the corner sits on its own face, 0..1 on both axes. The shader
    *  uses it to round off the block's edges. A vertex at (0.5, 0.5) is never bevelled. */
   face: Float32Array;
+  /** Per vertex: which of the six cube faces this belongs to, as an index into
+   *  FACE_BASIS. The shader rebuilds the surface frame from it. */
+  faceId: Float32Array;
   index: Uint32Array;
 }
 
@@ -35,10 +39,6 @@ interface Corner {
 interface Face {
   dir: readonly [number, number, number];
   corners: readonly Corner[];
-  /** Fixed brightness per face direction, so cubes read as three-dimensional. The
-   *  range is deliberately narrow: a soft step between faces keeps edges from
-   *  drawing the eye. */
-  shade: number;
   /** Per corner, the three neighbour offsets used for ambient occlusion. */
   ao: readonly (readonly [number, number, number])[][];
 }
@@ -46,7 +46,6 @@ interface Face {
 const RAW_FACES: Omit<Face, 'ao'>[] = [
   {
     dir: [-1, 0, 0],
-    shade: 0.84,
     corners: [
       { pos: [0, 1, 0], uv: [0, 1] },
       { pos: [0, 0, 0], uv: [0, 0] },
@@ -56,7 +55,6 @@ const RAW_FACES: Omit<Face, 'ao'>[] = [
   },
   {
     dir: [1, 0, 0],
-    shade: 0.84,
     corners: [
       { pos: [1, 1, 1], uv: [0, 1] },
       { pos: [1, 0, 1], uv: [0, 0] },
@@ -66,7 +64,6 @@ const RAW_FACES: Omit<Face, 'ao'>[] = [
   },
   {
     dir: [0, -1, 0],
-    shade: 0.74,
     corners: [
       { pos: [1, 0, 1], uv: [1, 0] },
       { pos: [0, 0, 1], uv: [0, 0] },
@@ -76,7 +73,6 @@ const RAW_FACES: Omit<Face, 'ao'>[] = [
   },
   {
     dir: [0, 1, 0],
-    shade: 1,
     corners: [
       { pos: [0, 1, 1], uv: [1, 1] },
       { pos: [1, 1, 1], uv: [0, 1] },
@@ -86,7 +82,6 @@ const RAW_FACES: Omit<Face, 'ao'>[] = [
   },
   {
     dir: [0, 0, -1],
-    shade: 0.92,
     corners: [
       { pos: [1, 0, 0], uv: [0, 0] },
       { pos: [0, 0, 0], uv: [1, 0] },
@@ -96,7 +91,6 @@ const RAW_FACES: Omit<Face, 'ao'>[] = [
   },
   {
     dir: [0, 0, 1],
-    shade: 0.92,
     corners: [
       { pos: [0, 0, 1], uv: [0, 0] },
       { pos: [1, 0, 1], uv: [1, 0] },
@@ -105,6 +99,33 @@ const RAW_FACES: Omit<Face, 'ao'>[] = [
     ],
   },
 ];
+
+export interface FaceFrame {
+  /** Outward normal of the face. */
+  normal: readonly [number, number, number];
+  /** World direction in which the face's own u coordinate grows. */
+  tangent: readonly [number, number, number];
+  /** World direction in which the face's own v coordinate grows. */
+  bitangent: readonly [number, number, number];
+}
+
+/** The surface frame of each cube face, read straight off the corner table so the
+ *  shader's idea of "along the face" can never drift from the mesh's. Index into it
+ *  with the faceId attribute. */
+export const FACE_BASIS: FaceFrame[] = RAW_FACES.map((face) => {
+  const at = (u: number, v: number): readonly [number, number, number] => {
+    const corner = face.corners.find((c) => c.uv[0] === u && c.uv[1] === v);
+    if (!corner) throw new Error('face corner table is not a unit square');
+    return corner.pos;
+  };
+  const origin = at(0, 0);
+  const along = (to: readonly [number, number, number]): [number, number, number] => [
+    to[0] - origin[0],
+    to[1] - origin[1],
+    to[2] - origin[2],
+  ];
+  return { normal: face.dir, tangent: along(at(1, 0)), bitangent: along(at(0, 1)) };
+});
 
 /** Precomputes, for every face corner, the three neighbours whose solidity decides
  *  how dark that corner gets. */
@@ -128,6 +149,9 @@ const FACES: Face[] = RAW_FACES.map((face) => {
 
 const AO_LEVELS = [0.74, 0.85, 0.94, 1];
 
+/** Index of the +Y face in RAW_FACES. */
+const UP_FACE = 3;
+
 const TRANSPARENT_BLOCKS = new Set<BlockId>([Block.GLASS, Block.ICE]);
 
 export function passOf(id: BlockId): Pass {
@@ -144,11 +168,12 @@ interface Builder {
   light: number[];
   shade: number[];
   face: number[];
+  faceId: number[];
   index: number[];
 }
 
 function newBuilder(): Builder {
-  return { position: [], uv: [], light: [], shade: [], face: [], index: [] };
+  return { position: [], uv: [], light: [], shade: [], face: [], faceId: [], index: [] };
 }
 
 function finish(builder: Builder): GeometryArrays | null {
@@ -159,6 +184,7 @@ function finish(builder: Builder): GeometryArrays | null {
     light: new Float32Array(builder.light),
     shade: new Float32Array(builder.shade),
     face: new Float32Array(builder.face),
+    faceId: new Float32Array(builder.faceId),
     index: new Uint32Array(builder.index),
   };
 }
@@ -284,7 +310,8 @@ export function buildChunkMesh(
         }
         if (def.render === 'none') continue;
 
-        for (const face of FACES) {
+        for (let faceIndex = 0; faceIndex < FACES.length; faceIndex++) {
+          const face = FACES[faceIndex];
           const nx = x + face.dir[0];
           const ny = y + face.dir[1];
           const nz = z + face.dir[2];
@@ -298,8 +325,6 @@ export function buildChunkMesh(
           if (def.render === 'liquid' && neighborDef.render === 'liquid') continue;
 
           const uv = atlas.uv(textureFor(id, face.dir[1]));
-          const sky = skyAt(nx, ny, nz) / 15;
-          const blockLight = blockLightAt(nx, ny, nz) / 15;
 
           const base = builder.position.length / 3;
           for (let c = 0; c < 4; c++) {
@@ -311,18 +336,39 @@ export function buildChunkMesh(
               uv.u0 + corner.uv[0] * (uv.u1 - uv.u0),
               uv.v1 - corner.uv[1] * (uv.v1 - uv.v0),
             );
-            builder.light.push(sky, blockLight);
             // A river is one continuous sheet, so its cells must not be bevelled into
             // a grid of separate pillows.
             if (id === Block.WATER) builder.face.push(0.5, 0.5);
             else builder.face.push(corner.uv[0], corner.uv[1]);
+            builder.faceId.push(faceIndex);
 
+            // The four cells meeting this corner on the lit side of the face decide
+            // both how occluded it is and how much light reaches it. Sampling all four
+            // is what turns the old flat quads into a smooth gradient across a wall.
             const [o1, o2, o3] = face.ao[c];
             const side1 = occludes(x + o1[0], y + o1[1], z + o1[2]);
             const side2 = occludes(x + o2[0], y + o2[1], z + o2[2]);
             const corner3 = occludes(x + o3[0], y + o3[1], z + o3[2]);
             const level = side1 && side2 ? 0 : 3 - ((side1 ? 1 : 0) + (side2 ? 1 : 0) + (corner3 ? 1 : 0));
-            builder.shade.push(AO_LEVELS[level] * face.shade);
+            builder.shade.push(AO_LEVELS[level]);
+
+            let skySum = skyAt(nx, ny, nz);
+            let blockSum = blockLightAt(nx, ny, nz);
+            let samples = 1;
+            // A corner tucked between two solid neighbours sees nothing round the
+            // bend, so the diagonal is only worth sampling when one side is open.
+            const openDiagonal = !(side1 && side2);
+            for (const [offset, blocked] of [
+              [o1, side1],
+              [o2, side2],
+              [o3, !openDiagonal || corner3],
+            ] as const) {
+              if (blocked) continue;
+              skySum += skyAt(x + offset[0], y + offset[1], z + offset[2]);
+              blockSum += blockLightAt(x + offset[0], y + offset[1], z + offset[2]);
+              samples++;
+            }
+            builder.light.push(skySum / samples / 15, blockSum / samples / 15);
           }
           builder.index.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
         }
@@ -369,8 +415,10 @@ function emitCross(
     );
     for (let i = 0; i < 4; i++) {
       builder.light.push(sky / 15, blockLight / 15);
-      builder.shade.push(0.95);
+      builder.shade.push(1);
       builder.face.push(0.5, 0.5);
+      // Foliage is lit as though it faced the sky, which is roughly true of a leaf.
+      builder.faceId.push(UP_FACE);
     }
     builder.index.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
   }

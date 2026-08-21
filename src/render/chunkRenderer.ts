@@ -19,6 +19,7 @@ function toGeometry(data: GeometryArrays): THREE.BufferGeometry {
   geometry.setAttribute('aLight', new THREE.BufferAttribute(data.light, 2));
   geometry.setAttribute('aShade', new THREE.BufferAttribute(data.shade, 1));
   geometry.setAttribute('aFace', new THREE.BufferAttribute(data.face, 2));
+  geometry.setAttribute('aFaceId', new THREE.BufferAttribute(data.faceId, 1));
   geometry.setIndex(new THREE.BufferAttribute(data.index, 1));
   // The bounds are known up front, so skip the full vertex scan. They are in the
   // mesh's own space: the mesh itself is positioned at the chunk origin.
