@@ -15,10 +15,13 @@ import { FACE_BASIS } from './mesher';
 /** How much of the face the rounding eats into, and how far the corners are cut. */
 const BEVEL_WIDTH = 0.3;
 const CORNER_RADIUS = 0.42;
+/** How far past the face the rounding is pushed on an edge whose surface carries on
+ *  into the next block. Nothing there is a silhouette, so it should only crease. */
+const CARRY_ON = 0.62;
 /** How far the normal tips outwards at the very edge. 1.0 would lay it flat. */
 const BEVEL_BEND = 0.62;
 /** Contact darkening in the crease, on top of the directional lighting. */
-const EDGE_SHADE = 0.88;
+const EDGE_SHADE = 0.8;
 /** The sun's highlight: a broad, weak lobe. A tight one turns every rounded edge
  *  into a white pip, which reads as an artefact rather than a sheen. */
 const SPECULAR = 0.13;
@@ -49,14 +52,20 @@ const VERTEX = /* glsl */ `
   attribute float aShade;
   attribute vec2 aFace;
   attribute float aFaceId;
+  attribute float aLayer;
+  attribute float aEdges;
   varying vec2 vLight;
   varying float vShade;
   varying vec2 vUvTile;
+  varying float vLayer;
   varying vec2 vFace;
   varying vec3 vNormal;
   varying vec3 vTangent;
   varying vec3 vBitangent;
   varying vec3 vWorld;
+  varying vec2 vLow;
+  varying vec2 vHigh;
+  uniform float uCarry;
   #include <common>
   #include <fog_pars_vertex>
 ${faceFrameGlsl()}
@@ -64,8 +73,20 @@ ${faceFrameGlsl()}
     vLight = aLight;
     vShade = aShade;
     vUvTile = uv;
+    vLayer = aLayer;
     vFace = aFace;
     faceFrame( aFaceId, vNormal, vTangent, vBitangent );
+    // The four edge flags say which sides of this face actually stop here. The ones
+    // that carry on have their boundary pushed outside the face, so the rounding never
+    // reaches them and a flat wall stays flat.
+    vec4 open = vec4(
+      mod( floor( aEdges ), 2.0 ),
+      mod( floor( aEdges / 2.0 ), 2.0 ),
+      mod( floor( aEdges / 4.0 ), 2.0 ),
+      mod( floor( aEdges / 8.0 ), 2.0 )
+    );
+    vLow = vec2( mix( -uCarry, 0.0, open.x ), mix( -uCarry, 0.0, open.z ) );
+    vHigh = vec2( mix( 1.0 + uCarry, 1.0, open.y ), mix( 1.0 + uCarry, 1.0, open.w ) );
     vec4 worldPosition = modelMatrix * vec4( position, 1.0 );
     vWorld = worldPosition.xyz;
     vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
@@ -75,7 +96,9 @@ ${faceFrameGlsl()}
 `;
 
 const FRAGMENT = /* glsl */ `
-  uniform sampler2D uMap;
+  // three compiles every ShaderMaterial as GLSL ES 3.00, so the array sampler and the
+  // texture() overload below are available without asking for a raw shader.
+  uniform sampler2DArray uMap;
   uniform float uSun;
   uniform vec3 uSunDir;
   uniform vec3 uSunColor;
@@ -89,11 +112,14 @@ const FRAGMENT = /* glsl */ `
   varying vec2 vLight;
   varying float vShade;
   varying vec2 vUvTile;
+  varying float vLayer;
   varying vec2 vFace;
   varying vec3 vNormal;
   varying vec3 vTangent;
   varying vec3 vBitangent;
   varying vec3 vWorld;
+  varying vec2 vLow;
+  varying vec2 vHigh;
   #include <common>
   // three.js already puts the tone mapping functions in the fragment prefix; only the
   // call site below has to be spelled out.
@@ -103,15 +129,19 @@ const FRAGMENT = /* glsl */ `
   const vec3 TORCH_COLOR = vec3( 1.0, 0.76, 0.48 );
 
   void main() {
-    vec4 texel = texture2D( uMap, vUvTile );
+    vec4 texel = texture( uMap, vec3( vUvTile, vLayer ) );
     #ifdef CUTOUT
       if ( texel.a < 0.5 ) discard;
     #endif
 
-    // Distance to the outline of a rounded square filling the face: negative in the
+    // Distance to the outline of a rounded rectangle over the face: negative in the
     // middle, zero on the outline, positive out in the corners the rounding cuts away.
-    vec2 p = vFace - 0.5;
-    vec2 q = abs( p ) - ( 0.5 - uRadius );
+    // The rectangle is only the face itself where the face ends; where it carries on
+    // into the next block the rectangle reaches past, and nothing is rounded there.
+    vec2 centre = ( vLow + vHigh ) * 0.5;
+    vec2 extent = ( vHigh - vLow ) * 0.5;
+    vec2 p = vFace - centre;
+    vec2 q = abs( p ) - ( extent - uRadius );
     float sd = length( max( q, 0.0 ) ) + min( max( q.x, q.y ), 0.0 ) - uRadius;
     float edge = smoothstep( -uBevel, 0.0, sd );
 
@@ -130,9 +160,9 @@ const FRAGMENT = /* glsl */ `
     vec3 normal = normalize( mix( vNormal, outward, edge * uBend ) );
 
     // Sky above, bounce below: the shape a surface has before any sun reaches it.
-    float hemisphere = 0.55 + 0.45 * ( 0.5 + 0.5 * normal.y );
+    float hemisphere = 0.48 + 0.52 * ( 0.5 + 0.5 * normal.y );
     float sunFacing = max( dot( normal, uSunDir ), 0.0 );
-    float form = mix( hemisphere, mix( 0.5, 1.0, sunFacing ), uSun * 0.8 );
+    float form = mix( hemisphere, mix( 0.42, 1.0, sunFacing ), uSun * 0.85 );
 
     // Sunlight fades with the time of day; torch light never does.
     float skyPart = vLight.x * uSun;
@@ -170,7 +200,7 @@ export interface ChunkMaterials {
 }
 
 function make(
-  map: THREE.Texture,
+  map: THREE.DataArrayTexture,
   options: { cutout?: boolean; transparent?: boolean; opacity?: number; doubleSided?: boolean },
 ): THREE.ShaderMaterial {
   const material = new THREE.ShaderMaterial({
@@ -186,6 +216,7 @@ function make(
         uRadius: { value: CORNER_RADIUS },
         uBend: { value: BEVEL_BEND },
         uEdgeShade: { value: EDGE_SHADE },
+        uCarry: { value: CARRY_ON },
         uSpecular: { value: SPECULAR },
         uSpecularPower: { value: SPECULAR_POWER },
       },
@@ -202,7 +233,7 @@ function make(
   return material;
 }
 
-export function createChunkMaterials(map: THREE.Texture): ChunkMaterials {
+export function createChunkMaterials(map: THREE.DataArrayTexture): ChunkMaterials {
   const opaque = make(map, {});
   const cutout = make(map, { cutout: true });
   const transparent = make(map, { transparent: true, opacity: 0.82 });

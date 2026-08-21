@@ -162,7 +162,7 @@ export class Game {
     this.camera = new THREE.PerspectiveCamera(75, 1, 0.1, this.renderDistance * CHUNK_SIZE * 1.4);
 
     this.atlas = buildAtlas();
-    this.materials = createChunkMaterials(this.atlas.texture);
+    this.materials = createChunkMaterials(this.atlas.array);
     this.chunkRenderer = new ChunkRenderer(this.world, this.atlas, this.materials);
     this.entityRenderer = new EntityRenderer(this.atlas);
     this.effects = new Effects(this.atlas);

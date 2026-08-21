@@ -2,7 +2,7 @@ import { Block, type BlockId, blockDef } from '../world/blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, type Chunk } from '../world/chunk';
 import { waterFraction } from '../world/water';
 import type { World } from '../world/world';
-import type { Atlas, TileUv } from './textures';
+import type { Atlas } from './textures';
 
 /** Which draw pass a block belongs to. */
 export const PASS_OPAQUE = 0;
@@ -26,6 +26,12 @@ export interface GeometryArrays {
   /** Per vertex: which of the six cube faces this belongs to, as an index into
    *  FACE_BASIS. The shader rebuilds the surface frame from it. */
   faceId: Float32Array;
+  /** Per vertex: which layer of the array texture to sample. Constant across a quad. */
+  layer: Float32Array;
+  /** Per vertex: which of the face's four edges end at a silhouette, as a bitmask of
+   *  -u, +u, -v, +v. An edge whose surface carries on into the next block is only
+   *  lightly creased; one that stops is rounded off in full. */
+  edges: Float32Array;
   index: Uint32Array;
 }
 
@@ -147,10 +153,12 @@ const FACES: Face[] = RAW_FACES.map((face) => {
   return { ...face, ao };
 });
 
-const AO_LEVELS = [0.74, 0.85, 0.94, 1];
+const AO_LEVELS = [0.54, 0.73, 0.89, 1];
 
 /** Index of the +Y face in RAW_FACES. */
 const UP_FACE = 3;
+/** All four edges of a face free-standing. */
+const ALL_EDGES = 15;
 
 const TRANSPARENT_BLOCKS = new Set<BlockId>([Block.GLASS, Block.ICE]);
 
@@ -169,11 +177,15 @@ interface Builder {
   shade: number[];
   face: number[];
   faceId: number[];
+  layer: number[];
+  edges: number[];
   index: number[];
 }
 
 function newBuilder(): Builder {
-  return { position: [], uv: [], light: [], shade: [], face: [], faceId: [], index: [] };
+  return {
+    position: [], uv: [], light: [], shade: [], face: [], faceId: [], layer: [], edges: [], index: [],
+  };
 }
 
 function finish(builder: Builder): GeometryArrays | null {
@@ -185,6 +197,8 @@ function finish(builder: Builder): GeometryArrays | null {
     shade: new Float32Array(builder.shade),
     face: new Float32Array(builder.face),
     faceId: new Float32Array(builder.faceId),
+    layer: new Float32Array(builder.layer),
+    edges: new Float32Array(builder.edges),
     index: new Uint32Array(builder.index),
   };
 }
@@ -305,7 +319,7 @@ export function buildChunkMesh(
             : null;
 
         if (def.render === 'cross') {
-          emitCross(builder, atlas.uv(def.tex.all ?? 'tall_grass'), x, y, z, skyAt(x, y, z), blockLightAt(x, y, z));
+          emitCross(builder, atlas.layer(def.tex.all ?? 'tall_grass'), x, y, z, skyAt(x, y, z), blockLightAt(x, y, z));
           continue;
         }
         if (def.render === 'none') continue;
@@ -324,7 +338,22 @@ export function buildChunkMesh(
           if (neighbor === id && !def.opaque) continue;
           if (def.render === 'liquid' && neighborDef.render === 'liquid') continue;
 
-          const uv = atlas.uv(textureFor(id, face.dir[1]));
+          const layer = atlas.layer(textureFor(id, face.dir[1]));
+
+          // An edge only reads as an edge where the surface actually stops. Where the
+          // next block along shows the same face, the two are one continuous plane and
+          // rounding them apart would quilt a flat field into a grid of cushions.
+          const frame = FACE_BASIS[faceIndex];
+          const carriesOn = (ox: number, oy: number, oz: number): boolean =>
+            occludes(x + ox, y + oy, z + oz) &&
+            !occludes(x + ox + face.dir[0], y + oy + face.dir[1], z + oz + face.dir[2]);
+          const [tx, ty, tz] = frame.tangent;
+          const [bx, by, bz] = frame.bitangent;
+          let edges = 0;
+          if (!carriesOn(-tx, -ty, -tz)) edges |= 1;
+          if (!carriesOn(tx, ty, tz)) edges |= 2;
+          if (!carriesOn(-bx, -by, -bz)) edges |= 4;
+          if (!carriesOn(bx, by, bz)) edges |= 8;
 
           const base = builder.position.length / 3;
           for (let c = 0; c < 4; c++) {
@@ -332,15 +361,16 @@ export function buildChunkMesh(
             const cy =
               corner.pos[1] === 1 ? (heights ? heights[corner.pos[0]][corner.pos[2]] : 1) : 0;
             builder.position.push(x + corner.pos[0], y + cy, z + corner.pos[2]);
-            builder.uv.push(
-              uv.u0 + corner.uv[0] * (uv.u1 - uv.u0),
-              uv.v1 - corner.uv[1] * (uv.v1 - uv.v0),
-            );
+            // Tile-local, with v measured from the top because the array texture is
+            // uploaded in image order.
+            builder.uv.push(corner.uv[0], 1 - corner.uv[1]);
+            builder.layer.push(layer);
             // A river is one continuous sheet, so its cells must not be bevelled into
             // a grid of separate pillows.
             if (id === Block.WATER) builder.face.push(0.5, 0.5);
             else builder.face.push(corner.uv[0], corner.uv[1]);
             builder.faceId.push(faceIndex);
+            builder.edges.push(edges);
 
             // The four cells meeting this corner on the lit side of the face decide
             // both how occluded it is and how much light reaches it. Sampling all four
@@ -387,7 +417,7 @@ export function buildChunkMesh(
 /** Two crossed quads, used for grass, flowers, crops and torches. */
 function emitCross(
   builder: Builder,
-  uv: TileUv,
+  layer: number,
   x: number,
   y: number,
   z: number,
@@ -408,17 +438,19 @@ function emitCross(
       x + x1, y + 1, z + z1,
     );
     builder.uv.push(
-      uv.u0, uv.v1,
-      uv.u1, uv.v1,
-      uv.u0, uv.v0,
-      uv.u1, uv.v0,
+      0, 1,
+      1, 1,
+      0, 0,
+      1, 0,
     );
     for (let i = 0; i < 4; i++) {
+      builder.layer.push(layer);
       builder.light.push(sky / 15, blockLight / 15);
       builder.shade.push(1);
       builder.face.push(0.5, 0.5);
       // Foliage is lit as though it faced the sky, which is roughly true of a leaf.
       builder.faceId.push(UP_FACE);
+      builder.edges.push(ALL_EDGES);
     }
     builder.index.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
   }
