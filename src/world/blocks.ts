@@ -191,6 +191,15 @@ for (let i = 0; i < DEFS.length; i++) {
   if (!DEFS[i]) throw new Error(`block id ${i} has no definition`);
 }
 
+/** The leaf blocks, as a set. They fill their cell like any other cube but nothing
+ *  about them should be treated as ground: they are meshed as one organic mass rather
+ *  than as blocks, and the player is not left standing on the roof of a forest. */
+export const LEAVES: ReadonlySet<BlockId> = new Set<BlockId>([
+  Block.OAK_LEAVES,
+  Block.BIRCH_LEAVES,
+  Block.SPRUCE_LEAVES,
+]);
+
 export const BLOCKS: readonly BlockDef[] = DEFS;
 export const AIR_DEF = DEFS[Block.AIR];
 

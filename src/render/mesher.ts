@@ -1,4 +1,4 @@
-import { Block, type BlockId, blockDef } from '../world/blocks';
+import { type BlockId, Block, LEAVES, blockDef } from '../world/blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, type Chunk } from '../world/chunk';
 import { waterFraction } from '../world/water';
 import type { World } from '../world/world';
@@ -12,26 +12,27 @@ export const PASS_TRANSPARENT = 2;
 export const PASS_WATER = 3;
 export type Pass = 0 | 1 | 2 | 3;
 
+/** Everything but the position is packed into bytes on the way out. Rounding the
+ *  blocks off multiplies the vertex count, and none of these carry anything like eight
+ *  bits of meaning: light arrives in sixteen steps, a texture coordinate lands on one
+ *  of four cut lines, and a normal that is wrong by 1/127 cannot be seen. */
 export interface GeometryArrays {
   position: Float32Array;
-  uv: Float32Array;
-  /** Per vertex: skylight and block light, both 0..1. */
-  light: Float32Array;
-  /** Per vertex: ambient occlusion alone, 0..1. Directional shading is no longer
-   *  baked in: the shader lights each face against the real sun direction. */
-  shade: Float32Array;
-  /** Per vertex: where the corner sits on its own face, 0..1 on both axes. The shader
-   *  uses it to round off the block's edges. A vertex at (0.5, 0.5) is never bevelled. */
-  face: Float32Array;
-  /** Per vertex: which of the six cube faces this belongs to, as an index into
-   *  FACE_BASIS. The shader rebuilds the surface frame from it. */
-  faceId: Float32Array;
-  /** Per vertex: which layer of the array texture to sample. Constant across a quad. */
-  layer: Float32Array;
-  /** Per vertex: which of the face's four edges end at a silhouette, as a bitmask of
-   *  -u, +u, -v, +v. An edge whose surface carries on into the next block is only
-   *  lightly creased; one that stops is rounded off in full. */
-  edges: Float32Array;
+  /** Per vertex, normalised: where the corner sits on its tile. */
+  uv: Uint8Array;
+  /** Per vertex, normalised: skylight and block light. */
+  light: Uint8Array;
+  /** Per vertex, normalised: ambient occlusion, with the contact shading of a rounded
+   *  edge folded in. Directional shading is not baked: the shader lights the real
+   *  normal. */
+  shade: Uint8Array;
+  /** Per vertex, normalised, four to a vertex so the stride stays aligned: the surface
+   *  normal. On the flat of a face it is the face normal; over a rounded edge it turns
+   *  outwards, and it turns to exactly the same direction on the face round the corner,
+   *  so the two shade as one continuous surface. */
+  normal: Int8Array;
+  /** Per vertex: which layer of the array texture to sample. Constant across a face. */
+  layer: Uint16Array;
   index: Uint32Array;
 }
 
@@ -109,15 +110,19 @@ const RAW_FACES: Omit<Face, 'ao'>[] = [
 export interface FaceFrame {
   /** Outward normal of the face. */
   normal: readonly [number, number, number];
+  /** The face's own (0, 0) corner, in block-local coordinates. */
+  origin: readonly [number, number, number];
   /** World direction in which the face's own u coordinate grows. */
   tangent: readonly [number, number, number];
   /** World direction in which the face's own v coordinate grows. */
   bitangent: readonly [number, number, number];
+  /** +1 when tangent x bitangent points along the normal, -1 when it points the other
+   *  way. Half the faces are mirrored, and their triangles have to wind the other way. */
+  handed: number;
 }
 
-/** The surface frame of each cube face, read straight off the corner table so the
- *  shader's idea of "along the face" can never drift from the mesh's. Index into it
- *  with the faceId attribute. */
+/** The surface frame of each cube face, read straight off the corner table so nothing
+ *  downstream can drift from the mesh's own idea of "along the face". */
 export const FACE_BASIS: FaceFrame[] = RAW_FACES.map((face) => {
   const at = (u: number, v: number): readonly [number, number, number] => {
     const corner = face.corners.find((c) => c.uv[0] === u && c.uv[1] === v);
@@ -130,7 +135,16 @@ export const FACE_BASIS: FaceFrame[] = RAW_FACES.map((face) => {
     to[1] - origin[1],
     to[2] - origin[2],
   ];
-  return { normal: face.dir, tangent: along(at(1, 0)), bitangent: along(at(0, 1)) };
+  const tangent = along(at(1, 0));
+  const bitangent = along(at(0, 1));
+  const cross: [number, number, number] = [
+    tangent[1] * bitangent[2] - tangent[2] * bitangent[1],
+    tangent[2] * bitangent[0] - tangent[0] * bitangent[2],
+    tangent[0] * bitangent[1] - tangent[1] * bitangent[0],
+  ];
+  const handed =
+    cross[0] * face.dir[0] + cross[1] * face.dir[1] + cross[2] * face.dir[2] > 0 ? 1 : -1;
+  return { normal: face.dir, origin, tangent, bitangent, handed };
 });
 
 /** Precomputes, for every face corner, the three neighbours whose solidity decides
@@ -155,10 +169,24 @@ const FACES: Face[] = RAW_FACES.map((face) => {
 
 const AO_LEVELS = [0.54, 0.73, 0.89, 1];
 
-/** Index of the +Y face in RAW_FACES. */
-const UP_FACE = 3;
-/** All four edges of a face free-standing. */
-const ALL_EDGES = 15;
+/** How far a convex edge is cut back from the block's outline. This is the whole of
+ *  the roundness: it is real geometry, so it shows in the silhouette against the sky
+ *  and not only in the shading. */
+export const BEVEL = 0.17;
+/** Width of the chamfer measured across the face. Twice the cut puts the chamfer at
+ *  forty-five degrees, which is what lets two faces meet on it exactly. */
+const BAND = BEVEL * 2;
+/** Contact shading along a rounded edge, per displaced axis. */
+const EDGE_SHADE = 0.93;
+/** How far a leaf vertex wanders off the lattice. Foliage is the one thing in a
+ *  block world that should not look built, and a canopy that still meets at right
+ *  angles reads as a stack of boxes however round its corners are. */
+const ORGANIC = 0.13;
+
+/** Cached per block id: survey() asks this eight times a vertex, and walking through
+ *  the block definition each time is measurable. */
+const FILLS: boolean[] = [];
+for (let id = 0; id < 512; id++) FILLS[id] = blockDef(id).render === 'cube';
 
 const TRANSPARENT_BLOCKS = new Set<BlockId>([Block.GLASS, Block.ICE]);
 
@@ -170,35 +198,61 @@ export function passOf(id: BlockId): Pass {
   return def.opaque ? PASS_OPAQUE : PASS_CUTOUT;
 }
 
+/** Deterministic 0..1 from a lattice site. Both faces meeting on an edge hash the same
+ *  undisplaced position, so a jittered surface still closes up. */
+function hash3(x: number, y: number, z: number, salt: number): number {
+  let h = Math.imul(x, 0x27d4eb2d) ^ Math.imul(y, 0x165667b1) ^ Math.imul(z, 0x9e3779b1) ^ salt;
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  h ^= h >>> 13;
+  return (h >>> 0) / 4294967296;
+}
+
+/** Bilinear read of something sampled at a face's four corners, indexed [u][v]. */
+function between(grid: number[][], u: number, v: number): number {
+  return (
+    grid[0][0] * (1 - u) * (1 - v) +
+    grid[1][0] * u * (1 - v) +
+    grid[0][1] * (1 - u) * v +
+    grid[1][1] * u * v
+  );
+}
+
 interface Builder {
   position: number[];
   uv: number[];
   light: number[];
   shade: number[];
-  face: number[];
-  faceId: number[];
+  normal: number[];
   layer: number[];
-  edges: number[];
   index: number[];
 }
 
 function newBuilder(): Builder {
-  return {
-    position: [], uv: [], light: [], shade: [], face: [], faceId: [], layer: [], edges: [], index: [],
-  };
+  return { position: [], uv: [], light: [], shade: [], normal: [], layer: [], index: [] };
+}
+
+/** 0..1 into a byte, and -1..1 into a signed byte. */
+function unsigned(values: number[]): Uint8Array {
+  const out = new Uint8Array(values.length);
+  for (let i = 0; i < values.length; i++) out[i] = Math.max(0, Math.min(255, Math.round(values[i] * 255)));
+  return out;
+}
+
+function signed(values: number[]): Int8Array {
+  const out = new Int8Array(values.length);
+  for (let i = 0; i < values.length; i++) out[i] = Math.max(-127, Math.min(127, Math.round(values[i] * 127)));
+  return out;
 }
 
 function finish(builder: Builder): GeometryArrays | null {
   if (builder.index.length === 0) return null;
   return {
     position: new Float32Array(builder.position),
-    uv: new Float32Array(builder.uv),
-    light: new Float32Array(builder.light),
-    shade: new Float32Array(builder.shade),
-    face: new Float32Array(builder.face),
-    faceId: new Float32Array(builder.faceId),
-    layer: new Float32Array(builder.layer),
-    edges: new Float32Array(builder.edges),
+    uv: unsigned(builder.uv),
+    light: unsigned(builder.light),
+    shade: unsigned(builder.shade),
+    normal: signed(builder.normal),
+    layer: new Uint16Array(builder.layer),
     index: new Uint32Array(builder.index),
   };
 }
@@ -261,6 +315,11 @@ export function buildChunkMesh(
 
   const occludes = (x: number, y: number, z: number): boolean => blockDef(blockAt(x, y, z)).opaque;
 
+  /** Whether a cell is a full cube, and so shares its outline with the one next door.
+   *  Deliberately not the same test as occlusion: glass and leaves stop no light but
+   *  they do fill their cell, and a surface that runs into one has not stopped. */
+  const fills = (x: number, y: number, z: number): boolean => FILLS[blockAt(x, y, z)];
+
   const waterAt = (x: number, y: number, z: number): number => {
     if (y < 0 || y >= CHUNK_HEIGHT) return 0;
     if (x >= 0 && x < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE) return chunk.getWater(x, y, z);
@@ -299,6 +358,67 @@ export function buildChunkMesh(
     return count > 0 ? Math.max(lowest, sum / count) : waterFraction(waterAt(x, y, z));
   };
 
+  // Scratch, reused by every face. A chunk emits these hundreds of thousands of times
+  // and allocating a fresh pair of pairs each time costs more than the work does.
+  const warpX = [[0, 0], [0, 0]];
+  const warpY = [[0, 0], [0, 0]];
+  const warpZ = [[0, 0], [0, 0]];
+  const cornerShade = [[0, 0], [0, 0]];
+  const cornerSky = [[0, 0], [0, 0]];
+  const cornerBlock = [[0, 0], [0, 0]];
+  const us = [0, 0, 0, 0];
+  const vs = [0, 0, 0, 0];
+
+  // Where survey() leaves its answer: the direction the solid world falls away from a
+  // point, as a sum of unit axes, and how many ways it falls away at all.
+  let siteX = 0;
+  let siteY = 0;
+  let siteZ = 0;
+  let siteOpen = 0;
+
+  /** Looks at the eight cells meeting at a point and reports how many of the six
+   *  directions lead entirely away from anything solid.
+   *
+   *  Two or more means the surface turns the corner here and the point is pulled back
+   *  along every one of them, which is what rounds the block off. Exactly one means the
+   *  point is somewhere in the flat of a face, and nothing moves — otherwise a plain
+   *  would quilt itself into a grid of cushions. None means an inside corner, where
+   *  pulling back would tear the step open.
+   *
+   *  It reads the point and nothing else: not the face that asked, not the block that
+   *  owns it. That is the whole trick. Every face arriving at a point is pulled to the
+   *  same place, so a rounded rim can run out against a block that does not round at
+   *  all and still leave no hole behind. */
+  const survey = (qx: number, qy: number, qz: number): number => {
+    const xHi = Number.isInteger(qx) ? qx : Math.floor(qx);
+    const yHi = Number.isInteger(qy) ? qy : Math.floor(qy);
+    const zHi = Number.isInteger(qz) ? qz : Math.floor(qz);
+    // A point part-way along an axis has the same cell on both sides of it, so that
+    // axis can never be open and falls out of the count by itself.
+    const xLo = Number.isInteger(qx) ? qx - 1 : xHi;
+    const yLo = Number.isInteger(qy) ? qy - 1 : yHi;
+    const zLo = Number.isInteger(qz) ? qz - 1 : zHi;
+    const c000 = fills(xLo, yLo, zLo);
+    const c001 = fills(xLo, yLo, zHi);
+    const c010 = fills(xLo, yHi, zLo);
+    const c011 = fills(xLo, yHi, zHi);
+    const c100 = fills(xHi, yLo, zLo);
+    const c101 = fills(xHi, yLo, zHi);
+    const c110 = fills(xHi, yHi, zLo);
+    const c111 = fills(xHi, yHi, zHi);
+    const xUp = !(c100 || c101 || c110 || c111) ? 1 : 0;
+    const xDown = !(c000 || c001 || c010 || c011) ? 1 : 0;
+    const yUp = !(c010 || c011 || c110 || c111) ? 1 : 0;
+    const yDown = !(c000 || c001 || c100 || c101) ? 1 : 0;
+    const zUp = !(c001 || c011 || c101 || c111) ? 1 : 0;
+    const zDown = !(c000 || c010 || c100 || c110) ? 1 : 0;
+    siteX = xUp - xDown;
+    siteY = yUp - yDown;
+    siteZ = zUp - zDown;
+    siteOpen = xUp + xDown + yUp + yDown + zUp + zDown;
+    return siteOpen;
+  };
+
   for (let y = 0; y < CHUNK_HEIGHT; y++) {
     for (let z = 0; z < CHUNK_SIZE; z++) {
       for (let x = 0; x < CHUNK_SIZE; x++) {
@@ -324,6 +444,9 @@ export function buildChunkMesh(
         }
         if (def.render === 'none') continue;
 
+        const rounded = def.render === 'cube';
+        const organic = LEAVES.has(id);
+
         for (let faceIndex = 0; faceIndex < FACES.length; faceIndex++) {
           const face = FACES[faceIndex];
           const nx = x + face.dir[0];
@@ -339,68 +462,156 @@ export function buildChunkMesh(
           if (def.render === 'liquid' && neighborDef.render === 'liquid') continue;
 
           const layer = atlas.layer(textureFor(id, face.dir[1]));
-
-          // An edge only reads as an edge where the surface actually stops. Where the
-          // next block along shows the same face, the two are one continuous plane and
-          // rounding them apart would quilt a flat field into a grid of cushions.
           const frame = FACE_BASIS[faceIndex];
-          const carriesOn = (ox: number, oy: number, oz: number): boolean =>
-            occludes(x + ox, y + oy, z + oz) &&
-            !occludes(x + ox + face.dir[0], y + oy + face.dir[1], z + oz + face.dir[2]);
+          const [ox, oy, oz] = frame.origin;
           const [tx, ty, tz] = frame.tangent;
           const [bx, by, bz] = frame.bitangent;
-          let edges = 0;
-          if (!carriesOn(-tx, -ty, -tz)) edges |= 1;
-          if (!carriesOn(tx, ty, tz)) edges |= 2;
-          if (!carriesOn(-bx, -by, -bz)) edges |= 4;
-          if (!carriesOn(bx, by, bz)) edges |= 8;
+          const [dx, dy, dz] = frame.normal;
 
-          const base = builder.position.length / 3;
+          // A cut line is inserted along any side with nothing next to it, which is
+          // where the rounding will need somewhere to happen. Every face of this block
+          // asks the same question of the same cell, so the sides they share are cut
+          // in the same places and no face is left hanging off the end of another.
+          const lowU = rounded && !fills(x - tx, y - ty, z - tz);
+          const highU = rounded && !fills(x + tx, y + ty, z + tz);
+          const lowV = rounded && !fills(x - bx, y - by, z - bz);
+          const highV = rounded && !fills(x + bx, y + by, z + bz);
+          let across = 0;
+          us[across++] = 0;
+          if (lowU) us[across++] = BAND;
+          if (highU) us[across++] = 1 - BAND;
+          us[across++] = 1;
+          let down = 0;
+          vs[down++] = 0;
+          if (lowV) vs[down++] = BAND;
+          if (highV) vs[down++] = 1 - BAND;
+          vs[down++] = 1;
+
+          // Occlusion and light are still measured at the block's own four corners;
+          // everything in between is interpolated, which is what the hardware would
+          // have done across the single quad this used to be.
           for (let c = 0; c < 4; c++) {
             const corner = face.corners[c];
-            const cy =
-              corner.pos[1] === 1 ? (heights ? heights[corner.pos[0]][corner.pos[2]] : 1) : 0;
-            builder.position.push(x + corner.pos[0], y + cy, z + corner.pos[2]);
-            // Tile-local, with v measured from the top because the array texture is
-            // uploaded in image order.
-            builder.uv.push(corner.uv[0], 1 - corner.uv[1]);
-            builder.layer.push(layer);
-            // A river is one continuous sheet, so its cells must not be bevelled into
-            // a grid of separate pillows.
-            if (id === Block.WATER) builder.face.push(0.5, 0.5);
-            else builder.face.push(corner.uv[0], corner.uv[1]);
-            builder.faceId.push(faceIndex);
-            builder.edges.push(edges);
-
-            // The four cells meeting this corner on the lit side of the face decide
-            // both how occluded it is and how much light reaches it. Sampling all four
-            // is what turns the old flat quads into a smooth gradient across a wall.
             const [o1, o2, o3] = face.ao[c];
             const side1 = occludes(x + o1[0], y + o1[1], z + o1[2]);
             const side2 = occludes(x + o2[0], y + o2[1], z + o2[2]);
             const corner3 = occludes(x + o3[0], y + o3[1], z + o3[2]);
             const level = side1 && side2 ? 0 : 3 - ((side1 ? 1 : 0) + (side2 ? 1 : 0) + (corner3 ? 1 : 0));
-            builder.shade.push(AO_LEVELS[level]);
 
             let skySum = skyAt(nx, ny, nz);
             let blockSum = blockLightAt(nx, ny, nz);
             let samples = 1;
-            // A corner tucked between two solid neighbours sees nothing round the
-            // bend, so the diagonal is only worth sampling when one side is open.
-            const openDiagonal = !(side1 && side2);
-            for (const [offset, blocked] of [
-              [o1, side1],
-              [o2, side2],
-              [o3, !openDiagonal || corner3],
-            ] as const) {
-              if (blocked) continue;
-              skySum += skyAt(x + offset[0], y + offset[1], z + offset[2]);
-              blockSum += blockLightAt(x + offset[0], y + offset[1], z + offset[2]);
+            if (!side1) {
+              skySum += skyAt(x + o1[0], y + o1[1], z + o1[2]);
+              blockSum += blockLightAt(x + o1[0], y + o1[1], z + o1[2]);
               samples++;
             }
-            builder.light.push(skySum / samples / 15, blockSum / samples / 15);
+            if (!side2) {
+              skySum += skyAt(x + o2[0], y + o2[1], z + o2[2]);
+              blockSum += blockLightAt(x + o2[0], y + o2[1], z + o2[2]);
+              samples++;
+            }
+            // A corner tucked between two solid neighbours sees nothing round the
+            // bend, so the diagonal is only worth sampling when one side is open.
+            if (!(side1 && side2) && !corner3) {
+              skySum += skyAt(x + o3[0], y + o3[1], z + o3[2]);
+              blockSum += blockLightAt(x + o3[0], y + o3[1], z + o3[2]);
+              samples++;
+            }
+            const [cu, cv] = corner.uv;
+            cornerShade[cu][cv] = AO_LEVELS[level];
+            cornerSky[cu][cv] = skySum / samples / 15;
+            cornerBlock[cu][cv] = blockSum / samples / 15;
           }
-          builder.index.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
+
+          // Foliage is warped off the lattice, but only ever by its corners: reading
+          // the warp along an edge as a straight blend of the two ends means the face
+          // round the corner traces exactly the same line, however either is cut up.
+          if (organic) {
+            for (let cu = 0; cu < 2; cu++) {
+              for (let cv = 0; cv < 2; cv++) {
+                const qx = x + ox + cu * tx + cv * bx;
+                const qy = y + oy + cu * ty + cv * by;
+                const qz = z + oz + cu * tz + cv * bz;
+                warpX[cu][cv] = (hash3(qx, qy, qz, 0x1f) - 0.5) * 2 * ORGANIC;
+                warpY[cu][cv] = (hash3(qx, qy, qz, 0x2b) - 0.5) * 2 * ORGANIC;
+                warpZ[cu][cv] = (hash3(qx, qy, qz, 0x3d) - 0.5) * 2 * ORGANIC;
+              }
+            }
+          }
+
+          const base = builder.position.length / 3;
+          for (let row = 0; row < down; row++) {
+            const v = vs[row];
+            for (let column = 0; column < across; column++) {
+              const u = us[column];
+              // Where this vertex started, before anything moved it. Everything below
+              // is keyed on it, and both faces meeting on an edge arrive at the same
+              // numbers for it, which is the whole reason the rounding closes up.
+              const flatX = x + ox + u * tx + v * bx;
+              const flatY = y + oy + u * ty + v * by;
+              const flatZ = z + oz + u * tz + v * bz;
+
+              let px = flatX;
+              let py = flatY;
+              let pz = flatZ;
+              let vnx = dx;
+              let vny = dy;
+              let vnz = dz;
+              let leans = 0;
+              // Only a vertex sitting against a side that has something to round can
+              // round at all: with a block hard against every side of it, no direction
+              // but the face's own is open and survey() could only ever say one. The
+              // test is worth making because most of a landscape is flat.
+              const mayRound =
+                (u === 0 && lowU) || (u === 1 && highU) || (v === 0 && lowV) || (v === 1 && highV);
+              if (mayRound && survey(flatX, flatY, flatZ) >= 2) {
+                px -= BEVEL * siteX;
+                py -= BEVEL * siteY;
+                pz -= BEVEL * siteZ;
+                // The face's own normal already points the way the world falls away
+                // along it, so only the other directions tip the surface over.
+                const alongFace = siteX * dx + siteY * dy + siteZ * dz;
+                vnx += siteX - alongFace * dx;
+                vny += siteY - alongFace * dy;
+                vnz += siteZ - alongFace * dz;
+                const scale = Math.hypot(vnx, vny, vnz) || 1;
+                vnx /= scale;
+                vny /= scale;
+                vnz /= scale;
+                leans = siteOpen - alongFace;
+              }
+              if (heights) {
+                py = y + (oy + u * ty + v * by === 1 ? heights[ox + u * tx + v * bx][oz + u * tz + v * bz] : 0);
+              }
+              if (organic) {
+                px += between(warpX, u, v);
+                py += between(warpY, u, v);
+                pz += between(warpZ, u, v);
+              }
+              builder.position.push(px, py, pz);
+              builder.normal.push(vnx, vny, vnz, 0);
+              // Tile-local, with v measured from the top because the array texture is
+              // uploaded in image order. Read at the undisplaced position, so the
+              // texture simply carries on over the rounding.
+              builder.uv.push(u, 1 - v);
+              builder.layer.push(layer);
+              builder.shade.push(between(cornerShade, u, v) * EDGE_SHADE ** leans);
+              builder.light.push(between(cornerSky, u, v), between(cornerBlock, u, v));
+            }
+          }
+
+          const stride = across;
+          for (let j = 0; j + 1 < down; j++) {
+            for (let i = 0; i + 1 < across; i++) {
+              const a = base + j * stride + i;
+              const b = a + 1;
+              const c = a + stride;
+              const d = c + 1;
+              if (frame.handed > 0) builder.index.push(a, b, d, a, d, c);
+              else builder.index.push(a, d, b, a, c, d);
+            }
+          }
         }
       }
     }
@@ -447,10 +658,8 @@ function emitCross(
       builder.layer.push(layer);
       builder.light.push(sky / 15, blockLight / 15);
       builder.shade.push(1);
-      builder.face.push(0.5, 0.5);
       // Foliage is lit as though it faced the sky, which is roughly true of a leaf.
-      builder.faceId.push(UP_FACE);
-      builder.edges.push(ALL_EDGES);
+      builder.normal.push(0, 1, 0, 0);
     }
     builder.index.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
   }

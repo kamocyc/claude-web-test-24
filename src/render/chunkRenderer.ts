@@ -15,13 +15,13 @@ import type { Atlas } from './textures';
 function toGeometry(data: GeometryArrays): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(data.position, 3));
-  geometry.setAttribute('uv', new THREE.BufferAttribute(data.uv, 2));
-  geometry.setAttribute('aLight', new THREE.BufferAttribute(data.light, 2));
-  geometry.setAttribute('aShade', new THREE.BufferAttribute(data.shade, 1));
-  geometry.setAttribute('aFace', new THREE.BufferAttribute(data.face, 2));
-  geometry.setAttribute('aFaceId', new THREE.BufferAttribute(data.faceId, 1));
+  // Everything but the position arrives packed; three hands the normalised flag
+  // straight to the vertex attribute, so the shader still sees plain floats.
+  geometry.setAttribute('uv', new THREE.BufferAttribute(data.uv, 2, true));
+  geometry.setAttribute('aLight', new THREE.BufferAttribute(data.light, 2, true));
+  geometry.setAttribute('aShade', new THREE.BufferAttribute(data.shade, 1, true));
+  geometry.setAttribute('aNormal', new THREE.BufferAttribute(data.normal, 4, true));
   geometry.setAttribute('aLayer', new THREE.BufferAttribute(data.layer, 1));
-  geometry.setAttribute('aEdges', new THREE.BufferAttribute(data.edges, 1));
   geometry.setIndex(new THREE.BufferAttribute(data.index, 1));
   // The bounds are known up front, so skip the full vertex scan. They are in the
   // mesh's own space: the mesh itself is positioned at the chunk origin.

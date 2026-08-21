@@ -8,7 +8,7 @@ import { createChunkMaterials, type ChunkMaterials } from '../render/materials';
 import { Sky } from '../render/sky';
 import { Rain } from '../render/rain';
 import { buildAtlas, type Atlas } from '../render/textures';
-import { Block, type BlockId, blockDef, isFarmland, isReplaceable, supportsPlant } from '../world/blocks';
+import { Block, type BlockId, LEAVES, blockDef, isFarmland, isReplaceable, isSolid, supportsPlant } from '../world/blocks';
 import {
   CHUNK_HEIGHT,
   CHUNK_SIZE,
@@ -995,7 +995,15 @@ export class Game {
   private settlePlayerOnGround(): void {
     const x = Math.floor(this.player.x);
     const z = Math.floor(this.player.z);
-    const top = this.world.heightAt(x, z);
+    let top = this.world.heightAt(x, z);
+    // Standing on the roof of a forest is no way to start a game, and in a dense one
+    // the highest block over the spawn column is often a leaf. Keep going down past
+    // the canopy and the gap under it, to whatever is actually holding it up.
+    while (top > 0) {
+      const above = this.world.getBlock(x, top, z);
+      if (isSolid(above) && !LEAVES.has(above)) break;
+      top--;
+    }
     if (top >= 0) this.player.teleportTo(this.player.x, top + 1, this.player.z);
   }
 

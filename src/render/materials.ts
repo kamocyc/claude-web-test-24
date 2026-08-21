@@ -1,27 +1,15 @@
 import * as THREE from 'three';
-import { FACE_BASIS } from './mesher';
 
 /** Chunk shader. Skylight and block light are baked into vertex attributes, so the
  *  day/night cycle only has to change a uniform instead of rebuilding meshes.
  *
- *  Two things happen here that a plain textured cube does not do. The blocks are
- *  rounded off: every vertex carries where it sits on its own face, and the fragment
- *  stage measures that against a rounded square, bending the surface normal outwards
- *  as it nears the outline. And that normal is then lit for real — against the sun's
- *  actual direction and colour, with a hemispheric ambient underneath and a soft
- *  specular sheen on top. So an edge is not painted darker, it is *shaped*: it
- *  catches the light at dawn from the east and loses it by dusk. */
+ *  The blocks arrive here already rounded: the mesher cuts every convex edge back and
+ *  hands over a normal that leans out across the chamfer and meets the face round the
+ *  corner exactly. So there is nothing to fake in the fragment stage — the normal is
+ *  simply lit, against the sun's real direction and colour, with a hemispheric ambient
+ *  underneath and a soft sheen on top. An edge is not painted darker, it is *shaped*:
+ *  it catches the light at dawn from the east and loses it by dusk. */
 
-/** How much of the face the rounding eats into, and how far the corners are cut. */
-const BEVEL_WIDTH = 0.3;
-const CORNER_RADIUS = 0.42;
-/** How far past the face the rounding is pushed on an edge whose surface carries on
- *  into the next block. Nothing there is a silhouette, so it should only crease. */
-const CARRY_ON = 0.62;
-/** How far the normal tips outwards at the very edge. 1.0 would lay it flat. */
-const BEVEL_BEND = 0.62;
-/** Contact darkening in the crease, on top of the directional lighting. */
-const EDGE_SHADE = 0.8;
 /** Height of the swell on open water, and how much its slope is exaggerated when the
  *  normal is rebuilt. The displacement stays tiny so the sheet cannot tear away from
  *  the cell it sits in; the exaggeration is what makes it read. */
@@ -32,26 +20,6 @@ const WAVE_SLOPE = 7;
  *  into a white pip, which reads as an artefact rather than a sheen. */
 const SPECULAR = 0.13;
 const SPECULAR_POWER = 10;
-
-/** GLSL that rebuilds a face's surface frame from its id. Generated from the mesher's
- *  own corner table, so the shader's idea of "along the face" cannot drift from the
- *  geometry's, and generated as a branch chain because indexing an array with a
- *  varying is not portable. */
-function faceFrameGlsl(): string {
-  const vec = (v: readonly [number, number, number]): string =>
-    `vec3( ${v.map((n) => n.toFixed(1)).join(', ')} )`;
-  const branches = FACE_BASIS.map(
-    (frame, index) =>
-      `    ${index === 0 ? 'if' : 'else if'} ( id < ${(index + 0.5).toFixed(1)} ) { ` +
-      `n = ${vec(frame.normal)}; t = ${vec(frame.tangent)}; b = ${vec(frame.bitangent)}; }`,
-  );
-  return `
-  void faceFrame( float id, out vec3 n, out vec3 t, out vec3 b ) {
-${branches.join('\n')}
-    else { n = vec3( 0.0, 1.0, 0.0 ); t = vec3( 1.0, 0.0, 0.0 ); b = vec3( 0.0, 0.0, 1.0 ); }
-  }
-`;
-}
 
 /** Three crossing swells. Shared verbatim by both stages: the vertex shader lifts the
  *  surface with it and the fragment shader differentiates it for the normal, and the
@@ -80,25 +48,16 @@ const WAVES = /* glsl */ `
 const VERTEX = /* glsl */ `
   attribute vec2 aLight;
   attribute float aShade;
-  attribute vec2 aFace;
-  attribute float aFaceId;
+  attribute vec4 aNormal;
   attribute float aLayer;
-  attribute float aEdges;
   varying vec2 vLight;
   varying float vShade;
   varying vec2 vUvTile;
   varying float vLayer;
-  varying vec2 vFace;
   varying vec3 vNormal;
-  varying vec3 vTangent;
-  varying vec3 vBitangent;
   varying vec3 vWorld;
-  varying vec2 vLow;
-  varying vec2 vHigh;
-  uniform float uCarry;
   #include <common>
   #include <fog_pars_vertex>
-${faceFrameGlsl()}
 #ifdef WATER
 ${WAVES}
 #endif
@@ -107,24 +66,12 @@ ${WAVES}
     vShade = aShade;
     vUvTile = uv;
     vLayer = aLayer;
-    vFace = aFace;
-    faceFrame( aFaceId, vNormal, vTangent, vBitangent );
-    // The four edge flags say which sides of this face actually stop here. The ones
-    // that carry on have their boundary pushed outside the face, so the rounding never
-    // reaches them and a flat wall stays flat.
-    vec4 open = vec4(
-      mod( floor( aEdges ), 2.0 ),
-      mod( floor( aEdges / 2.0 ), 2.0 ),
-      mod( floor( aEdges / 4.0 ), 2.0 ),
-      mod( floor( aEdges / 8.0 ), 2.0 )
-    );
-    vLow = vec2( mix( -uCarry, 0.0, open.x ), mix( -uCarry, 0.0, open.z ) );
-    vHigh = vec2( mix( 1.0 + uCarry, 1.0, open.y ), mix( 1.0 + uCarry, 1.0, open.w ) );
+    vNormal = aNormal.xyz;
     vec4 worldPosition = modelMatrix * vec4( position, 1.0 );
     #ifdef WATER
       // Only the surface rises and falls. The sides of a cell stay put, so the sheet
       // cannot tear away from the block it is sitting in.
-      if ( vNormal.y > 0.5 ) worldPosition.y += waveHeight( worldPosition.xz );
+      if ( aNormal.y > 0.5 ) worldPosition.y += waveHeight( worldPosition.xz );
     #endif
     vWorld = worldPosition.xyz;
     vec4 mvPosition = viewMatrix * worldPosition;
@@ -141,24 +88,15 @@ const FRAGMENT = /* glsl */ `
   uniform vec3 uSunDir;
   uniform vec3 uSunColor;
   uniform float uOpacity;
-  uniform float uBevel;
-  uniform float uRadius;
-  uniform float uBend;
-  uniform float uEdgeShade;
   uniform float uSpecular;
   uniform float uSpecularPower;
+  uniform vec3 uSkyColor;
   varying vec2 vLight;
   varying float vShade;
   varying vec2 vUvTile;
   varying float vLayer;
-  varying vec2 vFace;
   varying vec3 vNormal;
-  varying vec3 vTangent;
-  varying vec3 vBitangent;
   varying vec3 vWorld;
-  varying vec2 vLow;
-  varying vec2 vHigh;
-  uniform vec3 uSkyColor;
   #include <common>
   // three.js already puts the tone mapping functions in the fragment prefix; only the
   // call site below has to be spelled out.
@@ -176,32 +114,9 @@ ${WAVES}
       if ( texel.a < 0.5 ) discard;
     #endif
 
-    // Distance to the outline of a rounded rectangle over the face: negative in the
-    // middle, zero on the outline, positive out in the corners the rounding cuts away.
-    // The rectangle is only the face itself where the face ends; where it carries on
-    // into the next block the rectangle reaches past, and nothing is rounded there.
-    vec2 centre = ( vLow + vHigh ) * 0.5;
-    vec2 extent = ( vHigh - vLow ) * 0.5;
-    vec2 p = vFace - centre;
-    vec2 q = abs( p ) - ( extent - uRadius );
-    float sd = length( max( q, 0.0 ) ) + min( max( q.x, q.y ), 0.0 ) - uRadius;
-    float edge = smoothstep( -uBevel, 0.0, sd );
-
-    // Which way "outwards along the surface" points here, so the normal can tip that
-    // way as it approaches the outline.
-    vec2 outer = max( q, 0.0 );
-    vec2 grad = outer.x + outer.y > 0.0
-      ? normalize( outer )
-      : ( q.x > q.y ? vec2( 1.0, 0.0 ) : vec2( 0.0, 1.0 ) );
-    grad *= sign( p );
-    vec3 outward = grad.x * vTangent + grad.y * vBitangent;
-    float reach = length( outward );
-    // Flat surfaces — water sheets, foliage cut-outs — sit at the face centre, where
-    // there is no outward direction to speak of and no rounding to apply.
-    outward = reach > 1e-4 ? outward / reach : vNormal;
-    vec3 normal = normalize( mix( vNormal, outward, edge * uBend ) );
+    vec3 normal = normalize( vNormal );
     #ifdef WATER
-      if ( vNormal.y > 0.5 ) normal = waveNormal( vWorld.xz );
+      if ( normal.y > 0.5 ) normal = waveNormal( vWorld.xz );
     #endif
 
     // Sky above, bounce below: the shape a surface has before any sun reaches it.
@@ -220,11 +135,7 @@ ${WAVES}
     vec3 halfway = normalize( uSunDir + view );
     float specular = pow( max( dot( normal, halfway ), 0.0 ), uSpecularPower ) * uSpecular * uSun * skyPart;
 
-    // A little extra darkening in the crease, so the rounding still reads when the
-    // sun is square on the face and the normal alone would not show it.
-    float cavity = mix( 1.0, uEdgeShade, edge );
-
-    vec3 color = texel.rgb * lit * vShade * form * cavity * tint + specular * uSunColor;
+    vec3 color = texel.rgb * lit * vShade * form * tint + specular * uSunColor;
     float alpha = texel.a * uOpacity;
 
     #ifdef WATER
@@ -279,11 +190,6 @@ function make(
         uSunDir: { value: new THREE.Vector3(0, 1, 0) },
         uSunColor: { value: new THREE.Color(1, 1, 1) },
         uOpacity: { value: options.opacity ?? 1 },
-        uBevel: { value: BEVEL_WIDTH },
-        uRadius: { value: CORNER_RADIUS },
-        uBend: { value: BEVEL_BEND },
-        uEdgeShade: { value: EDGE_SHADE },
-        uCarry: { value: CARRY_ON },
         uSpecular: { value: SPECULAR },
         uSpecularPower: { value: SPECULAR_POWER },
         uSkyColor: { value: new THREE.Color(1, 1, 1) },
