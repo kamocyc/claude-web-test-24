@@ -1043,3 +1043,108 @@ body.screen-open #viewport {
   padding: 8px 10px;
   font-size: 13px;
 }
+
+/* ---------- the trade ledger, and what a village is short of --------------- */
+
+.trade-note {
+  max-width: 520px;
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  border-left: 3px solid #c8b06a;
+  background: rgba(0, 0, 0, 0.28);
+  color: #e8e2cf;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ledger-host {
+  max-height: 60vh;
+  overflow-y: auto;
+  min-width: 640px;
+}
+
+.ledger-summary {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.ledger-stat {
+  padding: 4px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 3px;
+  font-size: 13px;
+  color: #e8e2cf;
+}
+
+.ledger-goal {
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border-left: 3px solid #7fc47f;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.ledger-goal-title {
+  font-size: 14px;
+  color: #e8e2cf;
+}
+
+.ledger-goal-detail {
+  font-size: 12px;
+  color: #b9b39f;
+}
+
+.ledger-heading {
+  margin: 10px 0 4px;
+  font-size: 13px;
+  color: #c8b06a;
+}
+
+.ledger-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ledger-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.6fr 1.4fr 1fr 1.6fr 0.8fr 0.7fr;
+  gap: 8px;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: #ded8c4;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.ledger-row.head {
+  color: #9a927c;
+  background: none;
+}
+
+/* A route that works, and one that has been dug up, should be tellable apart without
+   reading the text. */
+.ledger-row.linked {
+  border-left: 3px solid #7fc47f;
+}
+
+.ledger-row.broken {
+  border-left: 3px solid #c47f7f;
+}
+
+.ledger-row.starved {
+  border-left: 3px solid #c8b06a;
+}
+
+.ledger-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ledger-empty,
+.ledger-note {
+  padding: 6px;
+  font-size: 12px;
+  color: #9a927c;
+}

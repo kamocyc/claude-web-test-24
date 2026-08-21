@@ -69,6 +69,9 @@ export class Mob implements Damageable {
   trades: Trade[] = [];
   homeX = 0;
   homeZ = 0;
+  /** Development of the village these offers were rolled for, or -1 when they are the
+   *  generic table. The game re-rolls only when this falls behind the village. */
+  villageStage = -1;
   /** Animation phase, advanced by how far the mob has walked. */
   walkPhase = 0;
 

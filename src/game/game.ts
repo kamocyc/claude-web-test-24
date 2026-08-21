@@ -64,10 +64,17 @@ import { tickFurnace } from './smelting';
 import { generateTrades, restockTrades, tradesFromJSON, tradesToJSON } from './trading';
 import { VILLAGE_RADIUS } from '../world/generation/village';
 import { RoadNetwork, type RoadPoint } from './roads';
-import { TransportNetwork, type Route } from './transport';
-import { VillageRegistry, type VillageRecord } from './villages';
+import { TransportNetwork, loadFor, type Arrival, type Route } from './transport';
+import {
+  VillageRegistry,
+  displayName,
+  kindLabel,
+  rankLabel,
+  type VillageRecord,
+} from './villages';
+import type { LedgerView } from '../ui/ledger';
 import { applyGrowth, growthChunks } from './villageGrowth';
-import { Questline, type QuestInteraction } from './questline';
+import { MILESTONES, Questline, type NetworkState, type QuestInteraction } from './questline';
 import { biomeDef } from '../world/generation/biome';
 import { riverCovers } from '../world/generation/rivers';
 import { RiverFlow } from '../world/riverFlow';
@@ -83,6 +90,13 @@ import {
 
 const UNLOAD_MARGIN = 2;
 const REACH = 5;
+
+/** Villages further apart than this are not worth a porter walking between them, so the
+ *  network never watches a pair it would never run. */
+const AUTO_ROUTE_RANGE = 900;
+/** A ceiling on watched pairs, so a very well explored world cannot make surveying the
+ *  network expensive. */
+const MAX_ROUTES = 24;
 const ATTACK_REACH = 3.6;
 const AUTOSAVE_SECONDS = 30;
 /** Half the span the minimap covers, so only nearby roads are handed to it. */
@@ -165,6 +179,10 @@ export class Game {
   private readonly pendingVillagers: { x: number; y: number; z: number; profession: string }[] = [];
   /** Porter mobs by the id transport knows them under. */
   private readonly porterMobs = new Map<number, Mob>();
+  /** Freight the network has paid the player, and anything it could not hand over
+   *  because the inventory was full — that is owed, not lost. */
+  private freightEarned = 0;
+  private freightOwed = 0;
 
   constructor(private readonly options: GameOptions) {
     this.world = new World(options.seed);
@@ -203,7 +221,7 @@ export class Game {
       {
         onConnected: (route) => this.onRouteConnected(route),
         onDisconnected: (route) => this.announceRoute(route, 'とぎれた'),
-        onArrival: (route, good, count) => this.onShipmentArrived(route, good, count),
+        onArrival: (arrival) => this.onShipmentArrived(arrival),
         onStageUp: (id, stage) => this.onVillageGrew(id, stage),
       },
       {
@@ -367,6 +385,8 @@ export class Game {
       // discovered. Both ride the same timer because both walk the same village grid.
       this.villages.ensureNear(this.player.x, this.player.z, 2);
       this.nearestVillage = this.generator.findNearestVillage(this.player.x, this.player.z, 2);
+      this.linkNeighbours();
+      this.claimMilestones();
     }
 
     this.autosaveTimer += dt;
@@ -430,7 +450,7 @@ export class Game {
       markers.push({ kind: 'village', x: this.nearestVillage.x, z: this.nearestVillage.z });
     }
     const questRoute = this.questRoute();
-    const objective = this.questline.objective(this.villages, questRoute);
+    const objective = this.questline.objective(this.villages, questRoute, this.networkState());
     // The gap marker points at where the road stops, not at the destination: the player
     // needs to know which stretch to go and fix.
     if (objective?.marker?.kind === 'gap') {
@@ -462,15 +482,23 @@ export class Game {
       },
       routes: {
         quest: objective,
-        routes: this.transport.routes.map((route) => ({
-          from: this.villages.get(route.from)?.name ?? '?',
-          to: this.villages.get(route.to)?.name ?? '?',
-          surveyed: route.surveyed,
-          connected: route.connected,
-          length: route.length,
-          missing: route.missing,
-          porters: route.porters.length,
-        })),
+        // Only the lines worth a row: the ones that work, the one the tutorial is asking
+        // for, and any that used to work and have been dug up. Every other watched pair
+        // would just be a wall of "not connected".
+        routes: this.transport.routes
+          .filter((route) => route.connected || route.everConnected || route === questRoute)
+          .map((route) => ({
+            from: this.villages.get(route.from)?.name ?? '?',
+            to: this.villages.get(route.to)?.name ?? '?',
+            surveyed: route.surveyed,
+            connected: route.connected,
+            length: route.length,
+            missing: route.missing,
+            porters: route.porters.length,
+            grade: route.grade,
+            load: loadFor(route.quality),
+            wanted: this.villages.get(route.to)?.needs.includes(route.good) ?? false,
+          })),
       },
       forecast: {
         here: forecast.here.kind,
@@ -584,6 +612,11 @@ export class Game {
           event.preventDefault();
           this.hud.toggleDebug();
           break;
+        case 'KeyL':
+          if (this.paused || this.player.isDead) break;
+          if (this.screens.kind === 'ledger') this.closeScreen();
+          else this.openScreen(() => this.screens.openLedger(() => this.ledgerView()));
+          break;
         case 'KeyG':
           if (this.paused || this.player.isDead) break;
           // Without this the same keypress types a "g" into the field that just took
@@ -665,9 +698,11 @@ export class Game {
     if (input.buttonJustPressed(2)) {
       const mob = this.mobUnderCrosshair(eye, look);
       if (mob && mob.kind === 'villager') {
+        const village = this.ensureVillageTrades(mob);
         const quest = this.questInteractionFor(mob);
+        const note = village ? this.villageNote(village) : undefined;
         this.openScreen(() =>
-          this.screens.openTrade(mob, () => this.hud.toast('取引が成立した'), quest ?? undefined),
+          this.screens.openTrade(mob, () => this.hud.toast('取引が成立した'), quest ?? undefined, note),
         );
         return;
       }
@@ -1056,6 +1091,48 @@ export class Game {
     if (originId && targetId) this.transport.requestRoute(originId, targetId);
   }
 
+  /** Watches every pair of found villages close enough to be worth a road.
+   *
+   *  The player never asks for a route: they lay a road, and trade starts. Watching a pair
+   *  costs nothing until its road actually joins up — a survey only runs when the network
+   *  has changed, and each village's search is shared between all its pairs. */
+  private linkNeighbours(): void {
+    const found = this.villages.discovered();
+    for (let i = 0; i < found.length; i++) {
+      for (let j = i + 1; j < found.length; j++) {
+        if (this.transport.routes.length >= MAX_ROUTES) return;
+        const a = found[i];
+        const b = found[j];
+        if (Math.hypot(a.x - b.x, a.z - b.z) > AUTO_ROUTE_RANGE) continue;
+        this.transport.requestRoute(a.id, b.id);
+      }
+    }
+  }
+
+  /** What the milestones are allowed to look at. */
+  private networkState(): NetworkState {
+    return { villages: this.villages.discovered(), routes: this.transport.routes };
+  }
+
+  private claimMilestones(): void {
+    for (const milestone of this.questline.claimMilestones(this.networkState())) {
+      this.hud.toast(`目標達成 — ${milestone.title}`);
+      this.payFreight(milestone.reward);
+    }
+  }
+
+  /** Hands the player their cut. A full inventory does not burn the money: it stays owed
+   *  and goes in with the next payment. */
+  private payFreight(pay: number): number {
+    if (pay <= 0) return 0;
+    this.freightOwed += pay;
+    const leftover = this.player.inventory.add({ id: 'emerald', count: this.freightOwed });
+    const paid = this.freightOwed - leftover;
+    this.freightOwed = leftover;
+    this.freightEarned += paid;
+    return paid;
+  }
+
   private questRoute(): Route | undefined {
     const { originId, targetId } = this.questline;
     if (!originId || !targetId) return undefined;
@@ -1077,16 +1154,22 @@ export class Game {
     this.toast(this.questline.onRouteEstablished(route));
   }
 
-  private onShipmentArrived(route: Route, good: string, count: number): void {
-    const to = this.villages.get(route.to);
-    if (to) this.hud.toast(`${to.name}に${itemLabel(good)}が ${count} 個届いた`);
+  private onShipmentArrived(arrival: Arrival): void {
+    const to = this.villages.get(arrival.to);
+    const paid = this.payFreight(arrival.pay);
+    if (to) {
+      // One line, not two: what turned up, whether it was wanted, and what it earned.
+      const wanted = arrival.needed ? '（求めていた品）' : '';
+      const fee = paid > 0 ? ` / 運賃 +${paid}` : '';
+      this.hud.toast(`${displayName(to)}に${itemLabel(arrival.good)} ${arrival.count} 個${wanted}${fee}`);
+    }
     // Deliveries are what keep a village's offers worth walking to.
     for (const mob of this.mobs.mobs) {
       if (mob.kind !== 'villager' || !to) continue;
       if (Math.hypot(mob.homeX - to.x, mob.homeZ - to.z) > VILLAGE_RADIUS) continue;
       restockTrades(mob.trades);
     }
-    this.toast(this.questline.onArrival(route));
+    this.toast(this.questline.onArrival(arrival.route));
   }
 
   /** A village earned a new building. Everything loaded is built now; the rest builds
@@ -1094,7 +1177,7 @@ export class Game {
   private onVillageGrew(id: string, stage: number): void {
     const village = this.villages.get(id);
     if (!village) return;
-    this.hud.toast(`${village.name}が発展した（段階 ${stage}）`);
+    this.hud.toast(`${village.name}が発展して${rankLabel(stage)}になった`);
     const occupied = this.generator.villageBuildings(village.x, village.z);
     for (const { cx, cz } of growthChunks(this.options.seed, village, occupied)) {
       const chunk = this.world.getChunk(cx, cz);
@@ -1149,8 +1232,85 @@ export class Game {
     for (const mob of this.mobs.mobs) {
       if (mob.kind !== 'villager' || !mob.profession) continue;
       if (Math.hypot(mob.homeX - village.x, mob.homeZ - village.z) > VILLAGE_RADIUS) continue;
-      mob.trades = generateTrades(this.options.seed, mob.profession, mob.homeX, mob.homeZ, village.stage);
+      this.rollTrades(mob, village);
     }
+  }
+
+  /** Gives a villager the offers of the village they actually live in: its own goods for
+   *  sale, and emeralds for whatever it is short of.
+   *
+   *  Done on demand rather than at spawn because a villager's chunk usually loads before
+   *  the registry has re-derived the village. Re-rolling is keyed on the stage, so opening
+   *  the screen twice does not restock a table the player has been buying from. */
+  private ensureVillageTrades(mob: Mob): VillageRecord | null {
+    const village = this.villages.at(mob.homeX, mob.homeZ);
+    if (!village || !mob.profession) return village ?? null;
+    if (mob.villageStage !== village.stage) this.rollTrades(mob, village);
+    return village;
+  }
+
+  private rollTrades(mob: Mob, village: VillageRecord): void {
+    mob.villageStage = village.stage;
+    mob.trades = generateTrades(
+      this.options.seed,
+      mob.profession ?? 'farmer',
+      mob.homeX,
+      mob.homeZ,
+      village.stage,
+      { produces: village.produces, needs: village.needs, stage: village.stage },
+    );
+  }
+
+  /** One line describing what the village the player is standing in is short of. */
+  private villageNote(village: VillageRecord): string {
+    const wants = village.needs.map((good) => itemLabel(good)).join('・');
+    const made = `${displayName(village)}は${itemLabel(village.produces)}を作っている`;
+    if (village.input && village.inputStock <= 0) {
+      return `${made}が、${itemLabel(village.input)}が届いていないので手が止まっている。求めている物: ${wants}`;
+    }
+    return `${made}。求めている物: ${wants}`;
+  }
+
+  /** Everything the ledger shows, gathered on demand. */
+  private ledgerView(): LedgerView {
+    const objective = this.questline.objective(this.villages, this.questRoute(), this.networkState());
+    return {
+      earnings: this.freightEarned,
+      objective: objective ? { title: objective.title, detail: objective.detail } : null,
+      villages: this.villages
+        .discovered()
+        .map((village) => {
+          const next = this.villages.progressToNext(village);
+          return {
+            name: displayName(village),
+            kind: kindLabel(village.kind),
+            produces: itemLabel(village.produces),
+            input: village.input ? itemLabel(village.input) : null,
+            inputStock: village.inputStock,
+            needs: village.needs.map((good) => itemLabel(good)),
+            stock: village.stock,
+            stage: village.stage,
+            points: next.points,
+            toNext: next.needed,
+            received: village.received,
+            distance: Math.hypot(village.x - this.player.x, village.z - this.player.z),
+            starved: village.input !== null && village.inputStock <= 0,
+          };
+        })
+        .sort((a, b) => a.distance - b.distance),
+      routes: this.transport.routes.map((route) => ({
+        from: this.villages.get(route.from)?.name ?? '?',
+        to: this.villages.get(route.to)?.name ?? '?',
+        good: route.good ? itemLabel(route.good) : '—',
+        connected: route.connected,
+        length: route.length,
+        missing: route.missing,
+        grade: route.grade,
+        load: loadFor(route.quality),
+        porters: route.porters.length,
+        delivered: route.delivered,
+      })),
+    };
   }
 
   private spawnPorter(point: RoadPoint, waypoints: RoadPoint[], startIndex: number): number | null {
@@ -1200,10 +1360,13 @@ export class Game {
   /** Lays a dirt path from one village's street to the other's, following the ground.
    *  Debug only: it writes recorded edits exactly as a player's shovel would, so the road
    *  index picks it up through the ordinary block-change hook. */
-  private debugBuildRoad(fromId?: string, toId?: string): number {
+  private debugBuildRoad(fromId?: string, toId?: string, surface?: string): number {
     const from = this.villages.get(fromId ?? this.questline.originId ?? '');
     const to = this.villages.get(toId ?? this.questline.targetId ?? '');
     if (!from || !to) return 0;
+    // Paving from the console is what lets the browser test check that a better road
+    // really does move more goods; by hand it is a long afternoon with a shovel.
+    const block = surface ? itemDef(surface)?.placesBlock ?? Block.DIRT_PATH : Block.DIRT_PATH;
     const steps = Math.ceil(Math.hypot(to.x - from.x, to.z - from.z));
     let laid = 0;
     let y = from.baseY;
@@ -1216,7 +1379,7 @@ export class Game {
       const ground = this.groundHeightAt(x, z);
       const wanted = Math.max(ground, SEA_LEVEL + 1);
       y = Math.max(y - ROAD_GRADE, Math.min(y + ROAD_GRADE, wanted));
-      this.layDebugRoad(x, y, z);
+      this.layDebugRoad(x, y, z, block);
       laid++;
     }
     return laid;
@@ -1233,9 +1396,9 @@ export class Game {
   /** Writes one road column plus the headroom above it. Chunks nobody has visited get the
    *  edit recorded directly — which is what a shovel would have left behind anyway, and
    *  what the road index reads. */
-  private layDebugRoad(x: number, y: number, z: number): void {
+  private layDebugRoad(x: number, y: number, z: number, block: BlockId = Block.DIRT_PATH): void {
     if (this.world.hasChunk(toChunkCoord(x), toChunkCoord(z))) {
-      this.world.setBlock(x, y, z, Block.DIRT_PATH);
+      this.world.setBlock(x, y, z, block);
       for (let h = 1; h <= 2; h++) this.world.setBlock(x, y + h, z, Block.AIR);
       return;
     }
@@ -1245,11 +1408,11 @@ export class Game {
       edits = new Map();
       this.world.edits.set(key, edits);
     }
-    edits.set(blockIndex(toLocalCoord(x), y, toLocalCoord(z)), Block.DIRT_PATH);
+    edits.set(blockIndex(toLocalCoord(x), y, toLocalCoord(z)), block);
     for (let h = 1; h <= 2; h++) {
       edits.set(blockIndex(toLocalCoord(x), y + h, toLocalCoord(z)), Block.AIR);
     }
-    this.roads.onBlockChanged(x, y, z, Block.GRASS, Block.DIRT_PATH);
+    this.roads.onBlockChanged(x, y, z, Block.GRASS, block);
   }
 
   // --- screens and pausing ---------------------------------------------------
@@ -1447,9 +1610,11 @@ export class Game {
           z: mob.z,
           profession: mob.profession ?? 'farmer',
           trades: tradesToJSON(mob.trades),
+          villageStage: mob.villageStage,
         })),
       populatedChunks: [...this.populatedChunks],
       villages: this.villages.toJSON(),
+      freight: this.freightEarned,
       routes: this.transport.toJSON(),
       quest: this.questline.toJSON(),
       pendingVillagers: [...this.pendingVillagers],
@@ -1507,8 +1672,10 @@ export class Game {
       // --- villages, roads and transport ---------------------------------
       villages: () =>
         [...this.villages.byId.values()].map((v) => ({
-          id: v.id, name: v.name, x: v.x, z: v.z, produces: v.produces,
-          stage: v.stage, points: v.points, stock: v.stock, discovered: v.discovered,
+          id: v.id, name: v.name, rank: rankLabel(v.stage), x: v.x, z: v.z,
+          kind: v.kind, produces: v.produces, input: v.input, inputStock: v.inputStock,
+          needs: [...v.needs], stage: v.stage, points: v.points, stock: v.stock,
+          received: v.received, discovered: v.discovered,
         })),
       /** The village the player is standing in, or the nearest known one. */
       village: (): VillageRecord | null => {
@@ -1555,14 +1722,35 @@ export class Game {
         this.transport.routes.map((route) => ({
           from: route.from, to: route.to, good: route.good,
           connected: route.connected, length: route.length, missing: route.missing,
-          porters: route.porters.length,
+          porters: route.porters.length, quality: Math.round(route.quality * 100) / 100,
+          grade: route.grade, load: loadFor(route.quality), delivered: route.delivered,
+          wanted: this.villages.get(route.to)?.needs.includes(route.good) ?? false,
         })),
+      /** Everything the L screen shows, without opening it. */
+      ledger: (): LedgerView => this.ledgerView(),
+      /** Emeralds the network has paid out so far. */
+      earnings: (): number => this.freightEarned,
+      milestones: () => ({
+        index: this.questline.milestone,
+        current: this.questline.currentMilestone()?.title ?? null,
+        all: MILESTONES.map((m) => m.title),
+      }),
       porters: () => this.mobs.mobs.filter((mob) => mob.kind === 'porter').length,
+      /** Where every shipment currently is, whether or not anybody can see it. Standing
+       *  at one of these is what makes a porter appear. */
+      porterSpots: () =>
+        this.transport.routes.flatMap((route) =>
+          route.porters
+            .map((porter) => this.transport.pointAt(route, porter.t))
+            .filter((point): point is RoadPoint => point !== null)
+            .map((point) => ({ x: Math.round(point.x), y: point.y, z: Math.round(point.z) })),
+        ),
       /** State of the road index, for working out why a road is not joining up. */
       roadIndex: () => ({ columns: this.roads.columns.size, revision: this.roads.revision }),
       /** Lays a road between the quest's two villages. Building 300 blocks of it by hand
        *  is the player's job, not the smoke test's. */
-      buildRoad: (fromId?: string, toId?: string): number => this.debugBuildRoad(fromId, toId),
+      buildRoad: (fromId?: string, toId?: string, surface?: string): number =>
+        this.debugBuildRoad(fromId, toId, surface),
       /** Runs the transport clock forward, the way setWeatherSeconds does for weather.
        *  Nothing is drawn while it runs, so it deliberately reports the player as far
        *  away: a visible porter is driven by its mob, which cannot walk inside a
@@ -1576,11 +1764,12 @@ export class Game {
         }
       },
       /** Opens a container screen without having to place and click the block. */
-      openScreen: (kind: 'inventory' | 'crafting' | 'furnace' | 'chest'): void => {
+      openScreen: (kind: 'inventory' | 'crafting' | 'furnace' | 'chest' | 'ledger'): void => {
         this.openScreen(() => {
           if (kind === 'crafting') this.screens.openCraftingTable();
           else if (kind === 'furnace') this.screens.openFurnace(createFurnace());
           else if (kind === 'chest') this.screens.openChest(createChest().slots);
+          else if (kind === 'ledger') this.screens.openLedger(() => this.ledgerView());
           else this.screens.openInventory();
         });
       },
@@ -1748,12 +1937,16 @@ export class Game {
     this.roads.seedFromEdits();
     this.transport.loadJSON(data.routes);
     this.questline.loadJSON(data.quest);
+    this.freightEarned = data.freight ?? 0;
     for (const pending of data.pendingVillagers ?? []) this.pendingVillagers.push(pending);
     for (const key of data.populatedChunks) this.populatedChunks.add(key);
     for (const villager of data.villagers) {
       const mob = this.mobs.addVillager(villager.x, villager.y, villager.z, villager.profession);
       const trades = tradesFromJSON(villager.trades);
       if (trades.length > 0) mob.trades = trades;
+      // Without this the offers would be rolled again the first time the player opened
+      // the screen, quietly restocking everything they had already bought.
+      mob.villageStage = villager.villageStage ?? -1;
     }
   }
 }

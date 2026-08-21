@@ -65,6 +65,37 @@ export function professionLabel(profession: string): string {
   }
 }
 
+/** What a village's own economy puts on every one of its villagers' tables. */
+export interface VillageOffers {
+  produces: string;
+  needs: readonly string[];
+  stage: number;
+}
+
+/** The two rows that make a village somewhere in particular rather than a generic shop:
+ *  it sells what it makes, and it pays for what it is short of. The second one is also
+ *  the player's own way into the economy — carrying a wanted good there by hand pays,
+ *  which is the same lesson the porters teach at scale. */
+export function villageTrades(offers: VillageOffers): Trade[] {
+  const trades: Trade[] = [
+    {
+      give: [{ id: 'emerald', count: 1 }],
+      get: { id: offers.produces, count: 3 + offers.stage },
+      maxUses: 4 + offers.stage * 2,
+      uses: 0,
+    },
+  ];
+  for (const need of offers.needs.slice(0, 2)) {
+    trades.push({
+      give: [{ id: need, count: Math.max(2, 6 - offers.stage) }],
+      get: { id: 'emerald', count: 2 },
+      maxUses: 6 + offers.stage * 2,
+      uses: 0,
+    });
+  }
+  return trades;
+}
+
 /** Deterministic per villager, so reloading the world keeps the same offers.
  *
  *  `stage` is the development of the village the villager lives in: a village that goods
@@ -76,6 +107,7 @@ export function generateTrades(
   x: number,
   z: number,
   stage = 0,
+  offers?: VillageOffers,
 ): Trade[] {
   const table = TABLES[profession] ?? TABLES.farmer;
   const rng = mulberry32(hashInts(seed ^ 0x74ade, Math.round(x), Math.round(z)));
@@ -88,7 +120,8 @@ export function generateTrades(
   }
   const count = Math.min(pool.length, 3 + Math.floor(rng() * 3) + stage);
   const discount = 1 - 0.08 * stage;
-  return pool.slice(0, count).map((template) => {
+  const local = offers ? villageTrades(offers) : [];
+  return local.concat(pool.slice(0, count).map((template) => {
     const jitter = template.jitter ?? 0;
     const give = template.give.map((side, index) => ({
       id: side.id,
@@ -105,7 +138,7 @@ export function generateTrades(
       maxUses: 4 + Math.floor(rng() * 5) + stage * 2,
       uses: 0,
     };
-  });
+  }));
 }
 
 export function tradeAvailable(trade: Trade): boolean {

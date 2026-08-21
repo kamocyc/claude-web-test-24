@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { applyGrowth, clearGrowthCache, growthChunks, growthFor } from '../game/villageGrowth';
-import { planGrowth, planVillage } from '../world/generation/village';
+import { overlaps, planGrowth, planVillage } from '../world/generation/village';
 import { Block } from '../world/blocks';
 import { Chunk, CHUNK_SIZE, CHUNK_VOLUME } from '../world/chunk';
 import { World } from '../world/world';
@@ -12,7 +12,8 @@ const BASE_Y = 60;
 function record(stage: number): VillageRecord {
   return {
     id: '100,200', x: SITE.x, z: SITE.z, baseY: BASE_Y, variant: 'plains',
-    name: '麦村', produces: 'wheat', stage, points: 0, stock: 0,
+    name: '麦', kind: 'farm', produces: 'wheat', input: null, inputStock: 0, needs: [],
+    stage, points: 0, stock: 0, received: 0,
     discovered: true, spawnedStage: 0, progress: 0,
   };
 }
@@ -90,6 +91,55 @@ describe('village growth planning', () => {
         expect(inside).toBe(false);
       }
     }
+  });
+});
+
+describe('growing past the first stage', () => {
+  function footprints(stage: number) {
+    clearGrowthCache();
+    const village = planVillage(999, SITE, BASE_Y, 'plains');
+    return growthFor(999, record(stage), stage, village.buildings).footprints;
+  }
+
+  it('never lands a later stage on an earlier one', () => {
+    clearGrowthCache();
+    const village = planVillage(999, SITE, BASE_Y, 'plains');
+    const taken = [...village.buildings];
+    for (let stage = 1; stage <= 4; stage++) {
+      const plan = growthFor(999, record(stage), stage, village.buildings);
+      for (const plot of plan.footprints) {
+        for (const other of taken) {
+          expect(overlaps(plot, other), `stage ${stage} plot overlaps`).toBe(false);
+        }
+        taken.push(plot);
+      }
+    }
+  });
+
+  it('finds room for a plot at every stage', () => {
+    for (let stage = 1; stage <= 4; stage++) {
+      expect(footprints(stage).length, `stage ${stage}`).toBeGreaterThan(0);
+    }
+  });
+
+  it('lights the streets when the village becomes a town', () => {
+    clearGrowthCache();
+    const village = planVillage(999, SITE, BASE_Y, 'plains');
+    const torches = (stage: number): number =>
+      growthFor(999, record(stage), stage, village.buildings)
+        .placements.filter((p) => p.b === Block.TORCH).length;
+    // Houses light themselves; the lamp posts are a different order of magnitude.
+    expect(torches(3)).toBeGreaterThan(torches(1) + 10);
+  });
+
+  it('raises gate towers taller than any house at the last stage', () => {
+    clearGrowthCache();
+    const village = planVillage(999, SITE, BASE_Y, 'plains');
+    const tallest = (stage: number): number =>
+      growthFor(999, record(stage), stage, village.buildings)
+        .placements.reduce((top, p) => Math.max(top, p.y), 0);
+    expect(tallest(4)).toBeGreaterThan(tallest(1));
+    expect(tallest(4)).toBeGreaterThanOrEqual(BASE_Y + 6);
   });
 });
 

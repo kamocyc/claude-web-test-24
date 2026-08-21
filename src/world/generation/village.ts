@@ -264,6 +264,26 @@ export function streetSlots(site: VillageSite): Slot[] {
   return slots;
 }
 
+/** Where growth may build. The street frontage first — a village fills its main road
+ *  before it spreads — and then a row set back behind it, which is the only way four
+ *  stages of houses fit inside one plateau. Only growth uses this; `planVillage` keeps
+ *  taking `streetSlots` alone, so stage 0 is untouched. */
+export function growthSlots(site: VillageSite): Slot[] {
+  const slots = streetSlots(site);
+  const back = 13;
+  for (let t = 10; t <= VILLAGE_RADIUS - 14; t += 11) {
+    slots.push({ x: site.x + t, z: site.z - back, facing: 3 });
+    slots.push({ x: site.x + t, z: site.z + back, facing: 1 });
+    slots.push({ x: site.x - t, z: site.z - back, facing: 3 });
+    slots.push({ x: site.x - t, z: site.z + back, facing: 1 });
+    slots.push({ x: site.x - back, z: site.z + t, facing: 0 });
+    slots.push({ x: site.x + back, z: site.z + t, facing: 2 });
+    slots.push({ x: site.x - back, z: site.z - t, facing: 0 });
+    slots.push({ x: site.x + back, z: site.z - t, facing: 2 });
+  }
+  return slots;
+}
+
 /** Grows a footprint away from the street its slot belongs to. */
 export function footprintFor(slot: Slot, w: number, d: number): Footprint {
   let x0 = slot.x - (w >> 1);
@@ -433,7 +453,14 @@ export interface GrowthPlan {
   placements: Placement[];
   villagers: VillagerMarker[];
   chests: ChestMarker[];
+  /** What this stage built on. Stage n + 1 is handed these along with the original
+   *  village's, or the two would try to stand in the same place. */
+  footprints: Footprint[];
 }
+
+/** The landmark each stage adds on top of its houses. Houses alone make a village
+ *  bigger; these are what make it read as a different kind of place. */
+export const STAGE_LANDMARKS: readonly string[] = ['', '', 'market', 'lamps', 'gates'];
 
 export function planGrowth(
   seed: number,
@@ -443,7 +470,7 @@ export function planGrowth(
   stage: number,
   occupied: readonly Footprint[],
 ): GrowthPlan {
-  const plan: GrowthPlan = { placements: [], villagers: [], chests: [] };
+  const plan: GrowthPlan = { placements: [], villagers: [], chests: [], footprints: [] };
   if (stage <= 0) return plan;
 
   const rng = mulberry32(hashInts(seed ^ 0x9a0f, site.x, site.z, stage));
@@ -455,7 +482,7 @@ export function planGrowth(
   // collects them the same way a fresh village does.
   const sink: HouseSink = { villagers: plan.villagers, chests: plan.chests };
 
-  const slots = streetSlots(site);
+  const slots = growthSlots(site);
   for (let i = slots.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
     const tmp = slots[i];
@@ -472,6 +499,7 @@ export function planGrowth(
     const footprint = footprintFor(slot, w, d);
     if (taken.some((b) => overlaps(footprint, b))) continue;
     taken.push(footprint);
+    plan.footprints.push(footprint);
     built++;
     buildHouse(
       put,
@@ -487,6 +515,20 @@ export function planGrowth(
     );
   }
 
+  const landmark = STAGE_LANDMARKS[Math.min(stage, STAGE_LANDMARKS.length - 1)];
+  if (landmark === 'market') {
+    const plot: Footprint = { x0: site.x + 5, z0: site.z + 5, w: 7, d: 7 };
+    if (!taken.some((b) => overlaps(plot, b))) {
+      taken.push(plot);
+      plan.footprints.push(plot);
+      buildMarket(put, sink, plot, baseY, palette, PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)]);
+    }
+  } else if (landmark === 'lamps') {
+    buildLamps(put, site, baseY);
+  } else if (landmark === 'gates') {
+    buildGates(put, site, baseY);
+  }
+
   for (let i = 0; i < FARMS_PER_STAGE; i++) {
     const angle = rng() * Math.PI * 2;
     const dist = 20 + rng() * 10;
@@ -497,4 +539,90 @@ export function planGrowth(
   }
 
   return plan;
+}
+
+/** An open market hall: a floor, four posts, a roof and a trader under it. Villages get
+ *  one when they outgrow being a village. */
+function buildMarket(
+  put: PutFn,
+  sink: HouseSink,
+  plot: Footprint,
+  baseY: number,
+  palette: Palette,
+  profession: Profession,
+): void {
+  const x1 = plot.x0 + plot.w - 1;
+  const z1 = plot.z0 + plot.d - 1;
+  for (let z = plot.z0; z <= z1; z++) {
+    for (let x = plot.x0; x <= x1; x++) {
+      put(x, baseY - 1, z, palette.floor);
+      for (let y = baseY; y <= baseY + 4; y++) put(x, y, z, Block.AIR);
+    }
+  }
+  for (const [x, z] of [[plot.x0, plot.z0], [x1, plot.z0], [plot.x0, z1], [x1, z1]] as const) {
+    for (let y = baseY; y <= baseY + 2; y++) put(x, y, z, palette.corner);
+  }
+  for (let z = plot.z0 - 1; z <= z1 + 1; z++) {
+    for (let x = plot.x0 - 1; x <= x1 + 1; x++) put(x, baseY + 3, z, palette.roof);
+  }
+  // Stalls: a counter of crates along one side, and a torch so the hall is lit at night.
+  const counterZ = z1 - 1;
+  for (let x = plot.x0 + 1; x <= x1 - 1; x++) put(x, baseY, counterZ, Block.CRAFTING_TABLE);
+  put(plot.x0 + 1, baseY, plot.z0 + 1, Block.TORCH);
+  put(x1 - 1, baseY, plot.z0 + 1, Block.TORCH);
+  const chestX = plot.x0 + 1;
+  const chestZ = counterZ - 1;
+  put(chestX, baseY, chestZ, Block.CHEST);
+  sink.chests.push({ x: chestX, y: baseY, z: chestZ, loot: profession });
+  sink.villagers.push({
+    x: plot.x0 + (plot.w >> 1),
+    y: baseY + 1,
+    z: plot.z0 + (plot.d >> 1),
+    profession,
+  });
+}
+
+/** Street lamps down both roads. Cheap in blocks and the most visible thing a village
+ *  ever gains: a supplied town is the one you can see from a hill at night. */
+function buildLamps(put: PutFn, site: VillageSite, baseY: number): void {
+  const off = 3;
+  for (let t = 8; t <= VILLAGE_RADIUS - 14; t += 8) {
+    for (const sign of [1, -1]) {
+      for (const [x, z] of [
+        [site.x + sign * t, site.z + off],
+        [site.x + sign * t, site.z - off],
+        [site.x + off, site.z + sign * t],
+        [site.x - off, site.z + sign * t],
+      ] as const) {
+        for (let y = baseY; y <= baseY + 2; y++) put(x, y, z, Block.COBBLESTONE);
+        put(x, baseY + 3, z, Block.TORCH);
+      }
+    }
+  }
+}
+
+/** Gate towers where the streets leave town, with a lintel across the road. Only a place
+ *  that has been supplied for a long time ever gets walls. */
+function buildGates(put: PutFn, site: VillageSite, baseY: number): void {
+  const reach = VILLAGE_RADIUS - 12;
+  const off = 3;
+  const height = 6;
+  for (const sign of [1, -1]) {
+    for (const axis of [0, 1]) {
+      const along = sign * reach;
+      for (const side of [off, -off]) {
+        const x = axis === 0 ? site.x + along : site.x + side;
+        const z = axis === 0 ? site.z + side : site.z + along;
+        for (let y = baseY; y <= baseY + height; y++) put(x, y, z, Block.STONE_BRICKS);
+        put(x, baseY + height + 1, z, Block.TORCH);
+      }
+      // The span over the road itself. Everything below it was cleared when the street
+      // was laid, so this never buries anybody's path.
+      for (let side = -off + 1; side <= off - 1; side++) {
+        const x = axis === 0 ? site.x + along : site.x + side;
+        const z = axis === 0 ? site.z + side : site.z + along;
+        put(x, baseY + height, z, Block.STONE_BRICKS);
+      }
+    }
+  }
 }

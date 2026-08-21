@@ -21,17 +21,36 @@ import { CHUNK_SIZE, SEA_LEVEL, blockIndex, parseChunkKey, toChunkCoord, toLocal
 import { VILLAGE_RADIUS } from '../world/generation/village';
 import type { VillageRecord } from './villages';
 
-/** Blocks a player lays to make a road. Bare stone and dirt are deliberately absent:
- *  they are what the world is already made of, so they could not be told apart from it. */
-export const ROAD_BLOCKS: ReadonlySet<BlockId> = new Set<BlockId>([
-  Block.DIRT_PATH,
-  Block.GRAVEL,
-  Block.COBBLESTONE,
-  Block.MOSSY_COBBLESTONE,
-  Block.OAK_PLANKS,
-  Block.STONE_BRICKS,
-  Block.SANDSTONE,
+/** Blocks a player lays to make a road, and how fast a porter walks on each. Bare stone
+ *  and dirt are deliberately absent: they are what the world is already made of, so they
+ *  could not be told apart from it.
+ *
+ *  The spread is what keeps a finished road worth returning to. A trodden dirt path joins
+ *  two villages; paving it over in stone brick is what makes the line pay. */
+export const ROAD_SPEED: ReadonlyMap<BlockId, number> = new Map<BlockId, number>([
+  [Block.DIRT_PATH, 1],
+  [Block.GRAVEL, 1.2],
+  [Block.SANDSTONE, 1.2],
+  [Block.COBBLESTONE, 1.45],
+  [Block.MOSSY_COBBLESTONE, 1.45],
+  [Block.OAK_PLANKS, 1.45],
+  [Block.STONE_BRICKS, 1.7],
 ]);
+
+export const ROAD_BLOCKS: ReadonlySet<BlockId> = new Set<BlockId>(ROAD_SPEED.keys());
+
+/** Open ground between two stretches of road. Walkable — that is what `linkOk` checks —
+ *  but slower than anything anybody laid. */
+export const GAP_SPEED = 0.75;
+
+/** What to call a road of a given quality, for the panel and the ledger. */
+export function roadGrade(quality: number): string {
+  if (quality < 0.95) return 'けもの道';
+  if (quality < 1.12) return '土の道';
+  if (quality < 1.34) return '砂利道';
+  if (quality < 1.58) return '石畳';
+  return '街道';
+}
 
 /** How far apart two road columns may be and still count as one road. */
 export const MAX_LINK = 20;
@@ -46,10 +65,21 @@ export interface RoadPoint {
   x: number;
   z: number;
   y: number;
+  /** The surface, where it is known. Only set by `columnsIn`, so the minimap can draw a
+   *  paved road differently from a dirt one. */
+  b?: BlockId;
 }
 
 export type SurveyResult =
-  | { connected: true; waypoints: RoadPoint[]; length: number }
+  | {
+      connected: true;
+      waypoints: RoadPoint[];
+      length: number;
+      /** Weighted speed factor over the whole road: the length divided by the time a
+       *  walker spends on it. One stretch of stone brick in a mile of dirt therefore
+       *  barely moves it, which is the honest answer. */
+      quality: number;
+    }
   /** Where each side's road runs out, and how far apart those two ends are. This is what
    *  the HUD points the player at: "the gap is here", not "walk that way". */
   | { connected: false; frontierFrom: RoadPoint; frontierTo: RoadPoint; missing: number };
@@ -79,6 +109,8 @@ function editAt(world: RoadWorld, x: number, y: number, z: number): BlockId | un
 export class RoadNetwork {
   /** `${x},${z}` -> the y of the walkable road surface. Player-laid columns only. */
   readonly columns = new Map<string, number>();
+  /** `${x},${z}` -> what that surface is made of, which is what sets a route's speed. */
+  readonly surfaces = new Map<string, BlockId>();
   /** Bumped whenever the index changes, so the transport layer can skip re-surveying a
    *  network nobody has touched. */
   revision = 0;
@@ -87,6 +119,13 @@ export class RoadNetwork {
    *  the index has moved on. */
   private readonly buckets = new Map<string, string[]>();
   private bucketRevision = -1;
+  /** Per-village search results, thrown away whenever the network moves. A dozen routes
+   *  between six villages is six searches and a handful of set lookups, not two searches
+   *  per pair — which is what makes surveying the whole network every couple of seconds
+   *  affordable while the player is still laying blocks. */
+  private readonly seedCache = new Map<string, string[]>();
+  private readonly reachCache = new Map<string, Map<string, string | null>>();
+  private cacheRevision = -1;
 
   constructor(
     private readonly world: RoadWorld,
@@ -98,6 +137,7 @@ export class RoadNetwork {
    *  the world. */
   seedFromEdits(): void {
     this.columns.clear();
+    this.surfaces.clear();
     for (const [chunkKey, edits] of this.world.edits) {
       const [cx, cz] = parseChunkKey(chunkKey);
       for (const [index, id] of edits) {
@@ -109,7 +149,9 @@ export class RoadNetwork {
         const z = cz * CHUNK_SIZE + lz;
         if (this.blockedAbove(x, y, z)) continue;
         const existing = this.columns.get(key(x, z));
-        if (existing === undefined || existing < y) this.columns.set(key(x, z), y);
+        if (existing !== undefined && existing >= y) continue;
+        this.columns.set(key(x, z), y);
+        this.surfaces.set(key(x, z), id);
       }
     }
     this.revision++;
@@ -157,21 +199,37 @@ export class RoadNetwork {
       // may legitimately hold a road well below the block that just moved.
       if (existing !== undefined && Math.abs(existing - around) <= MAX_STEP + 1) {
         this.columns.delete(key(x, z));
+        this.surfaces.delete(key(x, z));
       }
       return;
     }
-    if (existing === undefined || existing !== best) this.columns.set(key(x, z), best);
+    this.columns.set(key(x, z), best);
+    // Repaving a column changes nothing about where the road goes, only how fast it is
+    // walked — so the material is refreshed whether or not the level moved.
+    const surface = editAt(this.world, x, best, z);
+    const was = this.surfaces.get(key(x, z));
+    if (surface !== undefined) this.surfaces.set(key(x, z), surface);
+    if (existing === best && was !== surface) this.revision++;
   }
 
-  /** Road columns inside a rectangle, for drawing the network on the minimap. */
+  /** Road columns inside a rectangle, for drawing the network on the minimap.
+   *
+   *  Asked for every frame, so it reads the tiles that overlap the rectangle rather than
+   *  the whole index: a player who has laid ten thousand blocks of road should not pay
+   *  for all of them to draw the corner of it they are standing on. */
   columnsIn(x0: number, z0: number, x1: number, z1: number): RoadPoint[] {
+    this.rebuildBuckets();
     const out: RoadPoint[] = [];
-    for (const [k, y] of this.columns) {
-      const comma = k.indexOf(',');
-      const x = Number(k.slice(0, comma));
-      const z = Number(k.slice(comma + 1));
-      if (x < x0 || x > x1 || z < z0 || z > z1) continue;
-      out.push({ x, z, y });
+    for (let bz = Math.floor(z0 / MAX_LINK); bz <= Math.floor(z1 / MAX_LINK); bz++) {
+      for (let bx = Math.floor(x0 / MAX_LINK); bx <= Math.floor(x1 / MAX_LINK); bx++) {
+        const list = this.buckets.get(key(bx, bz));
+        if (!list) continue;
+        for (const k of list) {
+          const p = this.point(k);
+          if (p.x < x0 || p.x > x1 || p.z < z0 || p.z > z1) continue;
+          out.push({ x: p.x, z: p.z, y: p.y, b: this.surfaces.get(k) });
+        }
+      }
     }
     return out;
   }
@@ -268,41 +326,137 @@ export class RoadNetwork {
     };
   }
 
-  /** Every road column reachable from a village, with the step that reached it. */
-  private reachFrom(village: VillageRecord): Map<string, string | null> {
-    this.rebuildBuckets();
-    const seen = new Map<string, string | null>();
-    const queue: string[] = [];
-    // Seeds are the columns that touch the village's own streets.
+  private freshen(): void {
+    if (this.cacheRevision === this.revision) return;
+    this.cacheRevision = this.revision;
+    this.seedCache.clear();
+    this.reachCache.clear();
+  }
+
+  /** The columns that touch a village's own streets: where its road starts, and equally
+   *  where somebody else's road has to end to have arrived. */
+  private seedsFor(village: VillageRecord): string[] {
+    this.freshen();
+    const cached = this.seedCache.get(village.id);
+    if (cached) return cached;
+    const seeds: string[] = [];
     for (const k of this.columns.keys()) {
-      if (seen.size >= MAX_NODES) break;
       const column = this.point(k);
       if (Math.hypot(column.x - village.x, column.z - village.z) > VILLAGE_RADIUS + MAX_LINK) continue;
       if (!this.touchesVillage(village, column)) continue;
-      seen.set(k, null);
-      queue.push(k);
+      seeds.push(k);
     }
-    for (let head = 0; head < queue.length && seen.size < MAX_NODES; head++) {
-      const from = this.point(queue[head]);
-      for (const k of this.near(from.x, from.z)) {
+    this.seedCache.set(village.id, seeds);
+    return seeds;
+  }
+
+  /** Every road column reachable from a village, with the step that reached it.
+   *
+   *  Pavement first: the search walks onto touching columns until it can go no further,
+   *  and only then allows itself a jump across open ground. Searching by hop count
+   *  instead — which is what a plain queue does — would stride over a finished road in
+   *  `MAX_LINK` leaps, and a road walked in leaps reads as though it were all gaps: the
+   *  route would be surveyed as rough however carefully it had been paved, and a porter
+   *  handed those waypoints would cut every corner.
+   *
+   *  Each column is still reached once and each candidate tested once, so this costs what
+   *  the plain queue cost. The two queues only change the order. */
+  private reachFrom(village: VillageRecord): Map<string, string | null> {
+    this.freshen();
+    const cached = this.reachCache.get(village.id);
+    if (cached) return cached;
+    this.rebuildBuckets();
+    const seen = new Map<string, string | null>();
+    const steps: string[] = [];
+    const links: string[] = [];
+    for (const k of this.seedsFor(village)) {
+      if (seen.size >= MAX_NODES) break;
+      seen.set(k, null);
+      steps.push(k);
+    }
+    let head = 0;
+    while ((head < steps.length || links.length > 0) && seen.size < MAX_NODES) {
+      if (head < steps.length) {
+        const key = steps[head++];
+        this.walkOn(key, seen, steps);
+        // Every column also gets a turn at jumping, once nothing is left to walk to.
+        links.push(key);
+        continue;
+      }
+      this.jumpFrom(links.shift() as string, seen, steps);
+    }
+    this.reachCache.set(village.id, seen);
+    return seen;
+  }
+
+  /** Expands onto the eight columns touching this one. */
+  private walkOn(from: string, seen: Map<string, string | null>, out: string[]): void {
+    const here = this.point(from);
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dz === 0) continue;
+        const k = key(here.x + dx, here.z + dz);
         if (seen.has(k)) continue;
-        const to = this.point(k);
-        if (Math.abs(to.x - from.x) > MAX_LINK || Math.abs(to.z - from.z) > MAX_LINK) continue;
-        if (!this.linkOk(from, to)) continue;
-        seen.set(k, queue[head]);
-        queue.push(k);
-        if (seen.size >= MAX_NODES) break;
+        const y = this.columns.get(k);
+        if (y === undefined || Math.abs(y - here.y) > MAX_STEP) continue;
+        seen.set(k, from);
+        out.push(k);
+        if (seen.size >= MAX_NODES) return;
       }
     }
-    return seen;
+  }
+
+  /** Expands across open ground to any column within `MAX_LINK`. */
+  private jumpFrom(from: string, seen: Map<string, string | null>, out: string[]): void {
+    const here = this.point(from);
+    for (const k of this.near(here.x, here.z)) {
+      if (seen.has(k)) continue;
+      const to = this.point(k);
+      if (Math.abs(to.x - here.x) > MAX_LINK || Math.abs(to.z - here.z) > MAX_LINK) continue;
+      if (!this.linkOk(here, to)) continue;
+      seen.set(k, from);
+      out.push(k);
+      if (seen.size >= MAX_NODES) return;
+    }
+  }
+
+  /** How good the road is, as the factor a porter's speed is multiplied by.
+   *
+   *  Measured over the columns the player actually laid, and not over the last hop into
+   *  each village: those are the villages' own generated streets, which nobody can pave
+   *  and which would otherwise drag every short route down. It is the length divided by
+   *  the time spent, so one stretch of stone brick in a mile of dirt barely moves it —
+   *  the honest answer, and the reason paving is a job rather than a gesture.
+   *
+   *  A gap counts too. A dashed road is allowed, but walking the open ground between two
+   *  stretches is slower than walking either of them, so filling a road in is worth
+   *  something even when it was already "connected". */
+  private qualityOf(chain: readonly RoadPoint[]): number {
+    if (chain.length < 2) return 1;
+    let length = 0;
+    let time = 0;
+    for (let i = 1; i < chain.length; i++) {
+      const a = chain[i - 1];
+      const b = chain[i];
+      const step = Math.hypot(b.x - a.x, b.z - a.z);
+      if (step === 0) continue;
+      const surface = this.surfaces.get(key(b.x, b.z)) ?? this.surfaces.get(key(a.x, a.z));
+      const speed = step > 1.5 ? GAP_SPEED : ROAD_SPEED.get(surface ?? Block.DIRT_PATH) ?? 1;
+      length += step;
+      time += step / speed;
+    }
+    return time > 0 ? length / time : 1;
   }
 
   /** Walks the road from one village to the other, or reports where it runs out. */
   survey(from: VillageRecord, to: VillageRecord): SurveyResult {
     const reachFrom = this.reachFrom(from);
     let arrival: string | null = null;
-    for (const k of reachFrom.keys()) {
-      if (this.touchesVillage(to, this.point(k))) {
+    // Arriving means reaching any column that touches the far village's streets, and
+    // those are exactly that village's own seeds. Intersecting two sets beats testing
+    // every reached column against the geometry.
+    for (const k of this.seedsFor(to)) {
+      if (reachFrom.has(k)) {
         arrival = k;
         break;
       }
@@ -323,7 +477,7 @@ export class RoadNetwork {
       for (let i = 1; i < waypoints.length; i++) {
         length += Math.hypot(waypoints[i].x - waypoints[i - 1].x, waypoints[i].z - waypoints[i - 1].z);
       }
-      return { connected: true, waypoints, length };
+      return { connected: true, waypoints, length, quality: this.qualityOf(chain) };
     }
 
     // Not connected: report the far end of each side's road so the player is told which

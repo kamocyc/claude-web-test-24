@@ -49,7 +49,20 @@ export function growthFor(
   const key = `${village.id},${stage}`;
   let plan = cache.get(key);
   if (!plan) {
-    plan = planGrowth(seed, { cellX: 0, cellZ: 0, x: village.x, z: village.z }, village.baseY, village.variant, stage, occupied);
+    // Every earlier stage's plots count as taken too. Without this a village that grew
+    // twice would try to raise its second pair of houses through its first pair.
+    const taken = [...occupied];
+    for (let earlier = 1; earlier < stage; earlier++) {
+      taken.push(...growthFor(seed, village, earlier, occupied).footprints);
+    }
+    plan = planGrowth(
+      seed,
+      { cellX: 0, cellZ: 0, x: village.x, z: village.z },
+      village.baseY,
+      village.variant,
+      stage,
+      taken,
+    );
     cache.set(key, plan);
   }
   return plan;

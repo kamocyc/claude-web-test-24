@@ -14,9 +14,10 @@ import type { Mob } from '../game/mobs/ai';
 import type { Atlas } from '../render/textures';
 import { Container, renderSlot } from './containers';
 import { RecipePanel } from './recipePanel';
+import { refreshLedger, type LedgerView } from './ledger';
 import { clear, el } from './dom';
 
-export type ScreenKind = 'inventory' | 'crafting' | 'furnace' | 'chest' | 'trade';
+export type ScreenKind = 'inventory' | 'crafting' | 'furnace' | 'chest' | 'trade' | 'ledger';
 
 /** One tutorial step, rendered above a villager's offers. */
 export interface QuestRow {
@@ -192,15 +193,50 @@ export class ScreenManager {
     this.mount({ kind: 'chest', container, refresh: () => container.refresh() });
   }
 
+  /** The whole network on one page. The view is re-read on every refresh rather than
+   *  captured, so stock and porters tick along while the player reads it. */
+  openLedger(view: () => LedgerView): void {
+    const container = new Container({
+      title: '交易台帳',
+      atlas: this.atlas,
+      playerInventory: this.player.inventory,
+    });
+    const host = el('div', 'ledger-host');
+    container.addSection(host);
+    // Every screen is refreshed once a frame. A page of rows is far too much DOM to
+    // rebuild at that rate, and nothing on it moves fast enough to be worth it, so it is
+    // re-read a couple of times a second and only redrawn when something actually said
+    // something different.
+    let checked = 0;
+    let signature = '';
+    this.mount({
+      kind: 'ledger',
+      container,
+      refresh: () => {
+        const now = performance.now();
+        if (now - checked < 400) return;
+        checked = now;
+        const data = view();
+        const next = JSON.stringify(data);
+        if (next === signature) return;
+        signature = next;
+        refreshLedger(host, data);
+      },
+    });
+  }
+
   /** `quest` adds one row above the offers: the tutorial's "carry this there" and "hand
    *  it over" both happen through the same widget the player already knows. */
-  openTrade(villager: Mob, onTraded: () => void, quest?: QuestRow): void {
+  openTrade(villager: Mob, onTraded: () => void, quest?: QuestRow, note?: string): void {
     const container = new Container({
       title: `${professionLabel(villager.profession ?? 'villager')}との取引`,
       atlas: this.atlas,
       playerInventory: this.player.inventory,
     });
     const list = el('div', 'trade-list');
+    // What the village itself is short of. Said here because this is where the player is
+    // standing when it becomes useful to know.
+    if (note) container.addSection(el('div', 'trade-note', note));
     container.addSection(list);
     this.addPlayerInventory(container);
 

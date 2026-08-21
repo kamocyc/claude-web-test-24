@@ -11,6 +11,11 @@ export interface RouteView {
   /** Straight line distance still to be paved, when it is not. */
   missing: number;
   porters: number;
+  /** What the pavement is called, and what one trip carries on it. */
+  grade: string;
+  load: number;
+  /** True when the far end has asked for what this route carries. */
+  wanted: boolean;
 }
 
 export interface RoutePanelView {
@@ -50,7 +55,10 @@ export class RoutePanel {
     // Rebuilding the rows every frame would fight the browser; they only change when a
     // road does.
     const signature = view.routes
-      .map((r) => `${r.from}>${r.to}:${r.surveyed}:${r.connected}:${Math.round(r.length)}:${Math.round(r.missing)}:${r.porters}`)
+      .map((r) => [
+        r.from, r.to, r.surveyed, r.connected, Math.round(r.length),
+        Math.round(r.missing), r.porters, r.grade, r.load, r.wanted,
+      ].join(':'))
       .join('|');
     if (signature === this.signature) return;
     this.signature = signature;
@@ -58,11 +66,14 @@ export class RoutePanel {
     clear(this.list);
     for (const route of view.routes) {
       const row = el('div', `route-row ${route.connected ? 'linked' : 'broken'}`);
-      row.appendChild(el('div', 'route-pair', `${route.from} ⇄ ${route.to}`));
+      // A tick on the pair itself: at a glance, is this line carrying something the far
+      // end actually wants?
+      row.appendChild(el('div', 'route-pair', `${route.from} ⇄ ${route.to}${route.wanted ? ' ✓' : ''}`));
       let status: string;
       if (!route.surveyed) status = '調べています...';
       else if (route.connected) {
-        status = `接続済み ${Math.round(route.length)}m${route.porters > 0 ? ` / 荷運び ${route.porters}` : ''}`;
+        status = `接続済み ${Math.round(route.length)}m / ${route.grade} / 荷 ${route.load}`;
+        if (route.porters > 0) status += ` / 荷運び ${route.porters}`;
       } else status = `未接続 / あと ${Math.round(route.missing)}m`;
       row.appendChild(el('div', 'route-status', status));
       this.list.appendChild(row);

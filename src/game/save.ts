@@ -37,6 +37,9 @@ export interface SavedVillager {
   z: number;
   profession: string;
   trades: unknown;
+  /** Development of the village this villager lives in, at the time the offers were
+   *  rolled. Kept so loading does not re-roll a table the player has already used. */
+  villageStage?: number;
 }
 
 /** What has happened to a village. Where it is, what it makes and what it is called are
@@ -49,6 +52,9 @@ export interface SavedVillage {
   stock: number;
   discovered: boolean;
   spawnedStage: number;
+  /** Absent in saves written before workshops existed. */
+  inputStock?: number;
+  received?: number;
 }
 
 /** Only the pair. The road itself is already in `edits`, so a route surveys itself again
@@ -64,6 +70,8 @@ export interface SavedQuest {
   targetId?: string;
   good?: string;
   count?: number;
+  /** Absent before the milestones existed; such a save starts the list from the top. */
+  milestone?: number;
 }
 
 export interface SaveData {
@@ -88,6 +96,9 @@ export interface SaveData {
    *  existed opens with no villages found yet and the tutorial at its first step, which
    *  is exactly right. Bumping SAVE_VERSION instead would throw every world away. */
   villages?: SavedVillage[];
+  /** Emeralds the transport network has paid the player. A running total rather than
+   *  state, but it is the one number the ledger leads with. */
+  freight?: number;
   routes?: SavedRoute[];
   quest?: SavedQuest;
   /** Villagers a village earned by growing while their chunk was unloaded. */

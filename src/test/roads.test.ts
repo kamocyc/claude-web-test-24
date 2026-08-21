@@ -4,6 +4,8 @@ import {
   MAX_STEP,
   RoadNetwork,
   ROAD_BLOCKS,
+  ROAD_SPEED,
+  roadGrade,
   toWaypoints,
   type RoadTerrain,
   type RoadWorld,
@@ -61,8 +63,10 @@ class FakeWorld implements RoadWorld {
 
 function village(id: string, x: number, z: number): VillageRecord {
   return {
-    id, x, z, baseY: GROUND, variant: 'plains', name: id, produces: 'wheat',
-    stage: 0, points: 0, stock: 0, discovered: true, spawnedStage: 0, progress: 0,
+    id, x, z, baseY: GROUND, variant: 'plains', name: id, kind: 'farm',
+    produces: 'wheat', input: null, inputStock: 0, needs: [],
+    stage: 0, points: 0, stock: 0, received: 0, discovered: true, spawnedStage: 0,
+    progress: 0,
   };
 }
 
@@ -134,6 +138,77 @@ describe('road index', () => {
     // apart from natural ground.
     expect(ROAD_BLOCKS.has(Block.STONE)).toBe(false);
     expect(ROAD_BLOCKS.has(Block.DIRT)).toBe(false);
+  });
+
+  it('remembers what each column is paved with', () => {
+    const world = new FakeWorld();
+    world.lay(10, GROUND, 0, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world, world.terrain());
+    roads.seedFromEdits();
+    expect(roads.surfaces.get('10,0')).toBe(Block.DIRT_PATH);
+
+    world.lay(10, GROUND, 0, Block.STONE_BRICKS);
+    roads.onBlockChanged(10, GROUND, 0, Block.DIRT_PATH, Block.STONE_BRICKS);
+    expect(roads.surfaces.get('10,0')).toBe(Block.STONE_BRICKS);
+    // Repaving moves nothing, but the routes still have to be told about it.
+    expect(roads.columns.get('10,0')).toBe(GROUND);
+  });
+
+  it('hands the minimap the surface along with the column', () => {
+    const world = new FakeWorld();
+    world.lay(10, GROUND, 0, Block.GRAVEL);
+    const roads = new RoadNetwork(world, world.terrain());
+    roads.seedFromEdits();
+    expect(roads.columnsIn(0, -5, 20, 5)).toEqual([{ x: 10, z: 0, y: GROUND, b: Block.GRAVEL }]);
+  });
+});
+
+describe('road quality', () => {
+  function qualityOf(surface: BlockId, step = 1): number {
+    const world = new FakeWorld();
+    for (let x = 50; x <= 190; x += step) world.lay(x, GROUND, 0, surface);
+    const roads = new RoadNetwork(world, world.terrain());
+    roads.seedFromEdits();
+    const result = roads.survey(A, B);
+    if (!result.connected) throw new Error('fixture is not connected');
+    return result.quality;
+  }
+
+  it('rates a finished dirt path as the baseline', () => {
+    expect(qualityOf(Block.DIRT_PATH)).toBeCloseTo(1, 5);
+  });
+
+  it('rates better pavement higher, in the order the blocks cost to make', () => {
+    expect(qualityOf(Block.GRAVEL)).toBeGreaterThan(qualityOf(Block.DIRT_PATH));
+    expect(qualityOf(Block.COBBLESTONE)).toBeGreaterThan(qualityOf(Block.GRAVEL));
+    expect(qualityOf(Block.STONE_BRICKS)).toBeGreaterThan(qualityOf(Block.COBBLESTONE));
+    expect(qualityOf(Block.STONE_BRICKS)).toBeCloseTo(ROAD_SPEED.get(Block.STONE_BRICKS) ?? 0, 5);
+  });
+
+  it('rates a dashed road below the surface it is dashed with', () => {
+    // A road may skip, and one that does still works. It is simply slower than one
+    // somebody finished, which is what makes filling it in worth doing.
+    expect(qualityOf(Block.STONE_BRICKS, MAX_LINK)).toBeLessThan(qualityOf(Block.DIRT_PATH));
+  });
+
+  it('names the grades in order', () => {
+    const names = [0.8, 1, 1.2, 1.45, 1.7].map((q) => roadGrade(q));
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('follows the pavement rather than striding over it', () => {
+    // The survey must step column to column on a finished road: a path that leapt along
+    // it would report a paved road as rough, and would hand a porter waypoints that cut
+    // its corners.
+    const world = new FakeWorld();
+    for (let x = 50; x <= 190; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world, world.terrain());
+    roads.seedFromEdits();
+    const result = roads.survey(A, B);
+    if (!result.connected) throw new Error('fixture is not connected');
+    // Two village stubs plus one straight run, once the straight parts are folded away.
+    expect(toWaypoints(result.waypoints).length).toBeLessThanOrEqual(4);
+    expect(result.length).toBeGreaterThan(150);
   });
 });
 

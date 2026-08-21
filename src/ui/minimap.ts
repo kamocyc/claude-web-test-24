@@ -1,4 +1,5 @@
 import { Block, blockDef } from '../world/blocks';
+import { ROAD_SPEED } from '../game/roads';
 import { WATER_FULL } from '../world/water';
 import type { World } from '../world/world';
 import type { Atlas } from '../render/textures';
@@ -15,7 +16,7 @@ const ROWS_PER_FRAME = 28;
 /** Places and roads drawn on top of the terrain. */
 export interface MinimapOverlay {
   markers: { kind: string; x: number; z: number }[];
-  roads: { x: number; z: number }[];
+  roads: { x: number; z: number; b?: number }[];
   /** The stretch of road that is still missing, if the player is building one. */
   gap: { from: { x: number; z: number }; to: { x: number; z: number } } | null;
 }
@@ -28,6 +29,14 @@ const MARKER_COLORS: Record<string, string> = {
   village: '#ffd479',
   gap: '#ff9b53',
 };
+
+/** Trodden dirt through to stone brick, as a colour. */
+function roadColour(block: number | undefined): string {
+  const speed = block === undefined ? 1 : ROAD_SPEED.get(block) ?? 1;
+  const paved = Math.max(0, Math.min(1, (speed - 1) / 0.7));
+  const mix = (from: number, to: number): number => Math.round(from + (to - from) * paved);
+  return `rgba(${mix(226, 236)}, ${mix(200, 236)}, ${mix(142, 238)}, 0.9)`;
+}
 
 /** Overhead map of the loaded world around the player. Redrawn a few rows at a time
  *  so a full refresh costs a fraction of a frame. */
@@ -132,10 +141,18 @@ export class Minimap {
   /** The roads the player has laid, so it is visible at a glance where one stops. */
   private drawRoads(overlay: MinimapOverlay): void {
     const ctx = this.ctx;
-    ctx.fillStyle = 'rgba(226, 200, 142, 0.9)';
+    let painted = '';
     for (const point of overlay.roads) {
       const at = this.project(point.x, point.z);
-      if (at) ctx.fillRect(at.px - 0.5, at.py - 0.5, 1.5, 1.5);
+      if (!at) continue;
+      // Paved stretches read paler than trodden ones, so which part of a line has been
+      // improved is visible from the map rather than only from the panel.
+      const colour = roadColour(point.b);
+      if (colour !== painted) {
+        ctx.fillStyle = colour;
+        painted = colour;
+      }
+      ctx.fillRect(at.px - 0.5, at.py - 0.5, 1.5, 1.5);
     }
     if (!overlay.gap) return;
     // The unfinished stretch, drawn as the dashed line it wants to become.

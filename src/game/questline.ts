@@ -7,7 +7,16 @@
 
 import { itemLabel } from './items';
 import type { Route } from './transport';
-import { STAGE_POINTS, type GoodId, type VillageId, type VillageRecord, type VillageRegistry } from './villages';
+import {
+  MAX_STAGE,
+  RANKS,
+  STAGE_POINTS,
+  displayName,
+  type GoodId,
+  type VillageId,
+  type VillageRecord,
+  type VillageRegistry,
+} from './villages';
 
 export type QuestStep =
   | 'find_village'
@@ -20,7 +29,7 @@ export type QuestStep =
 
 /** Hand-carried load. Deliberately just short of a stage, so the first automatic
  *  delivery is what tips the village over and the point lands. */
-export const HAUL_COUNT = STAGE_POINTS - 2;
+export const HAUL_COUNT = STAGE_POINTS[0] - 2;
 
 export interface QuestObjective {
   step: QuestStep;
@@ -43,7 +52,130 @@ export interface SavedQuest {
   targetId?: string;
   good?: string;
   count?: number;
+  /** Absent in saves written before the milestones existed, where the player simply
+   *  starts the list from the top. */
+  milestone?: number;
 }
+
+/** Everything a milestone is allowed to look at: the villages the player has found and
+ *  the routes between them. */
+export interface NetworkState {
+  villages: readonly VillageRecord[];
+  routes: readonly Route[];
+}
+
+const EMPTY_STATE: NetworkState = { villages: [], routes: [] };
+
+/** A standing goal for the network, once the tutorial has run out of things to teach.
+ *
+ *  These are what stop the game ending the moment the first porter arrives: each one
+ *  points at a different part of the system — a second line, a workshop that needs
+ *  feeding, pavement, a town — so following the list is also a tour of the mechanics. */
+export interface Milestone {
+  id: string;
+  title: string;
+  /** Written per state so a goal can show how far along it is. */
+  detail(state: NetworkState): string;
+  /** Emeralds paid on completion. */
+  reward: number;
+  done(state: NetworkState): boolean;
+  marker?(state: NetworkState): { x: number; z: number; kind: 'village' | 'gap' } | null;
+}
+
+function linked(state: NetworkState): Route[] {
+  return state.routes.filter((r) => r.connected);
+}
+
+/** Villages standing at either end of a working route. */
+function servedVillages(state: NetworkState): Set<VillageId> {
+  const ids = new Set<VillageId>();
+  for (const route of linked(state)) {
+    ids.add(route.from);
+    ids.add(route.to);
+  }
+  return ids;
+}
+
+function nearest(
+  state: NetworkState,
+  match: (v: VillageRecord) => boolean,
+): { x: number; z: number; kind: 'village' } | null {
+  const found = state.villages.find(match);
+  return found ? { x: found.x, z: found.z, kind: 'village' } : null;
+}
+
+function best(state: NetworkState, of: (v: VillageRecord) => number): number {
+  let top = 0;
+  for (const village of state.villages) top = Math.max(top, of(village));
+  return top;
+}
+
+export const MILESTONES: readonly Milestone[] = [
+  {
+    id: 'second_route',
+    title: '輸送路をもう 1 本ひらく',
+    detail: (s) => `つながっている輸送路 ${linked(s).length} / 2`,
+    reward: 6,
+    done: (s) => linked(s).length >= 2,
+  },
+  {
+    id: 'feed_workshop',
+    title: '工房の村に材料を届ける',
+    detail: (s) => {
+      const shop = s.villages.find((v) => v.kind === 'workshop');
+      if (!shop) return '工房の村をまだ見つけていない。探しに行こう';
+      return `${displayName(shop)}は${itemLabel(shop.input ?? '')}がないと何も作れない`;
+    },
+    reward: 8,
+    done: (s) => s.villages.some((v) => v.kind === 'workshop' && (v.inputStock > 0 || v.stock > 0)),
+    marker: (s) => nearest(s, (v) => v.kind === 'workshop' && v.inputStock <= 0 && v.stock <= 0),
+  },
+  {
+    id: 'pave',
+    title: '路線を砂利以上に舗装する',
+    detail: () => '砂利・丸石・木材・石レンガを道に敷くと荷運びが速くなり、一度に運ぶ量も増える',
+    reward: 10,
+    done: (s) => linked(s).some((r) => r.quality >= 1.2),
+  },
+  {
+    id: 'grow_big',
+    title: `村を「${RANKS[2]}」に育てる`,
+    detail: (s) => `一番育っている村は今 ${RANKS[Math.min(best(s, (v) => v.stage), RANKS.length - 1)]}`,
+    reward: 10,
+    done: (s) => s.villages.some((v) => v.stage >= 2),
+    marker: (s) => nearest(s, (v) => v.stage === best(s, (w) => w.stage)),
+  },
+  {
+    id: 'three_served',
+    title: '3 つの村を輸送路でつなぐ',
+    detail: (s) => `輸送路につながっている村 ${servedVillages(s).size} / 3`,
+    reward: 12,
+    done: (s) => servedVillages(s).size >= 3,
+  },
+  {
+    id: 'town',
+    title: `${RANKS[3]}をつくる`,
+    detail: (s) => `一番育っている村は今 ${RANKS[Math.min(best(s, (v) => v.stage), RANKS.length - 1)]}`,
+    reward: 16,
+    done: (s) => s.villages.some((v) => v.stage >= 3),
+    marker: (s) => nearest(s, (v) => v.stage === best(s, (w) => w.stage)),
+  },
+  {
+    id: 'highway',
+    title: '街道を敷く（石レンガで舗装した路線）',
+    detail: () => '路線ぜんぶを石レンガにすると、荷運びは土の道の 1.7 倍で歩く',
+    reward: 18,
+    done: (s) => linked(s).some((r) => r.quality >= 1.58),
+  },
+  {
+    id: 'capital',
+    title: `${RANKS[MAX_STAGE]}をつくる`,
+    detail: (s) => `${RANKS[MAX_STAGE]}になるには何本もの輸送路が要る。今 ${linked(s).length} 本`,
+    reward: 24,
+    done: (s) => s.villages.some((v) => v.stage >= MAX_STAGE),
+    marker: (s) => nearest(s, (v) => v.stage === best(s, (w) => w.stage)),
+  },
+];
 
 const STEPS: readonly QuestStep[] = [
   'find_village', 'accept_haul', 'deliver_by_hand',
@@ -55,6 +187,29 @@ export class Questline {
   originId: VillageId | null = null;
   targetId: VillageId | null = null;
   cargo: { good: GoodId; count: number } | null = null;
+  /** How far down the milestone list the player has got. Only consulted once the tutorial
+   *  itself is over. */
+  milestone = 0;
+
+  /** Awards every milestone the network now satisfies, in order. Returns them so the game
+   *  can announce each one and pay for it.
+   *
+   *  They are checked in order rather than independently, so the list reads as a campaign
+   *  and a player who happens to satisfy a later one first still gets told about the
+   *  earlier one on the way past. */
+  claimMilestones(state: NetworkState): Milestone[] {
+    if (this.step !== 'done') return [];
+    const earned: Milestone[] = [];
+    while (this.milestone < MILESTONES.length && MILESTONES[this.milestone].done(state)) {
+      earned.push(MILESTONES[this.milestone]);
+      this.milestone++;
+    }
+    return earned;
+  }
+
+  currentMilestone(): Milestone | null {
+    return this.step === 'done' ? MILESTONES[this.milestone] ?? null : null;
+  }
 
   /** The first village the player walks into becomes the one that gives them work. */
   onVillageDiscovered(village: VillageRecord): string | null {
@@ -167,7 +322,11 @@ export class Questline {
     return best;
   }
 
-  objective(registry: VillageRegistry, route: Route | undefined): QuestObjective | null {
+  objective(
+    registry: VillageRegistry,
+    route: Route | undefined,
+    state?: NetworkState,
+  ): QuestObjective | null {
     const origin = this.originId ? registry.get(this.originId) : undefined;
     const target = this.targetId ? registry.get(this.targetId) : undefined;
     switch (this.step) {
@@ -231,6 +390,16 @@ export class Questline {
               marker: { x: target.x, z: target.z, kind: 'village' },
             }
           : null;
+      case 'done': {
+        const milestone = MILESTONES[this.milestone];
+        if (!milestone) return null;
+        return {
+          step: this.step,
+          title: milestone.title,
+          detail: state ? milestone.detail(state) : milestone.detail(EMPTY_STATE),
+          marker: state ? milestone.marker?.(state) ?? null : null,
+        };
+      }
       default:
         return null;
     }
@@ -243,6 +412,7 @@ export class Questline {
       targetId: this.targetId ?? undefined,
       good: this.cargo?.good,
       count: this.cargo?.count,
+      milestone: this.milestone,
     };
   }
 
@@ -253,6 +423,7 @@ export class Questline {
     this.originId = data.originId ?? null;
     this.targetId = data.targetId ?? null;
     this.cargo = data.good ? { good: data.good, count: data.count ?? HAUL_COUNT } : null;
+    this.milestone = Math.max(0, Math.min(MILESTONES.length, Math.round(data.milestone ?? 0)));
   }
 }
 

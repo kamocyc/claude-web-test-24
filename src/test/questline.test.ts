@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { HAUL_COUNT, Questline } from '../game/questline';
-import { VillageRegistry, villageId, type VillageSeed, type VillageSource } from '../game/villages';
+import { HAUL_COUNT, MILESTONES, Questline, type NetworkState } from '../game/questline';
+import {
+  MAX_STAGE,
+  VillageRegistry,
+  villageId,
+  type VillageRecord,
+  type VillageSeed,
+  type VillageSource,
+} from '../game/villages';
 import type { Route } from '../game/transport';
 
 const A: VillageSeed = { x: 0, z: 0, baseY: 60, variant: 'plains' };
@@ -15,14 +22,20 @@ function setup() {
   return { registry, quest: new Questline() };
 }
 
-function route(connected: boolean, missing = 0): Route {
+function route(connected: boolean, missing = 0, quality = 1): Route {
   return {
     from: ID_A, to: ID_B, good: 'wheat', surveyed: true, connected,
-    waypoints: [], cumulative: [], length: 100, missing,
+    everConnected: connected, waypoints: [], cumulative: [], length: 100, missing,
+    quality, grade: 'x',
     gapFrom: missing > 0 ? { x: 60, z: 0, y: 60 } : null,
     gapTo: missing > 0 ? { x: 200, z: 0, y: 60 } : null,
-    porters: [],
+    porters: [], delivered: 0, trips: 0,
   };
+}
+
+/** A network the milestones can be pointed at. */
+function state(villages: VillageRecord[], routes: Route[]): NetworkState {
+  return { villages, routes };
 }
 
 /** Walks the whole arc, returning the questline at the end. */
@@ -145,10 +158,12 @@ describe('questline', () => {
     expect(quest.objective(registry, undefined)).not.toBeNull();
   });
 
-  it('says nothing more once it is done', () => {
+  it('stops talking to villagers once the tutorial is done, and points at the network', () => {
     const { registry, quest } = playThrough();
-    expect(quest.objective(registry, undefined)).toBeNull();
     expect(quest.interactionFor(registry.get(ID_A)!, registry)).toBeNull();
+    // The tutorial ends; the game does not. What follows is the milestone list.
+    const objective = quest.objective(registry, undefined, state([], []));
+    expect(objective?.title).toBe(MILESTONES[0].title);
   });
 
   it('round trips through a save', () => {
@@ -171,5 +186,64 @@ describe('questline', () => {
     quest.loadJSON(undefined);
     quest.loadJSON({ step: 'not_a_step' });
     expect(quest.step).toBe('find_village');
+  });
+});
+
+describe('milestones', () => {
+  function done(): Questline {
+    return playThrough().quest;
+  }
+
+  it('awards nothing while the tutorial is still running', () => {
+    const { quest } = setup();
+    expect(quest.claimMilestones(state([], [route(true), route(true)]))).toEqual([]);
+  });
+
+  it('awards the first goal when two routes are working', () => {
+    const quest = done();
+    expect(quest.claimMilestones(state([], [route(true)]))).toEqual([]);
+    const earned = quest.claimMilestones(state([], [route(true), route(true)]));
+    expect(earned.map((m) => m.id)).toEqual(['second_route']);
+    expect(earned[0].reward).toBeGreaterThan(0);
+  });
+
+  it('never awards the same goal twice', () => {
+    const quest = done();
+    const network = state([], [route(true), route(true)]);
+    expect(quest.claimMilestones(network)).toHaveLength(1);
+    expect(quest.claimMilestones(network)).toHaveLength(0);
+  });
+
+  it('hands out the goals that were skipped past, in order', () => {
+    const quest = done();
+    const { registry } = setup();
+    const village = registry.get(ID_A)!;
+    village.stage = MAX_STAGE;
+    village.kind = 'workshop';
+    village.input = 'wheat';
+    village.inputStock = 4;
+    // A player who did everything at once is still told what they did, one at a time.
+    const paved = route(true, 0, 1.7);
+    const earned = quest.claimMilestones(
+      state([village], [paved, { ...paved, to: 'c' }, { ...paved, from: 'c', to: 'd' }]),
+    );
+    expect(earned.map((m) => m.id)).toEqual(MILESTONES.map((m) => m.id));
+    expect(quest.currentMilestone()).toBeNull();
+  });
+
+  it('describes every goal without a network to look at', () => {
+    for (const milestone of MILESTONES) {
+      expect(milestone.detail(state([], []))).not.toBe('');
+      expect(milestone.done(state([], []))).toBe(false);
+    }
+  });
+
+  it('remembers how far down the list it got', () => {
+    const quest = done();
+    quest.claimMilestones(state([], [route(true), route(true)]));
+    const restored = new Questline();
+    restored.loadJSON(quest.toJSON());
+    expect(restored.milestone).toBe(quest.milestone);
+    expect(restored.currentMilestone()?.id).toBe(MILESTONES[1].id);
   });
 });

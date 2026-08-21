@@ -246,10 +246,69 @@ console.log('route once paved:', JSON.stringify(await evaluate(() => window.voxe
 console.log('linked panel:', JSON.stringify(await page.locator('.route-row').innerText()));
 await shot('07x-route-linked');
 
-// Run the goods through until the far village earns a building.
+// Every village wants particular goods, and a workshop cannot work without its input.
+// Which pair of villages is worth joining follows from that, so it is worth showing.
+console.log('demand:', JSON.stringify(await evaluate(() =>
+  window.voxelcraft.villages().filter((v) => v.discovered).map((v) => ({
+    name: v.name, rank: v.rank, kind: v.kind, makes: v.produces, from: v.input, needs: v.needs,
+  })))));
+
+// Repaving the same road: the route must actually get faster and carry more.
+const dirtRoute = await evaluate(() => window.voxelcraft.routes()[0]);
+await evaluate(() => window.voxelcraft.buildRoad(undefined, undefined, 'stone_bricks'));
+await page.waitForFunction(
+  (q) => (window.voxelcraft.routes()[0]?.quality ?? 0) > q,
+  dirtRoute.quality,
+  { timeout: 30000 },
+);
+const pavedRoute = await evaluate(() => window.voxelcraft.routes()[0]);
+console.log('road upgraded:', JSON.stringify({
+  before: { grade: dirtRoute.grade, quality: dirtRoute.quality, load: dirtRoute.load },
+  after: { grade: pavedRoute.grade, quality: pavedRoute.quality, load: pavedRoute.load },
+}));
+console.log('paved panel:', JSON.stringify(await page.locator('.route-row').first().innerText()));
+await shot('07x2-route-paved');
+
+// The trade screen says what the village standing around the player is short of.
+await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const here = window.voxelcraft.village();
+  if (here) {
+    const top = g.world.heightAt(here.x + 6, here.z + 6);
+    if (top > 0) g.player.teleportTo(here.x + 6.5, top + 1, here.z + 6.5);
+  }
+  g.player.pitch = 0;
+  window.voxelcraft.spawnMob('villager', 2.5);
+});
+await page.waitForTimeout(700);
+const noteOpen = await useUntil(() => window.voxelcraft.game.screens.kind === 'trade');
+if (noteOpen) {
+  console.log('village note:', JSON.stringify(await page.locator('.trade-note').innerText()));
+  console.log('offers include the local goods:', await page.locator('.trade-row').count());
+  await shot('07x3-trade-note');
+}
+await closeScreen();
+
+// The whole network on one page: who makes what, who is short of what, which lines pay.
+await evaluate(() => window.voxelcraft.openScreen('ledger'));
+await page.waitForTimeout(400);
+console.log('ledger:', JSON.stringify((await page.locator('.ledger').innerText()).split('\n').slice(0, 14)));
+await shot('07x4-ledger');
+await closeScreen();
+
+// Run the goods through until the far village earns a building. The player is paid for
+// the haulage, which is the only income the network itself produces.
+const purseBefore = await evaluate(() => window.voxelcraft.player.inventory.count('emerald'));
 await evaluate(() => window.voxelcraft.advanceTransport(4000));
 await page.waitForTimeout(1000);
-const grown = await evaluate(() => window.voxelcraft.villages().find((v) => v.stage > 0));
+const purseAfter = await evaluate(() => window.voxelcraft.player.inventory.count('emerald'));
+console.log('freight pay: emeralds', purseBefore, '->', purseAfter,
+  '/ earned', await evaluate(() => window.voxelcraft.earnings()));
+// The milestones are claimed on the game's own timer, so give it a couple of ticks.
+await page.waitForTimeout(3000);
+console.log('milestones:', JSON.stringify(await evaluate(() => window.voxelcraft.milestones())));
+const grown = await evaluate(() =>
+  window.voxelcraft.villages().slice().sort((a, b) => b.stage - a.stage)[0]);
 console.log('grown village:', JSON.stringify(grown));
 if (grown) {
   await evaluate((v) => window.voxelcraft.teleport(v.x, v.z), grown);
@@ -262,8 +321,31 @@ if (grown) {
   await page.waitForTimeout(1200);
   await shot('07y-village-grown');
 }
+// Walk out to where a shipment actually is: the abstract clock is the truth, but the
+// porter on the road is the thing the player sees, and it has to follow the road it was
+// surveyed onto rather than striking out across country.
+const spot = await evaluate(() => window.voxelcraft.porterSpots()[0] ?? null);
+if (spot) {
+  await evaluate((s) => window.voxelcraft.teleport(s.x, s.z), spot);
+  await page.waitForFunction(() => window.voxelcraft.pending() === 0, null, { timeout: 90000 });
+  await page.waitForTimeout(2500);
+  const porter = await evaluate(() => {
+    const mob = window.voxelcraft.mobs().find((m) => m.kind === 'porter');
+    const g = window.voxelcraft.game;
+    if (!mob) return null;
+    return {
+      away: +Math.hypot(mob.x - g.player.x, mob.z - g.player.z).toFixed(1),
+      onRoad: window.voxelcraft.roadIndex().columns > 0
+        && g.world.getBlock(Math.floor(mob.x), Math.floor(mob.y) - 1, Math.floor(mob.z)) !== 0,
+      waypoints: mob.route ? mob.route.length : 0,
+    };
+  });
+  console.log('porter on the road:', JSON.stringify(porter));
+  await shot('07z-porter');
+}
 console.log('porters walking:', await evaluate(() => window.voxelcraft.porters()));
 console.log('quest at the end:', JSON.stringify(await evaluate(() => window.voxelcraft.quest())));
+console.log('routes at the end:', JSON.stringify(await evaluate(() => window.voxelcraft.routes())));
 await closeScreen();
 
 // --- farming and eating ------------------------------------------------------
@@ -715,6 +797,8 @@ const economyBefore = await evaluate(() => ({
   stages: window.voxelcraft.villages().map((v) => v.stage).join(','),
   routes: window.voxelcraft.routes().length,
   quest: window.voxelcraft.quest().step,
+  milestone: window.voxelcraft.milestones().index,
+  earned: window.voxelcraft.earnings(),
 }));
 await page.reload({ waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(1200);
@@ -734,7 +818,10 @@ const economyAfter = await evaluate(() => ({
   stages: window.voxelcraft.villages().map((v) => v.stage).join(','),
   routes: window.voxelcraft.routes().length,
   quest: window.voxelcraft.quest().step,
+  milestone: window.voxelcraft.milestones().index,
+  earned: window.voxelcraft.earnings(),
   connected: window.voxelcraft.routes().filter((r) => r.connected).length,
+  grade: window.voxelcraft.routes().map((r) => r.grade).join(','),
 }));
 console.log('economy saved:', JSON.stringify(economyBefore), 'loaded:', JSON.stringify(economyAfter));
 await shot('10-reloaded');

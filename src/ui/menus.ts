@@ -67,7 +67,7 @@ export class Menus {
     help.innerHTML = [
       '<b>WASD</b> 移動 / <b>Space</b> ジャンプ / <b>Shift</b> 忍び足 / <b>Ctrl</b> ダッシュ',
       '<b>左クリック</b> 採掘・攻撃 / <b>右クリック</b> 設置・使用・交易',
-      '<b>1-9</b> ホットバー / <b>E</b> 持ち物 / <b>Esc</b> ポーズ',
+      '<b>1-9</b> ホットバー / <b>E</b> 持ち物 / <b>L</b> 交易台帳 / <b>Esc</b> ポーズ',
       '<b>F3</b> デバッグ表示 / <b>G</b> 座標へワープ',
     ].join('<br>');
     this.verifyButton.title = '毎回まったく同じ地形で始まる、確認用の固定シード';

@@ -1,16 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BASE_LOAD,
   PORTER_SPEED,
-  SHIPMENT,
   TransportNetwork,
+  loadFor,
+  payFor,
+  portersFor,
   type TransportEvents,
 } from '../game/transport';
 import { RoadNetwork, MAX_LINK, type RoadTerrain, type RoadWorld } from '../game/roads';
-import { STAGE_POINTS, VillageRegistry, villageId, type VillageSeed, type VillageSource } from '../game/villages';
+import { MAX_STAGE, STAGE_POINTS, VillageRegistry, villageId, type VillageSeed, type VillageSource } from '../game/villages';
 import { Block, type BlockId } from '../world/blocks';
 import { blockIndex, chunkKey, toChunkCoord, toLocalCoord } from '../world/chunk';
 
 const GROUND = 60;
+/** The same pair `villages.test.ts` pins: A grows wheat, B bakes it into bread and can
+ *  make nothing without it, and A wants the bread back. One road, a whole chain. */
+const SEED = 34;
 const A: VillageSeed = { x: 0, z: 0, baseY: GROUND, variant: 'plains' };
 const B: VillageSeed = { x: 240, z: 0, baseY: GROUND, variant: 'snowy' };
 const ID_A = villageId(0, 0);
@@ -41,23 +47,34 @@ class FakeWorld implements RoadWorld {
 const TERRAIN: RoadTerrain = { height: () => GROUND };
 const SOURCE: VillageSource = { villagesAround: () => [A, B] };
 
-function build(paved = true) {
+interface BuildOptions {
+  /** What the road is paved with, or null for no road at all. */
+  surface?: BlockId | null;
+  /** Blocks between one laid column and the next. 1 is a road somebody finished. */
+  step?: number;
+}
+
+function build({ surface = Block.DIRT_PATH, step = 1 }: BuildOptions = {}) {
   const world = new FakeWorld();
-  if (paved) for (let x = 50; x <= 190; x += MAX_LINK) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+  if (surface !== null) for (let x = 50; x <= 190; x += step) world.lay(x, GROUND, 0, surface);
   const roads = new RoadNetwork(world, TERRAIN);
   roads.seedFromEdits();
-  const registry = new VillageRegistry(1, SOURCE);
+  const registry = new VillageRegistry(SEED, SOURCE);
   registry.ensureNear(0, 0);
   registry.discover(ID_A);
   registry.discover(ID_B);
   const events: {
-    arrivals: number[];
+    arrivals: { good: string; count: number; needed: boolean; pay: number; to: string }[];
     stages: number[];
     connected: number;
     disconnected: number;
   } = { arrivals: [], stages: [], connected: 0, disconnected: 0 };
   const handlers: TransportEvents = {
-    onArrival: (_route, _good, count) => events.arrivals.push(count),
+    onArrival: (arrival) =>
+      events.arrivals.push({
+        good: arrival.good, count: arrival.count, needed: arrival.needed,
+        pay: arrival.pay, to: arrival.to,
+      }),
     onStageUp: (_id, stage) => events.stages.push(stage),
     onConnected: () => events.connected++,
     onDisconnected: () => events.disconnected++,
@@ -81,7 +98,7 @@ describe('transport routes', () => {
   });
 
   it('reports the gap when the road is unfinished', () => {
-    const { transport } = build(false);
+    const { transport } = build({ surface: null });
     transport.requestRoute(ID_A, ID_B);
     run(transport, 3);
     const route = transport.routes[0];
@@ -103,6 +120,8 @@ describe('transport routes', () => {
     transport.requestRoute(ID_A, ID_B);
     run(transport, 3);
     const route = transport.routes[0];
+    // A road laid block by block is exactly the baseline: no gaps, nothing paved over.
+    expect(route.quality).toBeCloseTo(1, 5);
     registry.produce(600);
 
     // Not there yet at half the journey.
@@ -110,8 +129,36 @@ describe('transport routes', () => {
     expect(events.arrivals).toHaveLength(0);
 
     run(transport, route.length / PORTER_SPEED);
-    expect(events.arrivals[0]).toBe(SHIPMENT);
+    expect(events.arrivals[0].count).toBe(BASE_LOAD);
+    expect(events.arrivals[0].good).toBe('wheat');
     expect(registry.get(ID_B)?.points).toBeGreaterThan(0);
+  });
+
+  it('is worth more to the far village when it asked for the goods', () => {
+    const { transport, registry, events } = build();
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    registry.produce(600);
+    run(transport, 200);
+    // The workshop's input is the one thing it is desperate for.
+    expect(events.arrivals[0].needed).toBe(true);
+    expect(events.arrivals[0].pay).toBeGreaterThan(0);
+    expect(registry.get(ID_B)?.inputStock).toBeGreaterThan(0);
+  });
+
+  it('brings back what the origin wants instead of walking home empty', () => {
+    const { transport, registry, events } = build();
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    registry.produce(600);
+    // Long enough for the workshop to have baked some of the wheat that arrived.
+    for (let t = 0; t < 600; t += 0.5) {
+      registry.produce(0.5);
+      transport.update(0.5, 10_000, 10_000);
+    }
+    const home = events.arrivals.filter((a) => a.to === ID_A);
+    expect(home.length).toBeGreaterThan(0);
+    expect(home[0].good).toBe('bread');
   });
 
   it('raises the destination one stage once enough has arrived', () => {
@@ -119,9 +166,11 @@ describe('transport routes', () => {
     transport.requestRoute(ID_A, ID_B);
     run(transport, 3);
     registry.produce(6000);
-    run(transport, 2000);
-    expect(events.stages).toEqual([1]);
-    expect(registry.get(ID_B)?.stage).toBe(1);
+    run(transport, 400);
+    expect(events.stages[0]).toBe(1);
+    // Ranks arrive in order and never repeat.
+    expect(events.stages).toEqual([...events.stages].sort((a, b) => a - b));
+    expect(new Set(events.stages).size).toBe(events.stages.length);
   });
 
   it('needs stock before it dispatches anything', () => {
@@ -146,7 +195,9 @@ describe('transport routes', () => {
   });
 
   it('sends the cargo home when the road is dug up mid-journey', () => {
-    const { world, roads, transport, registry, events } = build();
+    // A dashed road: pulling one column out of it opens a gap too wide to step over,
+    // which is what a player digging up a road actually does to a finished one.
+    const { world, roads, transport, registry, events } = build({ step: MAX_LINK });
     transport.requestRoute(ID_A, ID_B);
     run(transport, 3);
     registry.produce(600);
@@ -166,7 +217,7 @@ describe('transport routes', () => {
   });
 
   it('stops delivering once the road is gone', () => {
-    const { world, roads, transport, registry, events } = build();
+    const { world, roads, transport, registry, events } = build({ step: MAX_LINK });
     transport.requestRoute(ID_A, ID_B);
     run(transport, 3);
     world.lay(110, GROUND, 0, Block.AIR);
@@ -180,10 +231,63 @@ describe('transport routes', () => {
     const { transport, registry } = build();
     transport.requestRoute(ID_A, ID_B);
     run(transport, 3);
-    registry.produce(60_000);
-    run(transport, 20_000);
-    expect(registry.get(ID_B)?.stage).toBe(1);
-    expect(registry.get(ID_B)?.points).toBeGreaterThanOrEqual(STAGE_POINTS);
+    for (let t = 0; t < 20_000; t += 0.5) {
+      registry.produce(0.5);
+      transport.update(0.5, 10_000, 10_000);
+    }
+    expect(registry.get(ID_B)?.stage).toBe(MAX_STAGE);
+    expect(registry.get(ID_B)?.points).toBeGreaterThanOrEqual(STAGE_POINTS[0]);
+  });
+
+  it('walks a dashed road more slowly than one that was finished', () => {
+    const finished = build();
+    const dashed = build({ step: MAX_LINK });
+    finished.transport.requestRoute(ID_A, ID_B);
+    dashed.transport.requestRoute(ID_A, ID_B);
+    run(finished.transport, 3);
+    run(dashed.transport, 3);
+    expect(dashed.transport.routes[0].connected).toBe(true);
+    // Both work. Filling the gaps in is still worth doing.
+    expect(dashed.transport.routes[0].quality).toBeLessThan(finished.transport.routes[0].quality);
+  });
+
+  it('carries more, and faster, on a better surface', () => {
+    const dirt = build();
+    const paved = build({ surface: Block.STONE_BRICKS });
+    dirt.transport.requestRoute(ID_A, ID_B);
+    paved.transport.requestRoute(ID_A, ID_B);
+    run(dirt.transport, 3);
+    run(paved.transport, 3);
+    const plain = dirt.transport.routes[0];
+    const stone = paved.transport.routes[0];
+    expect(stone.quality).toBeGreaterThan(plain.quality);
+    expect(stone.grade).not.toBe(plain.grade);
+    expect(loadFor(stone.quality)).toBeGreaterThan(loadFor(plain.quality));
+    expect(paved.transport.speedOf(stone)).toBeGreaterThan(dirt.transport.speedOf(plain));
+
+    // Same wait, same stock: the paved line has simply moved more of it.
+    dirt.registry.produce(6000);
+    paved.registry.produce(6000);
+    run(dirt.transport, 400);
+    run(paved.transport, 400);
+    const moved = (arrivals: { count: number }[]): number =>
+      arrivals.reduce((sum, a) => sum + a.count, 0);
+    expect(moved(paved.events.arrivals)).toBeGreaterThan(moved(dirt.events.arrivals));
+  });
+
+  it('puts more porters on a longer line', () => {
+    expect(portersFor(100)).toBe(1);
+    expect(portersFor(1200)).toBeGreaterThan(portersFor(100));
+    // And never an unbounded number of them, however far apart the villages are.
+    expect(portersFor(1e6)).toBe(portersFor(1e7));
+  });
+
+  it('pays by the load, the distance and the demand', () => {
+    expect(payFor(400, 4, true)).toBeGreaterThan(payFor(400, 4, false));
+    expect(payFor(800, 4, true)).toBeGreaterThan(payFor(400, 4, true));
+    expect(payFor(400, 8, true)).toBeGreaterThan(payFor(400, 4, true));
+    // Even the shortest, least wanted haul is worth something.
+    expect(payFor(1, 1, false)).toBeGreaterThanOrEqual(1);
   });
 
   it('round trips through a save without storing the road', () => {
