@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import type { ItemDrop } from '../game/drops';
 import type { Mob } from '../game/mobs/ai';
 import type { Arrow } from '../game/mobs/spawner';
@@ -13,7 +14,22 @@ interface MobView {
   material: THREE.MeshLambertMaterial[];
 }
 
-const BOX = new THREE.BoxGeometry(1, 1, 1);
+/** How far a mob's limb is rounded, as a fraction of its shortest side. Rounding a
+ *  geometry that is then scaled would squash the radius along the long axis, so each
+ *  part gets its own geometry at its true size and is cached by that size. */
+const MOB_ROUND = 0.34;
+
+const mobGeometries = new Map<string, THREE.BufferGeometry>();
+
+function roundedPart(size: readonly [number, number, number]): THREE.BufferGeometry {
+  const key = size.join(',');
+  const cached = mobGeometries.get(key);
+  if (cached) return cached;
+  const radius = Math.min(...size) * MOB_ROUND;
+  const geometry = new RoundedBoxGeometry(size[0], size[1], size[2], 2, radius);
+  mobGeometries.set(key, geometry);
+  return geometry;
+}
 
 /** Draws mobs, dropped items and arrows. Meshes are created lazily and reused. */
 export class EntityRenderer {
@@ -24,7 +40,7 @@ export class EntityRenderer {
   private readonly itemGeometries = new Map<string, THREE.BufferGeometry>();
   private readonly dropMaterial: THREE.MeshLambertMaterial;
   private readonly arrowMaterial = new THREE.MeshLambertMaterial({ color: 0xcccccc });
-  private readonly arrowGeometry = new THREE.BoxGeometry(0.08, 0.08, 0.7);
+  private readonly arrowGeometry = new RoundedBoxGeometry(0.08, 0.08, 0.7, 2, 0.03);
 
   constructor(private readonly atlas: Atlas) {
     this.group.name = 'entities';
@@ -96,8 +112,7 @@ export class EntityRenderer {
     const materials: THREE.MeshLambertMaterial[] = [];
     for (const part of modelFor(mob.kind)) {
       const material = new THREE.MeshLambertMaterial({ color: part.color });
-      const mesh = new THREE.Mesh(BOX, material);
-      mesh.scale.set(part.size[0], part.size[1], part.size[2]);
+      const mesh = new THREE.Mesh(roundedPart(part.size), material);
       mesh.position.set(part.offset[0], part.offset[1], part.offset[2]);
       group.add(mesh);
       parts.push({ mesh, part });
@@ -125,7 +140,9 @@ export class EntityRenderer {
     }
   }
 
-  /** A small cube UV-mapped to the item's atlas tile. */
+  /** A small rounded cube UV-mapped to the item's atlas tile. RoundedBoxGeometry
+   *  projects each face into the same 0..1 square a plain box does, so the atlas
+   *  remap below is unchanged. */
   private geometryForItem(id: string): THREE.BufferGeometry {
     const cached = this.itemGeometries.get(id);
     if (cached) return cached;
@@ -136,7 +153,7 @@ export class EntityRenderer {
       texName = block.tex.side ?? block.tex.all ?? block.tex.top ?? texName;
     }
     const uv = this.atlas.uv(texName);
-    const geometry = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+    const geometry = new RoundedBoxGeometry(0.3, 0.3, 0.3, 2, 0.075);
     const attribute = geometry.getAttribute('uv') as THREE.BufferAttribute;
     for (let i = 0; i < attribute.count; i++) {
       const u = attribute.getX(i);

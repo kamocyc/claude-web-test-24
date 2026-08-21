@@ -19,6 +19,9 @@ export interface GeometryArrays {
   light: Float32Array;
   /** Per vertex: ambient occlusion times face shading, 0..1. */
   shade: Float32Array;
+  /** Per vertex: where the corner sits on its own face, 0..1 on both axes. The shader
+   *  uses it to round off the block's edges. A vertex at (0.5, 0.5) is never bevelled. */
+  face: Float32Array;
   index: Uint32Array;
 }
 
@@ -32,7 +35,9 @@ interface Corner {
 interface Face {
   dir: readonly [number, number, number];
   corners: readonly Corner[];
-  /** Fixed brightness per face direction, so cubes read as three-dimensional. */
+  /** Fixed brightness per face direction, so cubes read as three-dimensional. The
+   *  range is deliberately narrow: a soft step between faces keeps edges from
+   *  drawing the eye. */
   shade: number;
   /** Per corner, the three neighbour offsets used for ambient occlusion. */
   ao: readonly (readonly [number, number, number])[][];
@@ -41,7 +46,7 @@ interface Face {
 const RAW_FACES: Omit<Face, 'ao'>[] = [
   {
     dir: [-1, 0, 0],
-    shade: 0.72,
+    shade: 0.84,
     corners: [
       { pos: [0, 1, 0], uv: [0, 1] },
       { pos: [0, 0, 0], uv: [0, 0] },
@@ -51,7 +56,7 @@ const RAW_FACES: Omit<Face, 'ao'>[] = [
   },
   {
     dir: [1, 0, 0],
-    shade: 0.72,
+    shade: 0.84,
     corners: [
       { pos: [1, 1, 1], uv: [0, 1] },
       { pos: [1, 0, 1], uv: [0, 0] },
@@ -61,7 +66,7 @@ const RAW_FACES: Omit<Face, 'ao'>[] = [
   },
   {
     dir: [0, -1, 0],
-    shade: 0.55,
+    shade: 0.74,
     corners: [
       { pos: [1, 0, 1], uv: [1, 0] },
       { pos: [0, 0, 1], uv: [0, 0] },
@@ -81,7 +86,7 @@ const RAW_FACES: Omit<Face, 'ao'>[] = [
   },
   {
     dir: [0, 0, -1],
-    shade: 0.86,
+    shade: 0.92,
     corners: [
       { pos: [1, 0, 0], uv: [0, 0] },
       { pos: [0, 0, 0], uv: [1, 0] },
@@ -91,7 +96,7 @@ const RAW_FACES: Omit<Face, 'ao'>[] = [
   },
   {
     dir: [0, 0, 1],
-    shade: 0.86,
+    shade: 0.92,
     corners: [
       { pos: [0, 0, 1], uv: [0, 0] },
       { pos: [1, 0, 1], uv: [1, 0] },
@@ -121,7 +126,7 @@ const FACES: Face[] = RAW_FACES.map((face) => {
   return { ...face, ao };
 });
 
-const AO_LEVELS = [0.45, 0.68, 0.86, 1];
+const AO_LEVELS = [0.74, 0.85, 0.94, 1];
 
 const TRANSPARENT_BLOCKS = new Set<BlockId>([Block.GLASS, Block.ICE]);
 
@@ -138,11 +143,12 @@ interface Builder {
   uv: number[];
   light: number[];
   shade: number[];
+  face: number[];
   index: number[];
 }
 
 function newBuilder(): Builder {
-  return { position: [], uv: [], light: [], shade: [], index: [] };
+  return { position: [], uv: [], light: [], shade: [], face: [], index: [] };
 }
 
 function finish(builder: Builder): GeometryArrays | null {
@@ -152,6 +158,7 @@ function finish(builder: Builder): GeometryArrays | null {
     uv: new Float32Array(builder.uv),
     light: new Float32Array(builder.light),
     shade: new Float32Array(builder.shade),
+    face: new Float32Array(builder.face),
     index: new Uint32Array(builder.index),
   };
 }
@@ -305,6 +312,10 @@ export function buildChunkMesh(
               uv.v1 - corner.uv[1] * (uv.v1 - uv.v0),
             );
             builder.light.push(sky, blockLight);
+            // A river is one continuous sheet, so its cells must not be bevelled into
+            // a grid of separate pillows.
+            if (id === Block.WATER) builder.face.push(0.5, 0.5);
+            else builder.face.push(corner.uv[0], corner.uv[1]);
 
             const [o1, o2, o3] = face.ao[c];
             const side1 = occludes(x + o1[0], y + o1[1], z + o1[2]);
@@ -359,6 +370,7 @@ function emitCross(
     for (let i = 0; i < 4; i++) {
       builder.light.push(sky / 15, blockLight / 15);
       builder.shade.push(0.95);
+      builder.face.push(0.5, 0.5);
     }
     builder.index.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
   }

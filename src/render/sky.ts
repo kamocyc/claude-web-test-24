@@ -2,13 +2,15 @@ import * as THREE from 'three';
 import { mulberry32 } from '../core/rng';
 import type { DayCycle } from '../game/daycycle';
 
-const DAY_SKY = new THREE.Color(0x7ec0ee);
-const SUNSET_SKY = new THREE.Color(0xe8925a);
-const NIGHT_SKY = new THREE.Color(0x05070f);
+/** Storybook colours: a high, milky blue by day, candy pink at dusk, and a night that
+ *  settles into deep blue rather than black. */
+const DAY_SKY = new THREE.Color(0xa9dcff);
+const SUNSET_SKY = new THREE.Color(0xffb4c4);
+const NIGHT_SKY = new THREE.Color(0x1b2450);
 /** Overcast grey the sky is dragged towards in heavy rain. */
-const RAIN_SKY = new THREE.Color(0x5c6470);
+const RAIN_SKY = new THREE.Color(0x9dabc2);
 /** Dusty haze of a dry season. */
-const DROUGHT_SKY = new THREE.Color(0xc9c2a4);
+const DROUGHT_SKY = new THREE.Color(0xf1e5c0);
 
 /** Sky colour, sun, moon, stars and the scene lights that mobs are lit by. */
 export class Sky {
@@ -30,9 +32,9 @@ export class Sky {
     this.fog = new THREE.Fog(DAY_SKY.getHex(), this.baseNear, this.baseFar);
     scene.fog = this.fog;
 
-    const sunMaterial = new THREE.MeshBasicMaterial({ color: 0xfff4c4, fog: false, depthWrite: false });
+    const sunMaterial = new THREE.MeshBasicMaterial({ color: 0xfff6dc, fog: false, depthWrite: false });
     this.sun = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), sunMaterial);
-    const moonMaterial = new THREE.MeshBasicMaterial({ color: 0xdfe6f5, fog: false, depthWrite: false });
+    const moonMaterial = new THREE.MeshBasicMaterial({ color: 0xf3f7ff, fog: false, depthWrite: false });
     this.moon = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), moonMaterial);
 
     const starCount = 900;
@@ -54,7 +56,7 @@ export class Sky {
       new THREE.PointsMaterial({ color: 0xffffff, size: 2.4, sizeAttenuation: false, transparent: true, fog: false, depthWrite: false }),
     );
 
-    this.ambient = new THREE.HemisphereLight(0xbfd8ff, 0x404030, 1.1);
+    this.ambient = new THREE.HemisphereLight(0xdcecff, 0x9c917f, 1.1);
     this.directional = new THREE.DirectionalLight(0xffffff, 1.1);
 
     this.group.add(this.sun, this.moon, this.stars);

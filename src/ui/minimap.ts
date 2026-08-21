@@ -100,10 +100,11 @@ export class Minimap {
     const index = (py * SIZE + px) * 4;
     const top = world.heightAt(x, z);
     if (top < 0) {
-      // Not loaded yet: leave it dark rather than pretending to know.
-      this.image.data[index] = 22;
-      this.image.data[index + 1] = 24;
-      this.image.data[index + 2] = 28;
+      // Not loaded yet: a pale lavender says "unknown" without punching a dark hole
+      // in the map.
+      this.image.data[index] = 226;
+      this.image.data[index + 1] = 219;
+      this.image.data[index + 2] = 234;
       this.image.data[index + 3] = 255;
       return;
     }
@@ -149,7 +150,7 @@ export class Minimap {
     ctx.lineTo(-3.5, 4);
     ctx.closePath();
     ctx.fillStyle = '#ffffff';
-    ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+    ctx.strokeStyle = 'rgba(87,67,100,0.75)';
     ctx.lineWidth = 1;
     ctx.fill();
     ctx.stroke();

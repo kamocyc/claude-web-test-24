@@ -52,7 +52,7 @@ function rect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h:
 function grain(ctx: CanvasRenderingContext2D, rng: Rng, base: Color, spread = 18): void {
   for (let y = 0; y < TILE; y++) {
     for (let x = 0; x < TILE; x++) {
-      px(ctx, x, y, shade(base, (rng() - 0.5) * 2 * spread));
+      px(ctx, x, y, shade(base, (rng() - 0.5) * 2 * spread * NOISE));
     }
   }
 }
@@ -61,7 +61,7 @@ function speckle(ctx: CanvasRenderingContext2D, rng: Rng, color: Color, count: n
   for (let i = 0; i < count; i++) {
     const x = Math.floor(rng() * TILE);
     const y = Math.floor(rng() * TILE);
-    rect(ctx, x, y, size, size, shade(color, (rng() - 0.5) * 20));
+    rect(ctx, x, y, size, size, shade(color, (rng() - 0.5) * 20 * NOISE));
   }
 }
 
@@ -80,17 +80,22 @@ function blob(ctx: CanvasRenderingContext2D, rng: Rng, cx: number, cy: number, r
 
 // --- terrain -----------------------------------------------------------------
 
-const STONE: Color = [128, 128, 128];
-const DIRT: Color = [134, 96, 67];
-const GRASS: Color = [92, 160, 74];
-const SAND: Color = [219, 207, 163];
-const WOOD: Color = [160, 128, 80];
-const BARK: Color = [104, 78, 48];
-const LEAF: Color = [66, 130, 52];
-const SPRUCE_LEAF: Color = [46, 96, 60];
-const BIRCH_LEAF: Color = [110, 160, 70];
-const WATER: Color = [58, 106, 200];
-const SNOW_C: Color = [237, 244, 250];
+/** The whole atlas is drawn in soft, high-key colours, and the speckling that would
+ *  normally sell "rock" or "soil" is turned right down: flat pastel faces are what
+ *  make the world read as a toy rather than a quarry. */
+const NOISE = 0.4;
+
+const STONE: Color = [174, 177, 190];
+const DIRT: Color = [178, 137, 102];
+const GRASS: Color = [126, 206, 114];
+const SAND: Color = [246, 231, 184];
+const WOOD: Color = [206, 172, 124];
+const BARK: Color = [152, 118, 86];
+const LEAF: Color = [118, 198, 108];
+const SPRUCE_LEAF: Color = [94, 168, 122];
+const BIRCH_LEAF: Color = [168, 216, 122];
+const WATER: Color = [104, 178, 244];
+const SNOW_C: Color = [249, 252, 255];
 
 tile('stone', (ctx, rng) => {
   grain(ctx, rng, STONE, 14);
@@ -135,7 +140,7 @@ tile('mossy_cobblestone', (ctx, rng) => {
   drawings.get('cobblestone')!(ctx, rng);
   for (let i = 0; i < 60; i++) {
     if (rng() < 0.5) continue;
-    px(ctx, Math.floor(rng() * TILE), Math.floor(rng() * TILE), shade([70, 120, 60], (rng() - 0.5) * 30));
+    px(ctx, Math.floor(rng() * TILE), Math.floor(rng() * TILE), shade([120, 186, 112], (rng() - 0.5) * 30));
   }
 });
 
@@ -159,8 +164,8 @@ tile('gravel', (ctx, rng) => {
 });
 
 tile('bedrock', (ctx, rng) => {
-  grain(ctx, rng, [70, 70, 74], 26);
-  speckle(ctx, rng, [30, 30, 34], 26);
+  grain(ctx, rng, [118, 118, 130], 26);
+  speckle(ctx, rng, [92, 92, 104], 26);
 });
 
 tile('water', (ctx, rng) => {
@@ -175,10 +180,10 @@ tile('water', (ctx, rng) => {
 tile('snow', (ctx, rng) => grain(ctx, rng, SNOW_C, 8));
 
 tile('ice', (ctx, rng) => {
-  grain(ctx, rng, [150, 190, 235], 10);
+  grain(ctx, rng, [186, 224, 250], 10);
   for (let i = 0; i < 6; i++) {
     const x = Math.floor(rng() * TILE);
-    for (let y = 0; y < TILE; y++) if (rng() < 0.4) px(ctx, x, y, shade([190, 220, 250], 0));
+    for (let y = 0; y < TILE; y++) if (rng() < 0.4) px(ctx, x, y, shade([224, 241, 255], 0));
   }
 });
 
@@ -306,13 +311,13 @@ tile('furnace_front', (ctx, rng) => {
 });
 
 tile('chest_top', (ctx, rng) => {
-  grain(ctx, rng, [140, 100, 54], 12);
+  grain(ctx, rng, [186, 146, 100], 12);
   rect(ctx, 0, 0, TILE, 1, [92, 62, 30]);
   rect(ctx, 0, TILE - 1, TILE, 1, [92, 62, 30]);
 });
 
 tile('chest_side', (ctx, rng) => {
-  grain(ctx, rng, [140, 100, 54], 12);
+  grain(ctx, rng, [186, 146, 100], 12);
   rect(ctx, 0, 6, TILE, 2, [92, 62, 30]);
   rect(ctx, 6, 6, 4, 4, [206, 178, 88]);
   rect(ctx, 7, 7, 2, 2, [70, 56, 24]);
@@ -363,12 +368,12 @@ tile('dirt_path_top', (ctx, rng) => {
 });
 
 tile('cactus_top', (ctx, rng) => {
-  grain(ctx, rng, [70, 132, 62], 12);
+  grain(ctx, rng, [124, 196, 116], 12);
   blob(ctx, rng, 8, 8, 4, [92, 160, 78]);
 });
 
 tile('cactus_side', (ctx, rng) => {
-  grain(ctx, rng, [70, 132, 62], 12);
+  grain(ctx, rng, [124, 196, 116], 12);
   rect(ctx, 0, 0, 1, TILE, [50, 100, 46]);
   rect(ctx, TILE - 1, 0, 1, TILE, [50, 100, 46]);
   for (let y = 1; y < TILE; y += 4) {
@@ -391,20 +396,20 @@ tile('spring_side', (ctx, rng) => {
 });
 
 tile('pump_top', (ctx, rng) => {
-  grain(ctx, rng, [150, 150, 158], 10);
+  grain(ctx, rng, [188, 190, 200], 10);
   blob(ctx, rng, 8, 8, 4, [96, 96, 104]);
   blob(ctx, rng, 8, 8, 2, [58, 110, 178]);
 });
 
 tile('pump_side', (ctx, rng) => {
-  grain(ctx, rng, [150, 150, 158], 10);
+  grain(ctx, rng, [188, 190, 200], 10);
   rect(ctx, 0, 3, TILE, 2, [104, 104, 112]);
   rect(ctx, 0, 11, TILE, 2, [104, 104, 112]);
   rect(ctx, 6, 5, 4, 6, [72, 72, 80]);
 });
 
 tile('drain_top', (ctx, rng) => {
-  grain(ctx, rng, [122, 122, 130], 10);
+  grain(ctx, rng, [158, 160, 172], 10);
   for (let i = 3; i < TILE - 2; i += 3) rect(ctx, i, 3, 2, TILE - 6, [40, 44, 52]);
 });
 

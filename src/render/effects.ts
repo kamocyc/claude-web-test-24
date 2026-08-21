@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { mulberry32 } from '../core/rng';
 import { blockDef, type BlockId } from '../world/blocks';
 import { TILE, type Atlas } from './textures';
@@ -67,10 +68,13 @@ export class Effects {
     this.atlas = atlas;
     this.group.name = 'effects';
 
-    const geometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002));
+    // The cage follows the same rounding as the blocks themselves, and it is drawn in
+    // soft ink rather than black so it marks the target without stamping eight hard
+    // corners on it.
+    const geometry = new THREE.EdgesGeometry(new RoundedBoxGeometry(1.02, 1.02, 1.02, 1, 0.2), 30);
     this.outline = new THREE.LineSegments(
       geometry,
-      new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.5, depthTest: true }),
+      new THREE.LineBasicMaterial({ color: 0x3d3450, transparent: true, opacity: 0.42, depthTest: true }),
     );
     this.outline.visible = false;
 

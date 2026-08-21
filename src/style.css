@@ -1,15 +1,23 @@
 :root {
   --slot: 44px;
-  --panel-bg: rgba(18, 18, 22, 0.92);
-  --slot-bg: rgba(0, 0, 0, 0.42);
-  --slot-border: rgba(255, 255, 255, 0.18);
-  --accent: #7cc4ff;
-  --heart-full: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 14.6 1.7 8.3a3.7 3.7 0 0 1 5.2-5.2L8 4.2l1.1-1.1a3.7 3.7 0 0 1 5.2 5.2z' fill='%23e33b3b' stroke='%23140505' stroke-width='1.2'/%3E%3C/svg%3E");
-  --heart-empty: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 14.6 1.7 8.3a3.7 3.7 0 0 1 5.2-5.2L8 4.2l1.1-1.1a3.7 3.7 0 0 1 5.2 5.2z' fill='%23000' fill-opacity='.45' stroke='%23000' stroke-width='1.2'/%3E%3C/svg%3E");
-  --food-full: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M10.5 2c2.4 0 3.8 2 3.2 4-.5 1.7-2.3 2.7-3.9 3.4L6 11.6l-.9 2.2-1.6-.7.9-2.2-2-1.1 1-1.7 1.9 1.1 3.6-2C10.4 6.4 11.6 5.4 12 4.3 12.3 3.3 11.7 2.7 10.5 2z' fill='%23c98a3a' stroke='%23241206' stroke-width='1'/%3E%3C/svg%3E");
-  --bubble-full: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23bfe4ff' stroke='%230d2b45' stroke-width='1.4'/%3E%3Ccircle cx='6' cy='6' r='1.6' fill='%23ffffff'/%3E%3C/svg%3E");
-  --bubble-empty: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23000' fill-opacity='.4' stroke='%23000' stroke-width='1.4'/%3E%3C/svg%3E");
-  --food-empty: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M10.5 2c2.4 0 3.8 2 3.2 4-.5 1.7-2.3 2.7-3.9 3.4L6 11.6l-.9 2.2-1.6-.7.9-2.2-2-1.1 1-1.7 1.9 1.1 3.6-2C10.4 6.4 11.6 5.4 12 4.3 12.3 3.3 11.7 2.7 10.5 2z' fill='%23000' fill-opacity='.45' stroke='%23000' stroke-width='1'/%3E%3C/svg%3E");
+  /* Cream paper, plum ink and candy accents. The HUD is dressed like a picture book
+     so it sits with the pastel world instead of cutting a dark hole in it. */
+  --ink: #574364;
+  --panel-bg: rgba(255, 250, 243, 0.95);
+  --panel-border: rgba(150, 122, 168, 0.24);
+  --slot-bg: rgba(150, 122, 168, 0.14);
+  --slot-border: rgba(150, 122, 168, 0.4);
+  --accent: #8ed0ff;
+  --accent-warm: #ffb3cd;
+  --shadow: 0 6px 18px rgba(120, 96, 140, 0.24);
+  /* Anything readable straight on the bright world gets ink plus a white halo. */
+  --halo: 0 1px 0 rgba(255, 255, 255, 0.85), 0 2px 5px rgba(120, 96, 140, 0.5);
+  --heart-full: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 14.6 1.7 8.3a3.7 3.7 0 0 1 5.2-5.2L8 4.2l1.1-1.1a3.7 3.7 0 0 1 5.2 5.2z' fill='%23ff8fa6' stroke='%23574364' stroke-width='1.2'/%3E%3C/svg%3E");
+  --heart-empty: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 14.6 1.7 8.3a3.7 3.7 0 0 1 5.2-5.2L8 4.2l1.1-1.1a3.7 3.7 0 0 1 5.2 5.2z' fill='%23574364' fill-opacity='.42' stroke='%23574364' stroke-width='1.2'/%3E%3C/svg%3E");
+  --food-full: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M10.5 2c2.4 0 3.8 2 3.2 4-.5 1.7-2.3 2.7-3.9 3.4L6 11.6l-.9 2.2-1.6-.7.9-2.2-2-1.1 1-1.7 1.9 1.1 3.6-2C10.4 6.4 11.6 5.4 12 4.3 12.3 3.3 11.7 2.7 10.5 2z' fill='%23f0b46a' stroke='%23574364' stroke-width='1'/%3E%3C/svg%3E");
+  --bubble-full: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23cdeaff' stroke='%23574364' stroke-width='1.4'/%3E%3Ccircle cx='6' cy='6' r='1.6' fill='%23ffffff'/%3E%3C/svg%3E");
+  --bubble-empty: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23574364' fill-opacity='.42' stroke='%23574364' stroke-width='1.4'/%3E%3C/svg%3E");
+  --food-empty: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M10.5 2c2.4 0 3.8 2 3.2 4-.5 1.7-2.3 2.7-3.9 3.4L6 11.6l-.9 2.2-1.6-.7.9-2.2-2-1.1 1-1.7 1.9 1.1 3.6-2C10.4 6.4 11.6 5.4 12 4.3 12.3 3.3 11.7 2.7 10.5 2z' fill='%23574364' fill-opacity='.42' stroke='%23574364' stroke-width='1'/%3E%3C/svg%3E");
 }
 
 * {
@@ -22,9 +30,11 @@ body {
   padding: 0;
   height: 100%;
   overflow: hidden;
-  background: #05070f;
-  color: #f2f2f2;
-  font-family: 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', system-ui, sans-serif;
+  background: #c9e8ff;
+  color: var(--ink);
+  /* Rounded faces first, wherever the platform has one. */
+  font-family: 'Hiragino Maru Gothic ProN', 'M PLUS Rounded 1c', 'Zen Maru Gothic',
+    'Varela Round', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', system-ui, sans-serif;
   user-select: none;
 }
 
@@ -75,7 +85,7 @@ body.screen-open #viewport {
 
 .held-label {
   font-size: 15px;
-  text-shadow: 0 2px 3px #000;
+  text-shadow: var(--halo);
   opacity: 0;
   transition: opacity 0.4s;
   height: 20px;
@@ -150,8 +160,9 @@ body.screen-open #viewport {
   display: flex;
   gap: 4px;
   padding: 4px;
-  background: rgba(0, 0, 0, 0.35);
-  border-radius: 6px;
+  background: rgba(255, 250, 243, 0.7);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
 }
 
 .slot {
@@ -160,7 +171,7 @@ body.screen-open #viewport {
   height: var(--slot);
   background: var(--slot-bg);
   border: 2px solid var(--slot-border);
-  border-radius: 4px;
+  border-radius: 13px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -171,8 +182,8 @@ body.screen-open #viewport {
 }
 
 .hotbar-slot.selected {
-  border-color: #fff;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35);
+  border-color: var(--accent-warm);
+  box-shadow: 0 0 0 3px rgba(255, 179, 205, 0.5);
 }
 
 .slot-icon {
@@ -188,7 +199,7 @@ body.screen-open #viewport {
   bottom: 1px;
   font-size: 12px;
   font-weight: 700;
-  text-shadow: 0 1px 2px #000, 0 0 3px #000;
+  text-shadow: var(--halo);
   pointer-events: none;
 }
 
@@ -200,8 +211,9 @@ body.screen-open #viewport {
   padding: 8px 10px;
   font-size: 12px;
   line-height: 1.5;
-  background: rgba(0, 0, 0, 0.5);
-  border-radius: 6px;
+  background: var(--panel-bg);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
   font-family: ui-monospace, monospace;
 }
 
@@ -218,8 +230,9 @@ body.screen-open #viewport {
 .toast {
   padding: 5px 10px;
   font-size: 13px;
-  background: rgba(0, 0, 0, 0.55);
-  border-radius: 4px;
+  background: var(--panel-bg);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
   transition: opacity 0.6s;
 }
 
@@ -230,7 +243,7 @@ body.screen-open #viewport {
 .damage-flash {
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle, rgba(180, 20, 20, 0) 35%, rgba(180, 20, 20, 0.55) 100%);
+  background: radial-gradient(circle, rgba(255, 120, 150, 0) 35%, rgba(255, 110, 145, 0.55) 100%);
   opacity: 0;
 }
 
@@ -256,17 +269,17 @@ body.screen-open #viewport {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(120, 148, 180, 0.4);
 }
 
 .panel {
   background: var(--panel-bg);
-  border: 2px solid rgba(255, 255, 255, 0.14);
-  border-radius: 10px;
+  border: 2px solid var(--panel-border);
+  border-radius: 22px;
   padding: 14px 18px 18px;
   max-height: 92vh;
   overflow: auto;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 18px 44px rgba(120, 96, 140, 0.3);
 }
 
 .panel-title {
@@ -380,9 +393,9 @@ body.screen-open #viewport {
   font: inherit;
   color: inherit;
   text-align: left;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(150, 122, 168, 0.09);
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 14px;
   cursor: pointer;
 }
 
@@ -415,7 +428,7 @@ body.screen-open #viewport {
 }
 
 .recipe-ingredient.missing {
-  color: #ff9b8a;
+  color: #d9695c;
   opacity: 1;
 }
 
@@ -454,9 +467,9 @@ body.screen-open #viewport {
 
 .gauge {
   position: relative;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(150, 122, 168, 0.16);
   border: 1px solid var(--slot-border);
-  border-radius: 3px;
+  border-radius: 8px;
   overflow: hidden;
 }
 
@@ -469,7 +482,7 @@ body.screen-open #viewport {
 
 .gauge.flame .gauge-fill {
   width: 100%;
-  background: linear-gradient(#ffd166, #e8622a);
+  background: linear-gradient(#ffdd8f, #ff9b6a);
 }
 
 .gauge.progress {
@@ -479,7 +492,7 @@ body.screen-open #viewport {
 
 .gauge.progress .gauge-fill {
   height: 100%;
-  background: linear-gradient(90deg, #9fd8ff, #4a9fe0);
+  background: linear-gradient(90deg, #bfe8ff, #7cc0f5);
 }
 
 .trade-list {
@@ -495,8 +508,8 @@ body.screen-open #viewport {
   align-items: center;
   gap: 10px;
   padding: 6px 10px;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 6px;
+  background: rgba(150, 122, 168, 0.09);
+  border-radius: 14px;
 }
 
 .trade-row.sold-out {
@@ -517,16 +530,16 @@ body.screen-open #viewport {
   padding: 7px 16px;
   font: inherit;
   font-size: 13px;
-  color: #08131c;
+  color: #3b2f47;
   background: var(--accent);
   border: none;
-  border-radius: 5px;
+  border-radius: 12px;
   cursor: pointer;
 }
 
 .trade-button:disabled {
-  background: #56606a;
-  color: #9aa3ab;
+  background: #e6dfec;
+  color: #a99fb4;
   cursor: not-allowed;
 }
 
@@ -545,11 +558,11 @@ body.screen-open #viewport {
   align-items: center;
   justify-content: center;
   /* Translucent while paused or dead, so the world stays visible behind. */
-  background: rgba(4, 8, 14, 0.6);
+  background: rgba(120, 148, 180, 0.45);
 }
 
 .menu-layer.opaque {
-  background: linear-gradient(160deg, #0b1522, #060a12 70%);
+  background: linear-gradient(160deg, #bfe7ff, #ffe4ef 70%);
 }
 
 .menu {
@@ -558,9 +571,10 @@ body.screen-open #viewport {
   align-items: center;
   gap: 12px;
   padding: 34px 44px;
-  background: rgba(10, 14, 22, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 14px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 26px;
+  box-shadow: 0 20px 48px rgba(120, 96, 140, 0.28);
   min-width: 340px;
 }
 
@@ -581,20 +595,20 @@ body.screen-open #viewport {
   padding: 11px 18px;
   font: inherit;
   font-size: 15px;
-  color: #eaf2f8;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 7px;
+  color: var(--ink);
+  background: rgba(150, 122, 168, 0.1);
+  border: 1px solid var(--panel-border);
+  border-radius: 15px;
   cursor: pointer;
 }
 
 .menu-button:hover {
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(150, 122, 168, 0.2);
 }
 
 .menu-button.primary {
   background: var(--accent);
-  color: #08131c;
+  color: #3b2f47;
   border-color: transparent;
   font-weight: 700;
 }
@@ -604,10 +618,10 @@ body.screen-open #viewport {
   padding: 10px 12px;
   font: inherit;
   font-size: 14px;
-  color: #eaf2f8;
-  background: rgba(0, 0, 0, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 7px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid var(--panel-border);
+  border-radius: 15px;
 }
 
 .controls {
@@ -619,7 +633,7 @@ body.screen-open #viewport {
 }
 
 .menu.death .menu-title {
-  color: #ff7b7b;
+  color: #e0707e;
 }
 
 .click-prompt {
@@ -629,15 +643,16 @@ body.screen-open #viewport {
   transform: translateX(-50%);
   padding: 10px 20px;
   font-size: 15px;
-  background: rgba(0, 0, 0, 0.6);
-  border-radius: 8px;
+  background: var(--panel-bg);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
   letter-spacing: 0.05em;
 }
 
 .underwater {
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle, rgba(30, 90, 170, 0.35) 30%, rgba(12, 46, 96, 0.7) 100%);
+  background: radial-gradient(circle, rgba(120, 200, 255, 0.3) 30%, rgba(70, 150, 220, 0.62) 100%);
 }
 
 .settings {
@@ -646,8 +661,8 @@ body.screen-open #viewport {
   flex-direction: column;
   gap: 8px;
   padding: 10px 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid var(--panel-border);
+  border-bottom: 1px solid var(--panel-border);
 }
 
 .setting-row {
@@ -693,7 +708,7 @@ body.screen-open #viewport {
   width: 2px;
   height: 7px;
   margin-left: -1px;
-  background: rgba(255, 255, 255, 0.45);
+  background: rgba(87, 67, 100, 0.5);
 }
 
 .compass-tick.major {
@@ -703,9 +718,9 @@ body.screen-open #viewport {
   margin-left: -6px;
   font-size: 13px;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--ink);
   background: none;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  text-shadow: var(--halo);
 }
 
 .compass-marker {
@@ -720,12 +735,12 @@ body.screen-open #viewport {
   font-size: 15px;
   font-weight: 700;
   line-height: 1.15;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  text-shadow: var(--halo);
 }
 
-.compass-marker.spawn { color: #9ad8ff; }
-.compass-marker.death { color: #ff8f7c; }
-.compass-marker.village { color: #ffd479; }
+.compass-marker.spawn { color: #3fa3e0; }
+.compass-marker.death { color: #e0705f; }
+.compass-marker.village { color: #dd9a1c; }
 
 .compass-distance {
   font-size: 10px;
@@ -739,12 +754,12 @@ body.screen-open #viewport {
   right: 14px;
   width: 116px;
   padding: 6px 8px 7px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.42);
-  color: #f2f2f2;
+  border-radius: 14px;
+  background: var(--panel-bg);
+  box-shadow: var(--shadow);
+  color: var(--ink);
   font-size: 11px;
   line-height: 1.35;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
   pointer-events: none;
 }
 
@@ -774,7 +789,7 @@ body.screen-open #viewport {
 
 .forecast-next.urgent {
   opacity: 1;
-  color: #ffd479;
+  color: #d1900f;
 }
 
 .forecast-bar {
@@ -782,7 +797,7 @@ body.screen-open #viewport {
   height: 4px;
   margin: 5px 0 3px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(150, 122, 168, 0.22);
 }
 
 /* The centre line is the river's normal level, so the fill reads as a rise or a fall. */
@@ -793,7 +808,7 @@ body.screen-open #viewport {
   bottom: -1px;
   left: 50%;
   width: 1px;
-  background: rgba(255, 255, 255, 0.5);
+  background: rgba(87, 67, 100, 0.45);
 }
 
 .forecast-fill {
@@ -801,11 +816,11 @@ body.screen-open #viewport {
   top: 0;
   bottom: 0;
   border-radius: 2px;
-  background: #9ad8ff;
+  background: #7cc4f0;
 }
 
 .forecast.drought .forecast-fill {
-  background: #ffb35c;
+  background: #f0a64f;
 }
 
 .forecast-level {
@@ -819,10 +834,11 @@ body.screen-open #viewport {
   right: 14px;
   width: 112px;
   height: 112px;
-  border: 2px solid rgba(255, 255, 255, 0.22);
-  border-radius: 6px;
+  border: 3px solid rgba(255, 250, 243, 0.9);
+  border-radius: 16px;
   overflow: hidden;
-  background: rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow);
+  background: rgba(255, 250, 243, 0.6);
 }
 
 .minimap-canvas {
@@ -839,7 +855,7 @@ body.screen-open #viewport {
   margin-left: -4px;
   font-size: 10px;
   font-weight: 700;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  text-shadow: var(--halo);
 }
 
 .toggle-row {
