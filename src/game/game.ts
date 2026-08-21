@@ -55,6 +55,7 @@ import {
   writeSave,
 } from './save';
 import { findSpawn } from './seeds';
+import { Post } from '../render/post';
 import type { Settings } from './settings';
 import { tickFurnace } from './smelting';
 import { tradesFromJSON, tradesToJSON } from './trading';
@@ -95,6 +96,9 @@ export class Game {
   readonly player = new Player();
   readonly day = new DayCycle();
   private readonly renderer: THREE.WebGLRenderer;
+  private readonly post: Post;
+  /** Whether the bloom and grading chain is in use, rather than a plain render. */
+  private postEnabled = false;
   private readonly scene = new THREE.Scene();
   private readonly camera: THREE.PerspectiveCamera;
   private readonly atlas: Atlas;
@@ -153,16 +157,15 @@ export class Game {
 
     this.renderer = new THREE.WebGLRenderer({ canvas: options.canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    // Everything is lit and composed in linear light and only squeezed into display
-    // range at the very end, which is what keeps a bright sky from flattening into
-    // white and a torchlit cave from crushing to black.
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.post = new Post(this.renderer);
     this.renderDistance = options.settings.renderDistance;
     this.camera = new THREE.PerspectiveCamera(75, 1, 0.1, this.renderDistance * CHUNK_SIZE * 1.4);
 
     this.atlas = buildAtlas();
     this.materials = createChunkMaterials(this.atlas.array);
+    // Has to wait for the materials: switching the chain on changes where tone mapping
+    // happens, which means recompiling them.
+    this.setEffects(options.settings.effects);
     this.chunkRenderer = new ChunkRenderer(this.world, this.atlas, this.materials);
     this.entityRenderer = new EntityRenderer(this.atlas);
     this.effects = new Effects(this.atlas);
@@ -208,6 +211,7 @@ export class Game {
     if (this.keyHandler) this.options.input.offKey(this.keyHandler);
     if (this.lockHandler) document.removeEventListener('pointerlockchange', this.lockHandler);
     this.rain.dispose();
+    this.post.dispose();
     this.pool.dispose();
     this.chunkRenderer.dispose();
     this.hud.root.remove();
@@ -216,10 +220,21 @@ export class Game {
     this.renderer.dispose();
   }
 
+  /** Bloom is composed in linear light, so when it is on the renderer must leave the
+   *  scene alone and the composite does the tone mapping instead. */
+  setEffects(on: boolean): void {
+    this.postEnabled = on;
+    this.renderer.setRenderTarget(null);
+    this.renderer.toneMapping = on ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
+    for (const material of this.materials.all()) material.needsUpdate = true;
+  }
+
   private readonly onResize = (): void => {
     const width = window.innerWidth;
     const height = window.innerHeight;
     this.renderer.setSize(width, height, false);
+    this.post.setSize(width, height);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
   };
@@ -357,8 +372,10 @@ export class Game {
     const wetness = this.forecast().wetness;
     this.sky.update(this.day, this.camera, this.renderer, wetness, dt);
     this.materials.setSunLight(this.sky.sunDirection, this.sky.sunColor);
+    this.materials.setSky(this.sky.horizon, this.sky.elapsed);
     this.rain.update(dt, this.camera, wetness, this.day.sunLight);
-    this.renderer.render(this.scene, this.camera);
+    if (this.postEnabled) this.post.render(this.scene, this.camera);
+    else this.renderer.render(this.scene, this.camera);
   }
 
   /** Places worth walking back to, refreshed at most once a second because finding

@@ -15,6 +15,8 @@ export interface Settings {
   autoTool: boolean;
   /** Walk up single block steps without jumping. */
   autoStep: boolean;
+  /** Bloom, vignette and grading. Off is a plain render, which is much cheaper. */
+  effects: boolean;
 }
 
 export const SETTINGS_KEY = 'voxelcraft.settings.v1';
@@ -27,6 +29,7 @@ export const DEFAULT_SETTINGS: Settings = {
   forecast: true,
   autoTool: true,
   autoStep: true,
+  effects: true,
 };
 
 export const RENDER_DISTANCE_RANGE = { min: 4, max: 12 };
@@ -57,6 +60,7 @@ export function loadSettings(): Settings {
       forecast: parsed.forecast ?? DEFAULT_SETTINGS.forecast,
       autoTool: parsed.autoTool ?? DEFAULT_SETTINGS.autoTool,
       autoStep: parsed.autoStep ?? DEFAULT_SETTINGS.autoStep,
+      effects: parsed.effects ?? DEFAULT_SETTINGS.effects,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

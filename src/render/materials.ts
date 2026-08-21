@@ -22,6 +22,12 @@ const CARRY_ON = 0.62;
 const BEVEL_BEND = 0.62;
 /** Contact darkening in the crease, on top of the directional lighting. */
 const EDGE_SHADE = 0.8;
+/** Height of the swell on open water, and how much its slope is exaggerated when the
+ *  normal is rebuilt. The displacement stays tiny so the sheet cannot tear away from
+ *  the cell it sits in; the exaggeration is what makes it read. */
+const WAVE_HEIGHT = 0.03;
+const WAVE_SLOPE = 7;
+
 /** The sun's highlight: a broad, weak lobe. A tight one turns every rounded edge
  *  into a white pip, which reads as an artefact rather than a sheen. */
 const SPECULAR = 0.13;
@@ -47,6 +53,30 @@ ${branches.join('\n')}
 `;
 }
 
+/** Three crossing swells. Shared verbatim by both stages: the vertex shader lifts the
+ *  surface with it and the fragment shader differentiates it for the normal, and the
+ *  two have to agree or the highlights slide off the crests. */
+const WAVES = /* glsl */ `
+  uniform float uTime;
+  uniform float uWave;
+  uniform float uSlope;
+
+  float waveHeight( vec2 p ) {
+    return (
+      sin( p.x * 1.9 + uTime * 1.7 ) * 0.5 +
+      sin( p.y * 2.6 - uTime * 1.2 ) * 0.35 +
+      sin( ( p.x + p.y ) * 1.3 + uTime * 0.8 ) * 0.3
+    ) * uWave;
+  }
+
+  vec3 waveNormal( vec2 p ) {
+    float diagonal = cos( ( p.x + p.y ) * 1.3 + uTime * 0.8 ) * 1.3 * 0.3;
+    float dx = cos( p.x * 1.9 + uTime * 1.7 ) * 1.9 * 0.5 + diagonal;
+    float dz = cos( p.y * 2.6 - uTime * 1.2 ) * 2.6 * -0.35 + diagonal;
+    return normalize( vec3( -dx * uWave * uSlope, 1.0, -dz * uWave * uSlope ) );
+  }
+`;
+
 const VERTEX = /* glsl */ `
   attribute vec2 aLight;
   attribute float aShade;
@@ -69,6 +99,9 @@ const VERTEX = /* glsl */ `
   #include <common>
   #include <fog_pars_vertex>
 ${faceFrameGlsl()}
+#ifdef WATER
+${WAVES}
+#endif
   void main() {
     vLight = aLight;
     vShade = aShade;
@@ -88,8 +121,13 @@ ${faceFrameGlsl()}
     vLow = vec2( mix( -uCarry, 0.0, open.x ), mix( -uCarry, 0.0, open.z ) );
     vHigh = vec2( mix( 1.0 + uCarry, 1.0, open.y ), mix( 1.0 + uCarry, 1.0, open.w ) );
     vec4 worldPosition = modelMatrix * vec4( position, 1.0 );
+    #ifdef WATER
+      // Only the surface rises and falls. The sides of a cell stay put, so the sheet
+      // cannot tear away from the block it is sitting in.
+      if ( vNormal.y > 0.5 ) worldPosition.y += waveHeight( worldPosition.xz );
+    #endif
     vWorld = worldPosition.xyz;
-    vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
+    vec4 mvPosition = viewMatrix * worldPosition;
     gl_Position = projectionMatrix * mvPosition;
     #include <fog_vertex>
   }
@@ -120,10 +158,14 @@ const FRAGMENT = /* glsl */ `
   varying vec3 vWorld;
   varying vec2 vLow;
   varying vec2 vHigh;
+  uniform vec3 uSkyColor;
   #include <common>
   // three.js already puts the tone mapping functions in the fragment prefix; only the
   // call site below has to be spelled out.
   #include <fog_pars_fragment>
+#ifdef WATER
+${WAVES}
+#endif
 
   /** Torchlight is firelight: warm, and quite unlike the sun. */
   const vec3 TORCH_COLOR = vec3( 1.0, 0.76, 0.48 );
@@ -158,6 +200,9 @@ const FRAGMENT = /* glsl */ `
     // there is no outward direction to speak of and no rounding to apply.
     outward = reach > 1e-4 ? outward / reach : vNormal;
     vec3 normal = normalize( mix( vNormal, outward, edge * uBend ) );
+    #ifdef WATER
+      if ( vNormal.y > 0.5 ) normal = waveNormal( vWorld.xz );
+    #endif
 
     // Sky above, bounce below: the shape a surface has before any sun reaches it.
     float hemisphere = 0.48 + 0.52 * ( 0.5 + 0.5 * normal.y );
@@ -180,7 +225,20 @@ const FRAGMENT = /* glsl */ `
     float cavity = mix( 1.0, uEdgeShade, edge );
 
     vec3 color = texel.rgb * lit * vShade * form * cavity * tint + specular * uSunColor;
-    gl_FragColor = vec4( color, texel.a * uOpacity );
+    float alpha = texel.a * uOpacity;
+
+    #ifdef WATER
+      // Water mirrors the sky at a grazing angle and lets you see the bottom when you
+      // look straight down, which is the difference between a pond and blue glass.
+      float facing = pow( 1.0 - max( dot( normal, view ), 0.0 ), 4.0 );
+      color = mix( color, uSkyColor * ( 0.35 + 0.65 * uSun ), facing * 0.72 );
+      alpha = mix( alpha, 0.97, facing );
+      // The hard, small glitter where the sun lines up with a crest.
+      float glint = pow( max( dot( normal, halfway ), 0.0 ), 240.0 );
+      color += uSunColor * glint * 2.2 * uSun * skyPart;
+    #endif
+
+    gl_FragColor = vec4( color, alpha );
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
     #include <fog_fragment>
@@ -196,12 +254,20 @@ export interface ChunkMaterials {
   setSun(value: number): void;
   /** Direction from the world towards the sun, and the colour it is shining. */
   setSunLight(direction: THREE.Vector3, color: THREE.Color): void;
+  /** What the water reflects, and how far the swell has travelled. */
+  setSky(color: THREE.Color, elapsed: number): void;
   all(): THREE.ShaderMaterial[];
 }
 
 function make(
   map: THREE.DataArrayTexture,
-  options: { cutout?: boolean; transparent?: boolean; opacity?: number; doubleSided?: boolean },
+  options: {
+    cutout?: boolean;
+    transparent?: boolean;
+    opacity?: number;
+    doubleSided?: boolean;
+    water?: boolean;
+  },
 ): THREE.ShaderMaterial {
   const material = new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.merge([
@@ -219,6 +285,10 @@ function make(
         uCarry: { value: CARRY_ON },
         uSpecular: { value: SPECULAR },
         uSpecularPower: { value: SPECULAR_POWER },
+        uSkyColor: { value: new THREE.Color(1, 1, 1) },
+        uTime: { value: 0 },
+        uWave: { value: WAVE_HEIGHT },
+        uSlope: { value: WAVE_SLOPE },
       },
     ]),
     vertexShader: VERTEX,
@@ -227,7 +297,10 @@ function make(
     transparent: options.transparent ?? false,
     depthWrite: !(options.transparent ?? false),
     side: options.cutout || options.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
-    defines: options.cutout ? { CUTOUT: '' } : {},
+    defines: {
+      ...(options.cutout ? { CUTOUT: '' } : {}),
+      ...(options.water ? { WATER: '' } : {}),
+    },
   });
   material.uniforms.uMap.value = map;
   return material;
@@ -238,7 +311,7 @@ export function createChunkMaterials(map: THREE.DataArrayTexture): ChunkMaterial
   const cutout = make(map, { cutout: true });
   const transparent = make(map, { transparent: true, opacity: 0.82 });
   // Water is drawn from both sides so a submerged camera still sees the surface.
-  const water = make(map, { transparent: true, opacity: 0.72, doubleSided: true });
+  const water = make(map, { transparent: true, opacity: 0.66, doubleSided: true, water: true });
   const all = (): THREE.ShaderMaterial[] => [opaque, cutout, transparent, water];
   return {
     opaque,
@@ -254,6 +327,10 @@ export function createChunkMaterials(map: THREE.DataArrayTexture): ChunkMaterial
         (material.uniforms.uSunDir.value as THREE.Vector3).copy(direction);
         (material.uniforms.uSunColor.value as THREE.Color).copy(color);
       }
+    },
+    setSky(color: THREE.Color, elapsed: number) {
+      (water.uniforms.uSkyColor.value as THREE.Color).copy(color);
+      water.uniforms.uTime.value = elapsed;
     },
   };
 }

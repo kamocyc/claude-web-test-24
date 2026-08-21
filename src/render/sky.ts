@@ -169,6 +169,11 @@ export class Sky {
    *  The terrain shader lights every face against these. */
   readonly sunDirection = new THREE.Vector3(0, 1, 0);
   readonly sunColor = new THREE.Color(1, 1, 1);
+  /** The colour the sky shows at eye level. Fog takes it, and so does the water when
+   *  it reflects at a grazing angle. */
+  readonly horizon = new THREE.Color();
+  /** Seconds of sky time, for the cloud drift and the swell on the water. */
+  elapsed = 0;
   private readonly dome: THREE.Mesh;
   private readonly domeUniforms: Record<string, THREE.IUniform>;
   private readonly moon: THREE.Mesh;
@@ -177,8 +182,6 @@ export class Sky {
   private readonly ambient: THREE.HemisphereLight;
   private readonly directional: THREE.DirectionalLight;
   private readonly zenith = new THREE.Color();
-  private readonly horizon = new THREE.Color();
-  private elapsed = 0;
   /** Fog distances for clear weather, which rain and haze pull in from. */
   private baseNear: number;
   private baseFar: number;
