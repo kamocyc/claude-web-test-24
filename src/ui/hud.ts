@@ -71,6 +71,10 @@ export class Hud {
       this.hotbar.appendChild(slot);
     }
     bottom.append(this.heldLabel, this.air, stats, this.hotbar);
+    // The debug readout and the objective share the top-left corner, so they stack in one
+    // column instead of being positioned to land on top of each other.
+    const left = el('div', 'hud-left');
+    left.append(this.debug, this.routes.root);
     this.root.append(
       this.underwater,
       this.flash,
@@ -78,10 +82,9 @@ export class Hud {
       this.compass.root,
       this.minimap.root,
       this.forecast.root,
-      this.routes.root,
+      left,
       this.coords.root,
       bottom,
-      this.debug,
       this.toasts,
       this.clickPrompt,
     );

@@ -28,6 +28,7 @@ const MARKER_COLORS: Record<string, string> = {
   death: '#ff6b6b',
   village: '#ffd479',
   gap: '#ff9b53',
+  target: '#7cc4ff',
 };
 
 /** Trodden dirt through to stone brick, as a colour. */

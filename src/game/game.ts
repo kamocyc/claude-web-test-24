@@ -451,11 +451,13 @@ export class Game {
     }
     const questRoute = this.questRoute();
     const objective = this.questline.objective(this.villages, questRoute, this.networkState());
-    // The gap marker points at where the road stops, not at the destination: the player
-    // needs to know which stretch to go and fix.
-    if (objective?.marker?.kind === 'gap') {
-      markers.push({ kind: 'gap', x: objective.marker.x, z: objective.marker.z });
-    }
+    // Whatever the objective is pointing at gets its own marker. The village being
+    // carried to has not been walked into yet, so it is not in `found` — without this the
+    // player is told to take the wool to 朝の炭 and given no idea which way that is. A
+    // gap marker points at where the road stops rather than at the destination: there,
+    // the thing to walk to is the stretch that needs fixing.
+    const aim = objective?.marker ?? null;
+    if (aim) markers.push({ kind: aim.kind === 'gap' ? 'gap' : 'target', x: aim.x, z: aim.z });
     const forecast = this.forecast();
     return {
       world: this.world,
@@ -482,6 +484,14 @@ export class Game {
       },
       routes: {
         quest: objective,
+        // How far, and which way. The compass carries the same marker, but the panel is
+        // where the player looks to know whether it is a walk or an expedition.
+        aim: aim
+          ? {
+              distance: Math.hypot(aim.x - this.player.x, aim.z - this.player.z),
+              bearing: (Math.atan2(aim.x - this.player.x, -(aim.z - this.player.z)) * 180) / Math.PI,
+            }
+          : null,
         // Only the lines worth a row: the ones that work, the one the tutorial is asking
         // for, and any that used to work and have been dug up. Every other watched pair
         // would just be a wall of "not connected".

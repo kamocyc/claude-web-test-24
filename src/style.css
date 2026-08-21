@@ -192,10 +192,19 @@ body.screen-open #viewport {
   pointer-events: none;
 }
 
-.debug {
+/* Top-left column: the debug readout, then the objective under it. */
+.hud-left {
   position: absolute;
   top: 10px;
   left: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  max-height: calc(100vh - 140px);
+}
+
+.debug {
   margin: 0;
   padding: 8px 10px;
   font-size: 12px;
@@ -862,9 +871,6 @@ body.screen-open #viewport {
 
 /* ---------- objective and transport routes ---------- */
 .route-panel {
-  position: absolute;
-  top: 120px;
-  left: 12px;
   width: 210px;
   display: flex;
   flex-direction: column;
@@ -891,6 +897,13 @@ body.screen-open #viewport {
   margin-top: 2px;
   color: rgba(255, 255, 255, 0.72);
   line-height: 1.35;
+}
+
+/* Which way the objective is, under its own description. */
+.route-quest-aim {
+  margin-top: 3px;
+  color: #7cc4ff;
+  font-variant-numeric: tabular-nums;
 }
 
 .route-list {
@@ -930,6 +943,12 @@ body.screen-open #viewport {
 
 .compass-marker.gap {
   color: #ff9b53;
+}
+
+/* Wherever the objective is pointing, so the destination stands out from the villages
+   already on the strip. */
+.compass-marker.target {
+  color: #7cc4ff;
 }
 
 /* ---------- the tutorial row above a villager's offers ---------- */

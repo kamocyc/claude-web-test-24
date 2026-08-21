@@ -1,6 +1,6 @@
 import { el } from './dom';
 
-export type MarkerKind = 'spawn' | 'death' | 'village' | 'gap';
+export type MarkerKind = 'spawn' | 'death' | 'village' | 'gap' | 'target';
 
 export interface CompassMarker {
   kind: MarkerKind;
@@ -13,6 +13,7 @@ const MARKER_ICON: Record<MarkerKind, string> = {
   death: '✖',
   village: '⌗',
   gap: '⋯',
+  target: '⚑',
 };
 
 const MARKER_LABEL: Record<MarkerKind, string> = {
@@ -20,6 +21,7 @@ const MARKER_LABEL: Record<MarkerKind, string> = {
   death: '死亡地点',
   village: '村',
   gap: '道のとぎれ',
+  target: '目的地',
 };
 
 const CARDINALS: { angle: number; label: string }[] = [

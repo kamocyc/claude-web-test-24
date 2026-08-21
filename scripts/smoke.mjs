@@ -302,6 +302,25 @@ await shot('07w-route-gap');
 // The hand-over and the road talk happen at the far village, through the same row. The
 // crate has to arrive in the player's pack for the button to be live, so this proves the
 // carry as well as the click.
+// The village being carried to has not been walked into yet, so it is not one of the
+// discovered villages on the strip. Without its own marker the player is told a name and
+// nothing else.
+// Face it first: the strip only covers what is in front of the player, which is the
+// point of a compass, so a marker behind them proves nothing either way.
+await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const aim = g.questline.objective(g.villages, undefined);
+  g.player.yaw = Math.atan2(-(aim.marker.x - g.player.x), -(aim.marker.z - g.player.z));
+});
+await page.waitForTimeout(400);
+console.log('way to the target:', JSON.stringify({
+  panel: await page.locator('.route-panel').innerText(),
+  marker: await page.locator('.compass-marker.target').isVisible()
+    ? (await page.locator('.compass-marker.target').innerText()).replace('\n', ' ')
+    : null,
+}));
+await shot('07v2b-heading');
+
 console.log('walked to the target:', JSON.stringify(await evaluate(() => window.voxelcraft.gotoQuestTarget())));
 console.log('stood at the target:', JSON.stringify(await villagerInFront()));
 await useUntil(() => window.voxelcraft.game.screens.kind === 'trade');

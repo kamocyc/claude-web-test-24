@@ -20,7 +20,17 @@ export interface RouteView {
 
 export interface RoutePanelView {
   quest: QuestObjective | null;
+  /** Where the objective is, relative to the player. `bearing` is compass degrees. */
+  aim: { distance: number; bearing: number } | null;
   routes: RouteView[];
+}
+
+const POINTS = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
+
+/** Compass degrees as a word. Eight points is as fine as anyone steers on foot. */
+function heading(bearing: number): string {
+  const index = Math.round((((bearing % 360) + 360) % 360) / 45) % POINTS.length;
+  return POINTS[index];
 }
 
 /** The objective, and whether each route is actually joined up.
@@ -32,11 +42,12 @@ export class RoutePanel {
   private readonly questBox = el('div', 'route-quest');
   private readonly questTitle = el('div', 'route-quest-title');
   private readonly questDetail = el('div', 'route-quest-detail');
+  private readonly questAim = el('div', 'route-quest-aim');
   private readonly list = el('div', 'route-list');
   private signature = '';
 
   constructor() {
-    this.questBox.append(this.questTitle, this.questDetail);
+    this.questBox.append(this.questTitle, this.questDetail, this.questAim);
     this.root.append(this.questBox, this.list);
   }
 
@@ -50,6 +61,13 @@ export class RoutePanel {
     if (quest) {
       if (this.questTitle.textContent !== quest.title) this.questTitle.textContent = quest.title;
       if (this.questDetail.textContent !== quest.detail) this.questDetail.textContent = quest.detail;
+    }
+    // The destination is usually a village the player has never walked into, so naming it
+    // is not enough — say which way and how far.
+    show(this.questAim, quest !== null && view.aim !== null);
+    if (quest && view.aim) {
+      const aim = `${heading(view.aim.bearing)}へ ${Math.round(view.aim.distance)}m`;
+      if (this.questAim.textContent !== aim) this.questAim.textContent = aim;
     }
 
     // Rebuilding the rows every frame would fight the browser; they only change when a
