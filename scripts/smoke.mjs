@@ -42,7 +42,7 @@ const shot = async (name) => page.screenshot({ path: `${outDir}/${name}.png` });
 const closeScreen = async () => {
   if (await page.evaluate(() => window.voxelcraft?.game?.screens.isOpen === true)) {
     await page.keyboard.press('Escape');
-    await page.waitForTimeout(400);
+    await page.waitForFunction(() => window.voxelcraft.game.screens.isOpen === false, null, { timeout: 10000 });
   }
 };
 const debugText = () => page.locator('.debug').textContent();
@@ -57,8 +57,7 @@ const QUEST_ROUTE = `(() => {
  *  Spawning where a teleport landed risks a roof, a wall, or an unloaded chunk, and a
  *  villager that falls out of the world cannot be talked to. */
 const villagerInFront = async () => {
-  await page.waitForFunction(() => window.voxelcraft.pending() === 0, null, { timeout: 60000 })
-    .catch(() => {});
+  await settled(60000);
   const spot = await page.evaluate(() => {
     const g = window.voxelcraft.game;
     window.voxelcraft.heal();
@@ -79,12 +78,45 @@ const villagerInFront = async () => {
     }
     return null;
   });
-  await page.waitForTimeout(400);
+  await frame();
   await page.evaluate(() => window.voxelcraft.spawnMob('villager', 2.5));
-  await page.waitForTimeout(800);
+  await until(() => window.voxelcraft.mobs().at(-1)?.onGround === true, null, 10000).catch(() => {});
   return spot;
 };
 const evaluate = (fn, arg) => page.evaluate(fn, arg);
+/** Waits for something the page can actually observe, rather than guessing at a duration.
+ *  Throws on timeout, deliberately: a wait that quietly gives up turns a broken feature
+ *  into a run that still says it passed. */
+const until = (condition, arg = null, timeout = 30000) =>
+  page.waitForFunction(condition, arg, { timeout });
+/** Waits for a number to stop moving. The simulation runs well below real time under
+ *  software rendering, so "has the water finished flowing" cannot be a fixed sleep — but
+ *  it can be readings that agree.
+ *
+ *  `dwell` is why this is not just "two samples match": for the first moment after a gate
+ *  opens the far end still reads what it read before, and a pair of samples taken in that
+ *  window would call it settled and log the old value as the result. Nothing may be
+ *  reported stable until the simulation has had that long to react. */
+const stable = (expression, { tolerance = 0.001, dwell = 900, timeout = 60000 } = {}) =>
+  page.waitForFunction(
+    `(() => {
+      const value = ${expression};
+      const state = window.__smokeStable ?? (window.__smokeStable = { since: Date.now() });
+      const previous = state.value;
+      state.value = value;
+      if (Date.now() - state.since < ${dwell}) return false;
+      return previous !== undefined && Math.abs(previous - value) <= ${tolerance};
+    })()`,
+    null,
+    { timeout, polling: 300 },
+  ).finally(() => page.evaluate(() => { delete window.__smokeStable; }));
+/** Nothing left to generate or re-mesh. */
+const settled = (timeout = 90000) => until(() => window.voxelcraft.backlog() === 0, null, timeout);
+/** One painted frame, for a screenshot taken straight after a change. */
+const frame = () =>
+  page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
 /** Right-clicks at the crosshair until the world reacts. A single dropped frame on the
  *  software renderer can swallow the press, and a retry is cheaper than a flaky run. */
 const useUntil = async (predicate, arg = null, attempts = 6) => {
@@ -92,22 +124,39 @@ const useUntil = async (predicate, arg = null, attempts = 6) => {
     await page.mouse.move(640, 360);
     await page.mouse.down({ button: 'right' });
     await page.mouse.up({ button: 'right' });
-    await page.waitForTimeout(500);
-    if (await page.evaluate(predicate, arg)) return true;
+    // Poll for the outcome rather than sleeping through it: most presses land on the
+    // first frame, and the ones that do not are why the loop is here.
+    try {
+      await page.waitForFunction(predicate, arg, { timeout: 900 });
+      return true;
+    } catch {
+      // Dropped frame, or the press landed on nothing. Try again.
+    }
   }
   return false;
 };
 
 await page.goto(url, { waitUntil: 'domcontentloaded' });
-await page.waitForTimeout(1500);
+await page.locator('.menu-button:has-text("検証用ワールド")').waitFor({ timeout: 30000 });
+await frame();
 await shot('01-title');
 
 // The fixed verification seed is one click on the title screen.
 await page.click('.menu-button:has-text("検証用ワールド")');
 await page.waitForFunction(() => window.voxelcraft?.isReady() === true, null, { timeout: 90000 });
-await page.waitForTimeout(1500);
+// The minimap paints from loaded chunks, so "it has something on it" is the same thing
+// as "the world around the player is really there" — and it is what the next check reads.
+await until(() => {
+  const canvas = document.querySelector('.minimap-canvas');
+  if (!canvas) return false;
+  const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i] + data[i + 1] + data[i + 2] > 90) return true;
+  }
+  return false;
+}, null, 60000);
 await page.keyboard.press('F3');
-await page.waitForTimeout(400);
+await until(() => (document.querySelector('.debug')?.textContent ?? '').length > 0);
 await shot('02-spawn');
 console.log('spawn:', JSON.stringify(await debugText()));
 console.log('verification seed:', await evaluate(() => window.voxelcraft.game.world.seed));
@@ -152,18 +201,20 @@ await evaluate(() => {
   window.voxelcraft.give('cobblestone', 8);
 });
 await page.keyboard.press('KeyE');
-await page.waitForTimeout(500);
+await page.locator('.recipe-row').first().waitFor({ timeout: 15000 });
 await shot('04-inventory');
 
 const plankRow = page.locator('.recipe-row', { hasText: '木材' }).first();
+// Each click is followed by the thing it was supposed to produce, which is both the
+// wait and the assertion.
 await plankRow.click({ modifiers: ['Shift'] });
-await page.waitForTimeout(300);
+await until(() => window.voxelcraft.player.inventory.count('oak_planks') > 0);
 const stickRow = page.locator('.recipe-row', { hasText: '棒' }).first();
 await stickRow.click();
-await page.waitForTimeout(300);
+await until(() => window.voxelcraft.player.inventory.count('stick') > 0);
 const tableRow = page.locator('.recipe-row', { hasText: '作業台' }).first();
 await tableRow.click();
-await page.waitForTimeout(300);
+await until(() => window.voxelcraft.player.inventory.count('crafting_table') > 0);
 const handCrafted = await evaluate(() => {
   const inv = window.voxelcraft.player.inventory;
   return { planks: inv.count('oak_planks'), sticks: inv.count('stick'), tables: inv.count('crafting_table') };
@@ -174,12 +225,13 @@ const toolBeforeTable = await page.locator('.recipe-row', { hasText: '石のツ�
 await page.keyboard.press('Escape');
 
 await evaluate(() => window.voxelcraft.openScreen('crafting'));
-await page.waitForTimeout(500);
+await until(() => window.voxelcraft.game.screens.kind === 'crafting');
 await page.fill('.recipe-search', 'ツルハシ');
-await page.waitForTimeout(300);
+const pickaxeRow = page.locator('.recipe-row', { hasText: '石のツルハシ' }).first();
+await pickaxeRow.waitFor({ timeout: 15000 });
 await shot('04b-recipes');
-await page.locator('.recipe-row', { hasText: '石のツルハシ' }).first().click();
-await page.waitForTimeout(300);
+await pickaxeRow.click();
+await until(() => window.voxelcraft.player.inventory.count('stone_pickaxe') > 0);
 const tableCrafted = await evaluate(() => {
   const inv = window.voxelcraft.player.inventory;
   return { pickaxe: inv.count('stone_pickaxe'), cobble: inv.count('cobblestone'), sticks: inv.count('stick') };
@@ -195,20 +247,22 @@ await evaluate(() => {
   window.voxelcraft.spawnMob('skeleton', 6);
   window.voxelcraft.spawnMob('cow', 8);
 });
-await page.waitForTimeout(2500);
+// The clock moves the moment it is set; what takes time is the three mobs falling the
+// last tenth of a block onto the ground they were dropped above.
+await until(() => window.voxelcraft.mobs().at(-3)?.onGround === true, null, 10000).catch(() => {});
+await frame();
 await shot('05-night');
 console.log('night:', JSON.stringify(await debugText()));
 
 // --- village -----------------------------------------------------------------
 const village = await evaluate(() => window.voxelcraft.gotoVillage());
 console.log('village:', JSON.stringify(village));
-await page.waitForFunction(() => window.voxelcraft?.pending() === 0, null, { timeout: 90000 });
-await page.waitForTimeout(2500);
+await settled();
 await evaluate(() => {
   window.voxelcraft.setTime(0.2);
   window.voxelcraft.player.pitch = -0.25;
 });
-await page.waitForTimeout(1500);
+await frame();
 await shot('06-village');
 console.log('at village:', JSON.stringify(await debugText()));
 const villagers = await evaluate(() => window.voxelcraft.mobs().filter((m) => m.kind === 'villager').length);
@@ -240,7 +294,9 @@ const traded = await evaluate(() => {
   return { profession: villager.profession, offers: villager.trades.length, want: first.give, get: first.get };
 });
 console.log('villager:', JSON.stringify(traded));
-await page.waitForTimeout(700);
+// The villager is spawned in mid-air in front of the player and has to land before the
+// crosshair can be on it.
+await until(() => window.voxelcraft.mobs().at(-1)?.onGround === true, null, 10000).catch(() => {});
 console.log('crosshair pick:', JSON.stringify(await evaluate(() => {
   const g = window.voxelcraft.game;
   const mob = window.voxelcraft.pick();
@@ -257,13 +313,18 @@ await shot('07-trade');
 if (tradeOpen) {
   // Skip the tutorial row: this section is about buying, and the quest row sits above it.
   await page.locator('.trade-row:not(.quest-row) .trade-button:not([disabled])').first().click();
-  await page.waitForTimeout(400);
+  await until(() => {
+    const villager = [...window.voxelcraft.game.mobs.mobs].reverse().find((m) => m.kind === 'villager');
+    return (villager?.trades ?? []).some((trade) => trade.uses > 0);
+  });
 }
 const tradeResult = await evaluate(() => {
   const g = window.voxelcraft.game;
   // The villager spawned for this test is the newest one.
   const villager = [...g.mobs.mobs].reverse().find((m) => m.kind === 'villager');
-  return { screen: g.screens.kind, uses: villager ? villager.trades[0].uses : -1 };
+  // Across every offer, not just the first: which one the player can afford depends on
+  // the profession this villager rolled.
+  return { screen: g.screens.kind, uses: villager ? villager.trades.reduce((n, t) => n + t.uses, 0) : -1 };
 });
 console.log('trade screen open:', tradeOpen, JSON.stringify(tradeResult));
 await closeScreen();
@@ -294,7 +355,7 @@ const carriedBefore = await evaluate(() => window.voxelcraft.game.player.invento
   window.voxelcraft.village().produces,
 ));
 await page.locator('.quest-button').click();
-await page.waitForTimeout(400);
+await until(() => window.voxelcraft.quest().step === 'deliver_by_hand');
 console.log('accepted:', JSON.stringify({
   step: (await evaluate(() => window.voxelcraft.quest())).step,
   carriedBefore,
@@ -303,7 +364,8 @@ console.log('accepted:', JSON.stringify({
   )),
 }));
 await closeScreen();
-await page.waitForTimeout(2500);
+// The pair is watched from the village timer, and surveyed once it is.
+await until(`${QUEST_ROUTE}?.missing > 0`, null, 30000);
 const unpaved = await evaluate(() => window.voxelcraft.routes());
 console.log('route before any road:', JSON.stringify(unpaved));
 // The whole point of allowing a dashed road is that the player is told where the gap is.
@@ -323,7 +385,7 @@ await evaluate(() => {
   const aim = g.questline.objective(g.villages, undefined);
   g.player.yaw = Math.atan2(-(aim.marker.x - g.player.x), -(aim.marker.z - g.player.z));
 });
-await page.waitForTimeout(400);
+await frame();
 console.log('way to the target:', JSON.stringify({
   panel: await page.locator('.route-panel').innerText(),
   marker: await page.locator('.compass-marker.target').isVisible()
@@ -342,7 +404,7 @@ if (await page.locator('.quest-button').count() === 1) {
   }));
   await shot('07v3-deliver-row');
   await page.locator('.quest-button').click();
-  await page.waitForTimeout(400);
+  await until(() => window.voxelcraft.quest().step === 'learn_roads');
   // Next thing this village has to say: the road talk. A fresh villager, because the
   // one just spoken to has had a few seconds to wander out of the crosshair.
   await villagerInFront();
@@ -350,7 +412,7 @@ if (await page.locator('.quest-button').count() === 1) {
   if (await page.locator('.quest-button').count() === 1) {
     console.log('road talk:', JSON.stringify(await page.locator('.quest-row').innerText()));
     await page.locator('.quest-button').click();
-    await page.waitForTimeout(400);
+    await until(() => window.voxelcraft.quest().step === 'build_road');
   }
 } else {
   console.log('delivery row: NOT SHOWN — falling back to the debug hook');
@@ -406,7 +468,7 @@ await evaluate(() => {
   g.player.pitch = 0;
   window.voxelcraft.spawnMob('villager', 2.5);
 });
-await page.waitForTimeout(700);
+await until(() => window.voxelcraft.mobs().at(-1)?.onGround === true, null, 10000).catch(() => {});
 const noteOpen = await useUntil(() => window.voxelcraft.game.screens.kind === 'trade');
 if (noteOpen) {
   console.log('village note:', JSON.stringify(await page.locator('.trade-note').innerText()));
@@ -417,7 +479,7 @@ await closeScreen();
 
 // The whole network on one page: who makes what, who is short of what, which lines pay.
 await evaluate(() => window.voxelcraft.openScreen('ledger'));
-await page.waitForTimeout(400);
+await page.locator('.ledger').waitFor({ timeout: 15000 });
 console.log('ledger:', JSON.stringify((await page.locator('.ledger').innerText()).split('\n').slice(0, 14)));
 await shot('07x4-ledger');
 await closeScreen();
@@ -425,26 +487,26 @@ await closeScreen();
 // Run the goods through until the far village earns a building. The player is paid for
 // the haulage, which is the only income the network itself produces.
 const purseBefore = await evaluate(() => window.voxelcraft.player.inventory.count('emerald'));
+// advanceTransport runs the clock synchronously, so the fee is already banked.
 await evaluate(() => window.voxelcraft.advanceTransport(4000));
-await page.waitForTimeout(1000);
 const purseAfter = await evaluate(() => window.voxelcraft.player.inventory.count('emerald'));
 console.log('freight pay: emeralds', purseBefore, '->', purseAfter,
   '/ earned', await evaluate(() => window.voxelcraft.earnings()));
-// The milestones are claimed on the game's own timer, so give it a couple of ticks.
-await page.waitForTimeout(3000);
+// The milestone list only opens once the tutorial closes, which the arrival above does.
+// The list itself is the report: nothing in this run earns one.
+await until(() => window.voxelcraft.quest().step === 'done', null, 30000);
 console.log('milestones:', JSON.stringify(await evaluate(() => window.voxelcraft.milestones())));
 const grown = await evaluate(() =>
   window.voxelcraft.villages().slice().sort((a, b) => b.stage - a.stage)[0]);
 console.log('grown village:', JSON.stringify(grown));
 if (grown) {
   await evaluate((v) => window.voxelcraft.teleport(v.x, v.z), grown);
-  await page.waitForFunction(() => window.voxelcraft.pending() === 0, null, { timeout: 90000 });
-  await page.waitForTimeout(3000);
+  await settled();
   await evaluate(() => {
     window.voxelcraft.setTime(0.25);
     window.voxelcraft.player.pitch = -0.12;
   });
-  await page.waitForTimeout(1200);
+  await frame();
   await shot('07y-village-grown');
 }
 // Walk out to where a shipment actually is: the abstract clock is the truth, but the
@@ -453,8 +515,11 @@ if (grown) {
 const spot = await evaluate(() => window.voxelcraft.porterSpots()[0] ?? null);
 if (spot) {
   await evaluate((s) => window.voxelcraft.teleport(s.x, s.z), spot);
-  await page.waitForFunction(() => window.voxelcraft.pending() === 0, null, { timeout: 90000 });
-  await page.waitForTimeout(2500);
+  await settled();
+  // Standing on a shipment is what makes its porter appear. If none does, the log below
+  // says so — that is the report, not a reason to stop the run.
+  await until(() => window.voxelcraft.mobs().some((m) => m.kind === 'porter'), null, 20000)
+    .catch(() => {});
   const porter = await evaluate(() => {
     const mob = window.voxelcraft.mobs().find((m) => m.kind === 'porter');
     const g = window.voxelcraft.game;
@@ -500,7 +565,7 @@ const farm = await evaluate(() => {
 });
 console.log('farm plot:', JSON.stringify(farm));
 if (farm) {
-  await page.waitForTimeout(600);
+  await until(() => window.voxelcraft.player.onGround === true);
   await evaluate(() => {
     const inv = window.voxelcraft.player.inventory;
     inv.selected = inv.find('wooden_hoe');
@@ -541,11 +606,11 @@ console.log('hunger before/after eating:', eaten, await evaluate(() => window.vo
 
 // --- furnace and chest screens ----------------------------------------------
 await evaluate(() => window.voxelcraft.openScreen('furnace'));
-await page.waitForTimeout(400);
+await until(() => window.voxelcraft.game.screens.kind === 'furnace');
 await shot('07c-furnace');
 await closeScreen();
 await evaluate(() => window.voxelcraft.openScreen('chest'));
-await page.waitForTimeout(400);
+await until(() => window.voxelcraft.game.screens.kind === 'chest');
 await shot('07d-chest');
 await closeScreen();
 
@@ -557,7 +622,8 @@ const cave = await evaluate(() => {
   return window.voxelcraft.findCave();
 });
 console.log('cave:', JSON.stringify(cave));
-await page.waitForTimeout(2500);
+await settled();
+await frame();
 await shot('07-underground');
 
 // --- place a torch in the dark ----------------------------------------------
@@ -573,7 +639,7 @@ await useUntil(() => {
 await evaluate(() => {
   window.voxelcraft.player.pitch = -0.2;
 });
-await page.waitForTimeout(600);
+await frame();
 await shot('08-torch');
 const torchLight = await evaluate(() => {
   const g = window.voxelcraft.game;
@@ -591,11 +657,14 @@ if (river) {
   // The water surface is a fraction of a block; the block building below wants whole
   // cells, so work from the topmost cell the water reaches.
   river.surface = Math.floor(river.surface);
-  await page.waitForFunction(() => window.voxelcraft?.pending() === 0, null, { timeout: 90000 });
-  await page.waitForTimeout(4000);
+  await settled();
+  // The river is still filling the chunks that just appeared; read it once it stops
+  // moving rather than after a duration picked to be long enough.
+  await stable(`window.voxelcraft.waterSurface(${river.x}, ${river.z})`);
   await evaluate(() => {
     window.voxelcraft.game.player.pitch = -0.3;
   });
+  await frame();
   await shot('15-river');
   console.log('river depth:', await evaluate((r) => window.voxelcraft.waterDepth(r.x, r.surface, r.z), river));
 
@@ -604,7 +673,7 @@ if (river) {
   // A drought begins in the headwaters. Downstream is still in the calm season, which
   // is the whole point: the player has that long to fill a reservoir.
   await evaluate(() => window.voxelcraft.setWeatherSeconds(30 * 60));
-  await page.waitForTimeout(1200);
+  await until(() => window.voxelcraft.weather().upstream !== window.voxelcraft.weather().here);
   const warning = await evaluate(() => window.voxelcraft.weather());
   console.log('drought announced:', JSON.stringify(warning));
   console.log('forecast panel:', (await page.locator('.forecast').textContent())?.trim());
@@ -612,13 +681,13 @@ if (river) {
 
   // Once it arrives the river drops, and the bank it leaves behind is dry.
   await evaluate(() => window.voxelcraft.setWeather('drought'));
-  await page.waitForTimeout(2500);
+  await stable(`window.voxelcraft.waterSurface(${river.x}, ${river.z})`);
   const dryLevel = await evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
   await shot('15c-drought');
 
   // Heavy rain lifts it again, without ever spilling over the bank.
   await evaluate(() => window.voxelcraft.setWeather('rain'));
-  await page.waitForTimeout(2500);
+  await stable(`window.voxelcraft.waterSurface(${river.x}, ${river.z})`);
   const wetLevel = await evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
   const spilled = await evaluate((r) => {
     const g = window.voxelcraft.game;
@@ -646,7 +715,7 @@ if (river) {
 
   // And the calm season puts it back exactly where the generator had it.
   await evaluate(() => window.voxelcraft.setWeather('normal'));
-  await page.waitForTimeout(2500);
+  await stable(`window.voxelcraft.waterSurface(${river.x}, ${river.z})`);
   const backLevel = await evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
   console.log(
     'river level  calm:', calmLevel,
@@ -702,7 +771,11 @@ if (river) {
   if (works) {
     const farWater = () =>
       evaluate((w) => window.voxelcraft.waterAt(w.far[0], w.floorY + 1, w.far[1]), works);
-    await page.waitForTimeout(9000);
+    // Wait for the far end to stop changing rather than for a duration long enough to be
+    // sure: the depth that gets logged is the settled one either way, and the run stops
+    // waiting the moment the water is done.
+    const farLevel = `window.voxelcraft.waterAt(${works.far[0]}, ${works.floorY + 1}, ${works.far[1]})`;
+    await until(`${farLevel} > 0`, null, 60000);
     console.log('water reached the far end:', await farWater());
     await evaluate((w) => {
       const g = window.voxelcraft.game;
@@ -710,7 +783,7 @@ if (river) {
       g.player.yaw = Math.atan2(-w.dx, -w.dz);
       g.player.pitch = -0.5;
     }, works);
-    await page.waitForTimeout(1500);
+    await frame();
     await shot('16-aqueduct');
 
     // Drop a gate across the aqueduct and empty the far half.
@@ -723,7 +796,7 @@ if (river) {
         for (let y = w.floorY + 1; y <= w.surface; y++) g.world.setBlock(x, y, z, 0);
       }
     }, works);
-    await page.waitForTimeout(7000);
+    await until(`${farLevel} === 0`, null, 60000);
     console.log('with the gate shut:', await farWater());
     await shot('17-gate-closed');
 
@@ -731,7 +804,7 @@ if (river) {
       const g = window.voxelcraft.game;
       for (let y = w.floorY; y <= w.surface; y++) g.world.setBlock(w.gate[0], y, w.gate[1], 58);
     }, works);
-    await page.waitForTimeout(9000);
+    await until(`${farLevel} > 0`, null, 60000);
     console.log('with the gate open:', await farWater());
     await shot('18-gate-open');
 
@@ -746,7 +819,9 @@ if (river) {
       g.world.setBlock(x, w.floorY + 3, z, 55);
       return { x, z, base: w.floorY };
     }, works);
-    await page.waitForTimeout(6000);
+    // Water reaching the top of the stack is the claim: it cannot have got there without
+    // coming through the stage below it.
+    await until(`window.voxelcraft.waterAt(${pumped.x}, ${pumped.base + 4}, ${pumped.z}) > 0`, null, 60000);
     console.log('pump lifted water to:', JSON.stringify(await evaluate((p) => ({
       firstStage: window.voxelcraft.waterAt(p.x, p.base + 2, p.z),
       secondStage: window.voxelcraft.waterAt(p.x, p.base + 4, p.z),
@@ -759,7 +834,8 @@ if (river) {
     window.voxelcraft.heal();
     g.player.teleportTo(r.x + 0.5, r.surface - 3, r.z + 0.5);
   }, river);
-  await page.waitForTimeout(5000);
+  // Under water the breath meter is the thing being watched, so watch it.
+  await until(() => window.voxelcraft.player.air < 9, null, 30000);
   console.log('breath:', JSON.stringify(await evaluate(() => ({
     air: Math.round(window.voxelcraft.player.air * 10) / 10,
     submerged: window.voxelcraft.player.submerged,
@@ -776,14 +852,16 @@ await evaluate(() => {
   window.voxelcraft.give('iron_ingot', 5);
   window.voxelcraft.openScreen('crafting');
 });
-await page.waitForTimeout(500);
+await until(() => window.voxelcraft.game.screens.kind === 'crafting');
 
 // One click on the recipe row is the whole interaction now.
 await page.fill('.recipe-search', 'ツルハシ');
-await page.waitForTimeout(300);
+const woodPickaxeRow = page.locator('.recipe-row', { hasText: '木のツルハシ' }).first();
+await woodPickaxeRow.waitFor({ timeout: 15000 });
 await shot('09-crafting');
-await page.locator('.recipe-row', { hasText: '木のツルハシ' }).first().click();
-await page.waitForTimeout(300);
+const pickaxesBefore = await evaluate(() => window.voxelcraft.player.inventory.count('wooden_pickaxe'));
+await woodPickaxeRow.click();
+await until((n) => window.voxelcraft.player.inventory.count('wooden_pickaxe') > n, pickaxesBefore);
 const crafted = await evaluate(() => window.voxelcraft.player.inventory.count('wooden_pickaxe'));
 const stillLocked = await page.locator('.recipe-row.locked', { hasText: 'ダイヤのツルハシ' }).count();
 console.log('crafted wooden pickaxes:', crafted, '/ diamond pickaxe row locked:', stillLocked);
@@ -793,14 +871,14 @@ await closeScreen();
 // The right mouse button is a game control, so the browser menu must stay away even
 // when the click lands on a screen that opened under the cursor.
 await evaluate(() => window.voxelcraft.openScreen('crafting'));
-await page.waitForTimeout(400);
+await until(() => window.voxelcraft.game.screens.kind === 'crafting');
 const contextMenuBlocked = await evaluate(() => {
   const layer = document.querySelector('.screen-layer');
   const node = layer?.firstElementChild ?? layer ?? document.body;
   return !node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
 });
 await page.keyboard.press('Escape');
-await page.waitForTimeout(400);
+await until(() => document.body.classList.contains('screen-open') === false);
 console.log(
   'context menu blocked:', contextMenuBlocked,
   '/ screen closed:', await evaluate(() => document.body.classList.contains('screen-open') === false),
@@ -808,7 +886,7 @@ console.log(
 
 console.log('coords panel:', JSON.stringify((await page.locator('.coords-position').textContent())?.trim()));
 await page.keyboard.press('KeyG');
-await page.waitForTimeout(400);
+await page.locator('.warp-input').waitFor({ timeout: 10000 });
 await shot('20-warp');
 const warpTarget = await evaluate(() => {
   const here = window.voxelcraft.position();
@@ -816,7 +894,7 @@ const warpTarget = await evaluate(() => {
 });
 await page.fill('.warp-input', `${warpTarget.x} ${warpTarget.z}`);
 await page.keyboard.press('Enter');
-await page.waitForTimeout(600);
+await until((t) => Math.abs(window.voxelcraft.position().x - t.x) < 2, warpTarget);
 console.log(
   'asked for:', JSON.stringify(warpTarget),
   'landed on:', JSON.stringify(await evaluate(() => window.voxelcraft.position())),
@@ -840,8 +918,11 @@ const shore = await evaluate(() => {
   return null;
 });
 console.log('shore:', JSON.stringify(shore));
-await page.waitForFunction(() => window.voxelcraft?.pending() === 0, null, { timeout: 90000 });
-await page.waitForTimeout(3000);
+await settled();
+// Landing in the sea is the point of this section, so wait for it rather than for a
+// duration that is usually long enough for the player to sink into it.
+await until(() => window.voxelcraft.player.inWater === true, null, 30000).catch(() => {});
+await frame();
 await shot('11-water');
 console.log('in water:', await evaluate(() => window.voxelcraft.player.inWater));
 
@@ -878,7 +959,7 @@ if (swim) {
   ).catch(() => {});
   await page.keyboard.up('Space');
   await page.keyboard.up('KeyW');
-  await page.waitForTimeout(600);
+  await frame();
   const ashore = await evaluate(() => {
     const p = window.voxelcraft.player;
     return { y: +p.y.toFixed(1), onGround: p.onGround, inWater: p.inWater };
@@ -891,11 +972,12 @@ if (swim) {
 await evaluate(() => {
   window.voxelcraft.player.health = 0;
 });
-await page.waitForTimeout(600);
+await page.locator('.menu.death').waitFor({ timeout: 15000 });
+await frame();
 await shot('12-death');
 const deathVisible = await page.locator('.menu.death').isVisible();
 await page.click('.menu.death .menu-button');
-await page.waitForTimeout(1200);
+await until(() => window.voxelcraft.player.isDead === false);
 // Respawning far from spawn lands on a chunk that has to be generated first. Give it a
 // moment and check the player is standing on it with their health intact: being handed
 // back your life and a six point fall is not a respawn.
@@ -914,17 +996,17 @@ console.log('death screen:', deathVisible, 'after respawn:', JSON.stringify(revi
 
 // --- pause menu --------------------------------------------------------------
 await page.keyboard.press('Escape');
-await page.waitForTimeout(500);
+await page.locator('.menu-button:has-text("ゲームに戻る")').waitFor({ timeout: 10000 });
 const paused = await page.locator('.menu-button:has-text("ゲームに戻る")').isVisible();
 await shot('13-pause');
 // Drag the render distance slider down and check it takes effect.
 await page.locator('.setting-row:has-text("描画距離") .slider').fill('5');
-await page.waitForTimeout(300);
+await until(() => window.voxelcraft.game.renderDistance === 5);
 console.log('render distance:', await evaluate(() => window.voxelcraft.game.renderDistance));
 
 // Difficulty is picked here, so it is clicked here rather than set from the console.
 await page.click('.choice:has-text("平和")');
-await page.waitForTimeout(300);
+await until(() => window.voxelcraft.difficulty().current === 'peaceful');
 // Read the toast first: it is gone 2.4 seconds after the click, which a screenshot on
 // the software renderer is easily slow enough to outlast.
 const difficultyToast = await page.locator('.toast').count()
@@ -937,7 +1019,7 @@ console.log('difficulty picked:', JSON.stringify({
 }));
 await shot('13b-difficulty');
 await page.click('.menu-button:has-text("ゲームに戻る")');
-await page.waitForTimeout(400);
+await until(() => window.voxelcraft.game.paused === false);
 
 // 平和 empties the world of hostiles and takes their teeth out: a zombie standing on the
 // player's toes costs nothing.
@@ -948,7 +1030,10 @@ const peaceful = await evaluate(() => {
   for (let i = 0; i < 3; i++) window.voxelcraft.spawnMob('zombie', 1.2);
   return { spawned: window.voxelcraft.hostiles(), health: g.player.health };
 });
-await page.waitForTimeout(1500);
+// Both halves of the claim: the zombies go, and the player mends rather than merely
+// failing to be hurt.
+await until((h) => window.voxelcraft.hostiles() === 0 && window.voxelcraft.game.player.health > h,
+  peaceful.health, 20000);
 console.log('peaceful:', JSON.stringify({
   zombiesSpawned: peaceful.spawned,
   zombiesLeft: await evaluate(() => window.voxelcraft.hostiles()),
@@ -961,13 +1046,13 @@ console.log('peaceful:', JSON.stringify({
 // back through the menu rather than the console: the setting is stored, and the reload
 // section further down would otherwise wake up on 平和 without saying so.
 await page.keyboard.press('Escape');
-await page.waitForTimeout(400);
+await page.locator('.choice:has-text("ふつう")').waitFor({ timeout: 10000 });
 await page.click('.choice:has-text("ふつう")');
-await page.waitForTimeout(300);
+await until(() => window.voxelcraft.difficulty().current === 'normal');
 await page.click('.menu-button:has-text("ゲームに戻る")');
-await page.waitForTimeout(400);
+await until(() => window.voxelcraft.game.paused === false);
 await evaluate(() => window.voxelcraft.spawnMob('zombie', 3));
-await page.waitForTimeout(600);
+await until(() => window.voxelcraft.mobs().at(-1)?.onGround === true, null, 10000).catch(() => {});
 console.log('back to ふつう:', JSON.stringify({
   difficulty: (await evaluate(() => window.voxelcraft.difficulty())).current,
   hostiles: await evaluate(() => window.voxelcraft.hostiles()),
@@ -990,18 +1075,20 @@ const economyBefore = await evaluate(() => ({
   earned: window.voxelcraft.earnings(),
 }));
 await page.reload({ waitUntil: 'domcontentloaded' });
-await page.waitForTimeout(1200);
+await page.locator('.menu-button:has-text("続きから")').waitFor({ timeout: 30000 });
 await page.click('.menu-button:has-text("続きから")');
 await page.waitForFunction(() => window.voxelcraft?.isReady() === true, null, { timeout: 90000 });
-await page.waitForTimeout(2000);
+await settled();
 const after = await evaluate(() => {
   const g = window.voxelcraft.game;
   return { x: +g.player.x.toFixed(2), z: +g.player.z.toFixed(2), torches: g.player.inventory.count('torch'), seed: g.world.seed };
 });
 console.log('saved:', JSON.stringify(before), 'loaded:', JSON.stringify(after));
-// The road lives in the block edits and the villages in their own save block, so a
-// reloaded world re-surveys its routes rather than storing their geometry.
-await page.waitForTimeout(8000);
+// The road lives in the block edits and the villages in their own save block, so nothing
+// here is waited for: what the save restored is restored by the time the world is ready.
+// The routes come back unsurveyed on purpose — a village more than a few hundred blocks
+// away is still only a saved record, and re-surveying it needs the player to walk back
+// into range — which is what the `connected` and `grade` columns below report.
 const economyAfter = await evaluate(() => ({
   villages: window.voxelcraft.villages().filter((v) => v.discovered).length,
   stages: window.voxelcraft.villages().map((v) => v.stage).join(','),
@@ -1017,17 +1104,17 @@ await shot('10-reloaded');
 
 // --- the pause screen names the seed so a world can be found again ----------
 await page.keyboard.press('Escape');
-await page.waitForTimeout(400);
+await page.locator('.seed-label').waitFor({ timeout: 10000 });
 console.log('pause seed label:', (await page.locator('.seed-label').textContent())?.trim());
 await page.click('.menu-button:has-text("タイトルへ戻る")');
-await page.waitForTimeout(800);
+await page.locator('.menu-button:has-text("検証用ワールド")').waitFor({ timeout: 20000 });
 
 // --- a seed in the URL opens that exact world without touching the title ----
 await page.goto(`${url}?seed=second`, { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => window.voxelcraft?.isReady() === true, null, { timeout: 90000 });
-await page.waitForTimeout(1500);
 await page.keyboard.press('F3');
-await page.waitForTimeout(300);
+await until(() => (document.querySelector('.debug')?.textContent ?? '').length > 0);
+await frame();
 await shot('14-second-world');
 console.log('world from the URL:', JSON.stringify(await debugText()));
 

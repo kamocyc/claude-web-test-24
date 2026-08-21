@@ -1732,6 +1732,12 @@ export class Game {
         this.player.hunger.reset();
       },
       pending: (): number => this.pool.pending,
+      /** Chunks still to be generated plus chunks generated but not yet turned into a
+       *  mesh. Zero means what is on screen is what the world actually holds, which is
+       *  what a screenshot wants to be sure of — and a condition to wait on instead of
+       *  guessing at a duration. Water meshes are left out: a live river re-dirties them
+       *  every tick, so they never reach zero. */
+      backlog: (): number => this.pool.pending + this.world.dirtyChunks.size,
       difficulty: (): { current: string; rules: unknown; choices: string[] } => ({
         current: this.player.rules.id,
         rules: { ...this.player.rules },
