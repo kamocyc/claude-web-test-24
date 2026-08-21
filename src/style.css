@@ -3,7 +3,7 @@
   /* Cream paper, plum ink and candy accents. The HUD is dressed like a picture book
      so it sits with the pastel world instead of cutting a dark hole in it. */
   --ink: #574364;
-  --panel-bg: rgba(255, 250, 243, 0.95);
+  --panel-bg: rgba(255, 250, 243, 0.97);
   --panel-border: rgba(150, 122, 168, 0.24);
   --slot-bg: rgba(150, 122, 168, 0.14);
   --slot-border: rgba(150, 122, 168, 0.4);
@@ -12,6 +12,8 @@
   --shadow: 0 6px 18px rgba(120, 96, 140, 0.24);
   /* Anything readable straight on the bright world gets ink plus a white halo. */
   --halo: 0 1px 0 rgba(255, 255, 255, 0.85), 0 2px 5px rgba(120, 96, 140, 0.5);
+  /* One easing for everything that moves, so the interface feels of a piece. */
+  --ease: cubic-bezier(0.2, 0.8, 0.3, 1);
   --heart-full: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 14.6 1.7 8.3a3.7 3.7 0 0 1 5.2-5.2L8 4.2l1.1-1.1a3.7 3.7 0 0 1 5.2 5.2z' fill='%23ff8fa6' stroke='%23574364' stroke-width='1.2'/%3E%3C/svg%3E");
   --heart-empty: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 14.6 1.7 8.3a3.7 3.7 0 0 1 5.2-5.2L8 4.2l1.1-1.1a3.7 3.7 0 0 1 5.2 5.2z' fill='%23574364' fill-opacity='.42' stroke='%23574364' stroke-width='1.2'/%3E%3C/svg%3E");
   --food-full: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M10.5 2c2.4 0 3.8 2 3.2 4-.5 1.7-2.3 2.7-3.9 3.4L6 11.6l-.9 2.2-1.6-.7.9-2.2-2-1.1 1-1.7 1.9 1.1 3.6-2C10.4 6.4 11.6 5.4 12 4.3 12.3 3.3 11.7 2.7 10.5 2z' fill='%23f0b46a' stroke='%23574364' stroke-width='1'/%3E%3C/svg%3E");
@@ -172,6 +174,8 @@ body.screen-open #viewport {
   background: var(--slot-bg);
   border: 2px solid var(--slot-border);
   border-radius: 13px;
+  transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease),
+    transform 0.18s var(--ease);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -184,6 +188,8 @@ body.screen-open #viewport {
 .hotbar-slot.selected {
   border-color: var(--accent-warm);
   box-shadow: 0 0 0 3px rgba(255, 179, 205, 0.5);
+  /* The held slot lifts a little out of the tray. */
+  transform: translateY(-3px) scale(1.06);
 }
 
 .slot-icon {
@@ -233,10 +239,11 @@ body.screen-open #viewport {
   background: var(--panel-bg);
   border-radius: 12px;
   box-shadow: var(--shadow);
-  transition: opacity 0.6s;
+  transition: opacity 0.6s var(--ease), transform 0.6s var(--ease);
 }
 
 .toast.fade {
+  transform: translateY(-6px);
   opacity: 0;
 }
 
@@ -283,9 +290,10 @@ body.screen-open #viewport {
 }
 
 .panel-title {
-  font-size: 18px;
+  font-size: 19px;
   font-weight: 700;
-  margin-bottom: 12px;
+  letter-spacing: 0.02em;
+  margin-bottom: 14px;
 }
 
 .panel-body {
@@ -396,6 +404,7 @@ body.screen-open #viewport {
   background: rgba(150, 122, 168, 0.09);
   border: 1px solid transparent;
   border-radius: 14px;
+  transition: background 0.14s var(--ease), border-color 0.14s var(--ease);
   cursor: pointer;
 }
 
@@ -535,6 +544,12 @@ body.screen-open #viewport {
   border: none;
   border-radius: 12px;
   cursor: pointer;
+  font-weight: 700;
+  transition: background 0.16s var(--ease), transform 0.16s var(--ease);
+}
+
+.trade-button:hover:not(:disabled) {
+  transform: translateY(-1px);
 }
 
 .trade-button:disabled {
@@ -580,8 +595,9 @@ body.screen-open #viewport {
 
 .menu-title {
   margin: 0;
-  font-size: 34px;
-  letter-spacing: 0.08em;
+  font-size: 36px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
 }
 
 .menu-note {
@@ -600,10 +616,28 @@ body.screen-open #viewport {
   border: 1px solid var(--panel-border);
   border-radius: 15px;
   cursor: pointer;
+  transition: background 0.16s var(--ease), transform 0.16s var(--ease),
+    box-shadow 0.16s var(--ease);
 }
 
 .menu-button:hover {
   background: rgba(150, 122, 168, 0.2);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow);
+}
+
+.menu-button:active {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+/* Keyboard focus has to be visible without shouting at a mouse user. */
+.menu-button:focus-visible,
+.trade-button:focus-visible,
+.recipe-row:focus-visible,
+.seed-input:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .menu-button.primary {

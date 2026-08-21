@@ -6,12 +6,51 @@ import type { Arrow } from '../game/mobs/spawner';
 import { itemDef } from '../game/items';
 import { blockDef } from '../world/blocks';
 import { modelFor, type ModelPart } from './models';
+import type { World } from '../world/world';
 import type { Atlas } from './textures';
 
 interface MobView {
   group: THREE.Group;
   parts: { mesh: THREE.Mesh; part: ModelPart }[];
   material: THREE.MeshLambertMaterial[];
+  shadow: THREE.Mesh;
+}
+
+/** How far below an entity a shadow is still looked for, in blocks. */
+const SHADOW_REACH = 6;
+
+/** A soft round blot, used as the contact shadow under everything that moves.
+ *  Without one, a mob at the top of its jump reads as pasted onto the scene. */
+function shadowTexture(): THREE.Texture {
+  const size = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('2D canvas is not available');
+  const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  gradient.addColorStop(0, 'rgba(0,0,0,0.55)');
+  gradient.addColorStop(0.55, 'rgba(0,0,0,0.28)');
+  gradient.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, size, size);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/** Adds a light along the silhouette, where a surface turns away from the eye. It is
+ *  what separates a mob from the terrain behind it without outlining anything. */
+function withRimLight(material: THREE.MeshLambertMaterial): THREE.MeshLambertMaterial {
+  material.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <dithering_fragment>',
+      `#include <dithering_fragment>
+       float rim = pow( 1.0 - abs( dot( normalize( vNormal ), normalize( vViewPosition ) ) ), 3.0 );
+       gl_FragColor.rgb += vec3( 0.5, 0.56, 0.68 ) * rim * 0.4;`,
+    );
+  };
+  return material;
 }
 
 /** How far a mob's limb is rounded, as a fraction of its shortest side. Rounding a
@@ -39,12 +78,47 @@ export class EntityRenderer {
   private readonly arrowViews: THREE.Mesh[] = [];
   private readonly itemGeometries = new Map<string, THREE.BufferGeometry>();
   private readonly dropMaterial: THREE.MeshLambertMaterial;
+  private readonly shadowMaterial: THREE.MeshBasicMaterial;
+  private readonly dropShadows = new Map<ItemDrop, THREE.Mesh>();
+  private readonly shadowGeometry = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
   private readonly arrowMaterial = new THREE.MeshLambertMaterial({ color: 0xcccccc });
   private readonly arrowGeometry = new RoundedBoxGeometry(0.08, 0.08, 0.7, 2, 0.03);
 
-  constructor(private readonly atlas: Atlas) {
+  constructor(
+    private readonly atlas: Atlas,
+    private readonly world: World,
+  ) {
     this.group.name = 'entities';
-    this.dropMaterial = new THREE.MeshLambertMaterial({ map: atlas.texture, transparent: true, alphaTest: 0.5 });
+    this.dropMaterial = withRimLight(
+      new THREE.MeshLambertMaterial({ map: atlas.texture, transparent: true, alphaTest: 0.5 }),
+    );
+    this.shadowMaterial = new THREE.MeshBasicMaterial({
+      map: shadowTexture(),
+      transparent: true,
+      depthWrite: false,
+      fog: true,
+    });
+  }
+
+  /** Lays a shadow on the first solid surface under an entity, fading it out with the
+   *  drop so a jumping mob's shadow shrinks away beneath it. */
+  private placeShadow(mesh: THREE.Mesh, x: number, y: number, z: number, width: number): void {
+    const bx = Math.floor(x);
+    const bz = Math.floor(z);
+    const start = Math.floor(y + 0.001);
+    for (let step = 0; step <= SHADOW_REACH; step++) {
+      const by = start - step;
+      if (!blockDef(this.world.getBlock(bx, by, bz)).opaque) continue;
+      const drop = y - (by + 1);
+      const fade = Math.max(0, 1 - drop / SHADOW_REACH);
+      mesh.visible = true;
+      mesh.position.set(x, by + 1.02, z);
+      const spread = width * (1 + drop * 0.25);
+      mesh.scale.set(spread, spread, 1);
+      (mesh.material as THREE.MeshBasicMaterial).opacity = fade * fade;
+      return;
+    }
+    mesh.visible = false;
   }
 
   sync(mobs: Mob[], drops: ItemDrop[], arrows: Arrow[], time: number): void {
@@ -65,6 +139,7 @@ export class EntityRenderer {
       }
       view.group.position.set(mob.x, mob.y, mob.z);
       view.group.rotation.y = mob.yaw;
+      this.placeShadow(view.shadow, mob.x, mob.y, mob.z, mob.kind === 'spider' ? 1.3 : 0.9);
 
       // Legs and arms swing with how far the mob has walked.
       const swing = Math.sin(mob.walkPhase) * 0.6;
@@ -102,6 +177,8 @@ export class EntityRenderer {
       if (alive.has(id)) continue;
       this.group.remove(view.group);
       for (const material of view.material) material.dispose();
+      this.group.remove(view.shadow);
+      (view.shadow.material as THREE.MeshBasicMaterial).dispose();
       this.mobViews.delete(id);
     }
   }
@@ -111,14 +188,18 @@ export class EntityRenderer {
     const parts: MobView['parts'] = [];
     const materials: THREE.MeshLambertMaterial[] = [];
     for (const part of modelFor(mob.kind)) {
-      const material = new THREE.MeshLambertMaterial({ color: part.color });
+      const material = withRimLight(new THREE.MeshLambertMaterial({ color: part.color }));
       const mesh = new THREE.Mesh(roundedPart(part.size), material);
       mesh.position.set(part.offset[0], part.offset[1], part.offset[2]);
       group.add(mesh);
       parts.push({ mesh, part });
       materials.push(material);
     }
-    return { group, parts, material: materials };
+    // The shadow is not parented to the mob: it must not turn or bob with it.
+    const shadow = new THREE.Mesh(this.shadowGeometry, this.shadowMaterial.clone());
+    shadow.renderOrder = -1;
+    this.group.add(shadow);
+    return { group, parts, material: materials, shadow };
   }
 
   private syncDrops(drops: ItemDrop[], time: number): void {
@@ -129,14 +210,26 @@ export class EntityRenderer {
         mesh = new THREE.Mesh(this.geometryForItem(drop.stack.id), this.dropMaterial);
         this.dropViews.set(drop, mesh);
         this.group.add(mesh);
+        const shadow = new THREE.Mesh(this.shadowGeometry, this.shadowMaterial.clone());
+        shadow.renderOrder = -1;
+        this.dropShadows.set(drop, shadow);
+        this.group.add(shadow);
       }
       mesh.position.set(drop.x, drop.y + 0.2 + Math.sin(time * 2 + drop.spin) * 0.06, drop.z);
       mesh.rotation.y = drop.spin;
+      const shadow = this.dropShadows.get(drop);
+      if (shadow) this.placeShadow(shadow, drop.x, drop.y, drop.z, 0.42);
     }
     for (const [drop, mesh] of this.dropViews) {
       if (alive.has(drop)) continue;
       this.group.remove(mesh);
       this.dropViews.delete(drop);
+      const shadow = this.dropShadows.get(drop);
+      if (shadow) {
+        this.group.remove(shadow);
+        (shadow.material as THREE.MeshBasicMaterial).dispose();
+        this.dropShadows.delete(drop);
+      }
     }
   }
 

@@ -233,9 +233,10 @@ ${WAVES}
       float facing = pow( 1.0 - max( dot( normal, view ), 0.0 ), 4.0 );
       color = mix( color, uSkyColor * ( 0.35 + 0.65 * uSun ), facing * 0.72 );
       alpha = mix( alpha, 0.97, facing );
-      // The hard, small glitter where the sun lines up with a crest.
-      float glint = pow( max( dot( normal, halfway ), 0.0 ), 240.0 );
-      color += uSunColor * glint * 2.2 * uSun * skyPart;
+      // Glitter where the sun lines up with a crest. The lobe is kept broad: a tight
+      // one traces a contour of the wave function and reads as a drawn line.
+      float glint = pow( max( dot( normal, halfway ), 0.0 ), 70.0 );
+      color += uSunColor * glint * 0.9 * uSun * skyPart;
     #endif
 
     gl_FragColor = vec4( color, alpha );

@@ -246,7 +246,7 @@ const LEAF: Color = [112, 192, 102];
 const SPRUCE_LEAF: Color = [92, 162, 118];
 const BIRCH_LEAF: Color = [164, 214, 118];
 const WATER: Color = [96, 172, 240];
-const SNOW_C: Color = [248, 251, 255];
+const SNOW_C: Color = [234, 241, 252];
 
 tile('stone', () => {
   const field = noiseField(0x51a2);
@@ -448,10 +448,13 @@ tile('snow', () => {
   const field = noiseField(0x50f0);
   return (ctx: CanvasRenderingContext2D) => {
     paint(ctx, (x, y) => {
-      // Almost white, so all the shape has to come from cool shadow in the hollows.
+      // Snow has no colour of its own, so every bit of its form has to come from cool
+      // shadow in the hollows. Left at paper white it blows out into a flat sheet.
       const drift = fbm(field, x, y, 3, 3);
-      let color = mixColor(SNOW_C, [206, 222, 244], (1 - drift) * 0.5);
-      if (field(x, y, 30) > 0.94) color = [255, 255, 255];
+      let color = mixColor([176, 196, 226], SNOW_C, Math.pow(drift, 0.7));
+      // Wind-scoured ridges catch the light.
+      if (drift > 0.72) color = mixColor(color, [255, 255, 255], (drift - 0.72) * 2.2);
+      if (field(x, y, 30) > 0.95) color = [255, 255, 255];
       return color;
     });
   };

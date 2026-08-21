@@ -167,7 +167,7 @@ export class Game {
     // happens, which means recompiling them.
     this.setEffects(options.settings.effects);
     this.chunkRenderer = new ChunkRenderer(this.world, this.atlas, this.materials);
-    this.entityRenderer = new EntityRenderer(this.atlas);
+    this.entityRenderer = new EntityRenderer(this.atlas, this.world);
     this.effects = new Effects(this.atlas);
     this.sky = new Sky(this.scene, this.renderDistance * CHUNK_SIZE);
     this.rain = new Rain(this.scene);
