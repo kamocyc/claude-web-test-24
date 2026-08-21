@@ -38,6 +38,7 @@ import { WarpDialog } from '../ui/warpDialog';
 import { clampWarpY, type WarpTarget } from './warp';
 import { createChest, createFurnace, isChest, isFurnace } from './blockEntities';
 import { applyDamage, applyKnockback } from './combat';
+import { DIFFICULTIES, type Difficulty, difficultyRules } from './difficulty';
 import { DayCycle } from './daycycle';
 import { DropManager } from './drops';
 import { EXHAUSTION } from './hunger';
@@ -122,6 +123,11 @@ export interface GameOptions {
 export class Game {
   readonly world: World;
   readonly player = new Player();
+  /** Which difficulty the player has already been told about; null until the first frame
+   *  settles it, so loading a world on 平和 does not announce itself. */
+  private difficultyAnnounced: Difficulty | null = null;
+  /** A respawn is waiting for its chunk before it can put the player on the ground. */
+  private settlePending = false;
   readonly day = new DayCycle();
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
@@ -337,6 +343,8 @@ export class Game {
     }
 
     this.player.autoStep = this.options.settings.autoStep;
+    this.applyDifficulty();
+    if (this.settlePending && this.settlePlayerOnGround()) this.settlePending = false;
     this.advanceWeather(this.weatherSeconds + dt);
     this.water.setCenter(this.player.x, this.player.z);
     this.water.update(dt);
@@ -989,13 +997,40 @@ export class Game {
 
   // --- world simulation ------------------------------------------------------
 
+  /** Called when the pause menu changes the setting, so it takes hold on the click rather
+   *  than on the first frame after the player resumes. */
+  setDifficulty(id: Difficulty): void {
+    this.options.settings.difficulty = difficultyRules(id).id;
+    this.applyDifficulty();
+  }
+
+  /** Keeps the player's rules in step with the setting. Changing it mid-game is allowed —
+   *  the pause menu is where a player decides they have had enough of the nights — so the
+   *  change is announced rather than applied in silence. */
+  private applyDifficulty(): void {
+    const rules = difficultyRules(this.options.settings.difficulty);
+    // Whether this is the first look has to be settled before the early return, or a
+    // world that starts on ふつう never counts as announced and the first real change
+    // reads as the opening one.
+    const first = this.difficultyAnnounced === null;
+    this.difficultyAnnounced = rules.id;
+    if (rules.id === this.player.rules.id) return;
+    this.player.rules = rules;
+    if (!first) this.toast(`難易度: ${rules.label} — ${rules.note}`);
+  }
+
   private mobContext(): MobUpdateContext {
     return {
       player: this.player,
       day: this.day,
+      difficulty: this.player.rules,
       currentAt: (x, y, z) => this.water.flowAt(x, y, z),
       onPlayerHit: (damage, fromX, fromZ) => {
-        const result = applyDamage(this.player, damage, this.player.inventory.defense);
+        // Every blow a mob lands passes through here, arrows included, so the difficulty
+        // only has to be applied in one place.
+        const scaled = damage * this.player.rules.damage;
+        if (scaled <= 0) return;
+        const result = applyDamage(this.player, scaled, this.player.inventory.defense);
         if (!result.applied) return;
         applyKnockback(this.player, fromX, fromZ, this.player.x, this.player.z, 4);
         this.player.hunger.addExhaustion(EXHAUSTION.damageTaken);
@@ -1576,7 +1611,12 @@ export class Game {
     this.hud.toast('持ち物は死んだ場所に落ちた');
     this.placeAtSpawn();
     this.player.respawn(this.player.x, this.player.y, this.player.z);
-    this.settlePlayerOnGround();
+    // Dying far from spawn means the spawn chunk has long since been unloaded, so there
+    // is nothing to stand on yet and the generator's idea of the height can be several
+    // blocks out. Settling again once the ground exists is what stops the player being
+    // handed back their life and a fall for it. `teleportTo` resets the fall distance, so
+    // the drop in the meantime costs nothing.
+    this.settlePending = !this.settlePlayerOnGround();
     this.hud.setClickPrompt(!this.options.input.locked);
   }
 
@@ -1590,12 +1630,15 @@ export class Game {
 
 
 
-  /** After the spawn chunk loads, drop the player onto the real surface. */
-  private settlePlayerOnGround(): void {
+  /** Drops the player onto the real surface. Returns false when the chunk under them has
+   *  not been generated yet and there is no surface to drop onto. */
+  private settlePlayerOnGround(): boolean {
     const x = Math.floor(this.player.x);
     const z = Math.floor(this.player.z);
     const top = this.world.heightAt(x, z);
-    if (top >= 0) this.player.teleportTo(this.player.x, top + 1, this.player.z);
+    if (top < 0) return false;
+    this.player.teleportTo(this.player.x, top + 1, this.player.z);
+    return true;
   }
 
   // --- persistence -----------------------------------------------------------
@@ -1689,6 +1732,16 @@ export class Game {
         this.player.hunger.reset();
       },
       pending: (): number => this.pool.pending,
+      difficulty: (): { current: string; rules: unknown; choices: string[] } => ({
+        current: this.player.rules.id,
+        rules: { ...this.player.rules },
+        choices: DIFFICULTIES.map((rules) => rules.id),
+      }),
+      setDifficulty: (id: Difficulty): string => {
+        this.setDifficulty(id);
+        return this.player.rules.label;
+      },
+      hostiles: (): number => this.mobs.hostileCount,
       world: this.world,
       give: (id: string, count = 1): number => this.player.inventory.add({ id, count }),
       setTime: (time: number): void => {

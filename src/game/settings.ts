@@ -1,6 +1,9 @@
 /** Player preferences, kept separately from the world save. */
+import { DEFAULT_DIFFICULTY, type Difficulty, isDifficulty } from './difficulty';
 
 export interface Settings {
+  /** How hard the world pushes back: 平和 / やさしい / ふつう / 難しい. */
+  difficulty: Difficulty;
   /** Chunks loaded around the player in each direction. */
   renderDistance: number;
   /** Radians of camera rotation per pixel of mouse movement. */
@@ -24,6 +27,7 @@ export interface Settings {
 export const SETTINGS_KEY = 'voxelcraft.settings.v1';
 
 export const DEFAULT_SETTINGS: Settings = {
+  difficulty: DEFAULT_DIFFICULTY,
   renderDistance: 8,
   sensitivity: 0.0022,
   compass: true,
@@ -58,6 +62,7 @@ export function loadSettings(): Settings {
         SENSITIVITY_RANGE.min,
         SENSITIVITY_RANGE.max,
       ),
+      difficulty: isDifficulty(parsed.difficulty) ? parsed.difficulty : DEFAULT_SETTINGS.difficulty,
       compass: parsed.compass ?? DEFAULT_SETTINGS.compass,
       minimap: parsed.minimap ?? DEFAULT_SETTINGS.minimap,
       forecast: parsed.forecast ?? DEFAULT_SETTINGS.forecast,

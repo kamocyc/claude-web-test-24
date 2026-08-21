@@ -4,6 +4,7 @@ import { CHUNK_HEIGHT } from '../../world/chunk';
 import type { World } from '../../world/world';
 import { applyDamage, applyKnockback } from '../combat';
 import type { DayCycle } from '../daycycle';
+import { type DifficultyRules, difficultyRules } from '../difficulty';
 import type { ItemStack } from '../inventory';
 import type { Player } from '../player';
 import { generateTrades } from '../trading';
@@ -24,6 +25,9 @@ export interface Arrow {
 export interface MobUpdateContext {
   player: Player;
   day: DayCycle;
+  /** How many hostiles may exist and how hard they hit. Defaults to ふつう so a caller
+   *  that does not care — a test, a tool — gets the plain game. */
+  difficulty?: DifficultyRules;
   /** Current in a cell, so mobs drift with the river. */
   currentAt?(x: number, y: number, z: number): { x: number; z: number };
   /** Called when the player takes damage from a mob. */
@@ -32,7 +36,6 @@ export interface MobUpdateContext {
   onDrop(x: number, y: number, z: number, stack: ItemStack): void;
 }
 
-const HOSTILE_CAP = 28;
 const PASSIVE_CAP = 22;
 const DESPAWN_DISTANCE = 96;
 const SPAWN_INTERVAL = 2;
@@ -68,6 +71,16 @@ export class MobManager {
   }
 
   update(dt: number, ctx: MobUpdateContext): void {
+    const rules = ctx.difficulty ?? difficultyRules('normal');
+    // Turning the hostiles off empties the world of the ones already in it, rather than
+    // leaving the player to outrun a zombie that can no longer be replaced.
+    if (!rules.hostiles) {
+      for (let i = this.mobs.length - 1; i >= 0; i--) {
+        if (this.mobs[i].def.hostile) this.mobs.splice(i, 1);
+      }
+      this.arrows.length = 0;
+    }
+
     const shoot = (mob: Mob, damage: number): void => {
       const player = ctx.player;
       const dx = player.x - mob.x;
@@ -116,7 +129,7 @@ export class MobManager {
     this.spawnTimer -= dt;
     if (this.spawnTimer <= 0) {
       this.spawnTimer = SPAWN_INTERVAL;
-      this.trySpawn(ctx);
+      this.trySpawn(ctx, rules);
     }
   }
 
@@ -165,13 +178,13 @@ export class MobManager {
     }
   }
 
-  private trySpawn(ctx: MobUpdateContext): void {
+  private trySpawn(ctx: MobUpdateContext, rules: DifficultyRules): void {
     const player = ctx.player;
     const night = ctx.day.isNight;
     const hostiles = this.hostileCount;
     const passives = this.mobs.length - hostiles;
 
-    if (night && hostiles < HOSTILE_CAP) {
+    if (night && rules.hostiles && hostiles < rules.cap) {
       for (let attempt = 0; attempt < 8; attempt++) {
         const spot = this.findSpawnSpot(player, 22, 46);
         if (!spot) continue;

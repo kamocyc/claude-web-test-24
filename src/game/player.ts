@@ -3,6 +3,7 @@ import { blockDef } from '../world/blocks';
 import { WATER_FULL } from '../world/water';
 import type { World } from '../world/world';
 import { type Damageable, applyDamage, fallDamage } from './combat';
+import { type DifficultyRules, difficultyRules } from './difficulty';
 import { EXHAUSTION, Hunger } from './hunger';
 import { PlayerInventory } from './inventory';
 
@@ -113,6 +114,9 @@ export class Player implements Damageable {
   health = 20;
   maxHealth = 20;
   hurtCooldown = 0;
+  /** What the difficulty lets the world do to this player. The game keeps it in step with
+   *  the setting; anything constructing a player on its own gets ふつう. */
+  rules: DifficultyRules = difficultyRules('normal');
   /** Highest Y reached since leaving the ground, for fall damage. */
   private fallStartY = 0;
   readonly inventory = new PlayerInventory();
@@ -318,9 +322,14 @@ export class Player implements Damageable {
 
     const hungerTick = this.hunger.update(dt, this.health, this.maxHealth);
     if (hungerTick.heal > 0) this.health = Math.min(this.maxHealth, this.health + hungerTick.heal);
-    if (hungerTick.damage > 0) {
+    // An empty stomach still empties on 平和 — it just cannot take the last heart, and
+    // the body mends itself in the meantime whether or not there is anything to eat.
+    if (hungerTick.damage > 0 && this.rules.starve) {
       this.health = Math.max(0, this.health - hungerTick.damage);
       events.tookDamage += hungerTick.damage;
+    }
+    if (this.rules.regen > 0 && this.health < this.maxHealth) {
+      this.health = Math.min(this.maxHealth, this.health + this.rules.regen * dt);
     }
 
     // --- environmental hazards ----------------------------------------------

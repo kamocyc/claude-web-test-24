@@ -39,6 +39,7 @@ function startGame(seed: number, save: ReturnType<typeof readSave>): void {
   menus.bindSettings(settings, (next) => {
     input.sensitivity = next.sensitivity;
     game?.setRenderDistance(next.renderDistance);
+    game?.setDifficulty(next.difficulty);
     saveSettings(next);
   });
   menus.bindPause({

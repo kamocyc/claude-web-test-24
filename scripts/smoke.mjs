@@ -18,6 +18,17 @@ if (process.env.PW_CHROMIUM) launchOptions.executablePath = process.env.PW_CHROM
 const browser = await chromium.launch(launchOptions);
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 
+const started = Date.now();
+{
+  const write = console.log;
+  let last = started;
+  console.log = (...args) => {
+    const now = Date.now();
+    write(`[${((now - started) / 1000).toFixed(1)}s +${((now - last) / 1000).toFixed(1)}]`, ...args);
+    last = now;
+  };
+}
+
 const errors = [];
 page.on('pageerror', (error) => errors.push(`[pageerror] ${error.message}`));
 page.on('console', (message) => {
@@ -885,7 +896,20 @@ await shot('12-death');
 const deathVisible = await page.locator('.menu.death').isVisible();
 await page.click('.menu.death .menu-button');
 await page.waitForTimeout(1200);
-const revived = await evaluate(() => ({ health: window.voxelcraft.player.health, dead: window.voxelcraft.player.isDead }));
+// Respawning far from spawn lands on a chunk that has to be generated first. Give it a
+// moment and check the player is standing on it with their health intact: being handed
+// back your life and a six point fall is not a respawn.
+await page.waitForFunction(() => window.voxelcraft.player.onGround === true, null, { timeout: 30000 })
+  .catch(() => {});
+const revived = await evaluate(() => {
+  const p = window.voxelcraft.player;
+  const g = window.voxelcraft.game;
+  return {
+    health: p.health, dead: p.isDead, onGround: p.onGround,
+    // Standing on the surface, not hanging above where the generator guessed it was.
+    aboveGround: +(p.y - (g.world.heightAt(Math.floor(p.x), Math.floor(p.z)) + 1)).toFixed(2),
+  };
+});
 console.log('death screen:', deathVisible, 'after respawn:', JSON.stringify(revived));
 
 // --- pause menu --------------------------------------------------------------
@@ -897,8 +921,58 @@ await shot('13-pause');
 await page.locator('.setting-row:has-text("描画距離") .slider').fill('5');
 await page.waitForTimeout(300);
 console.log('render distance:', await evaluate(() => window.voxelcraft.game.renderDistance));
+
+// Difficulty is picked here, so it is clicked here rather than set from the console.
+await page.click('.choice:has-text("平和")');
+await page.waitForTimeout(300);
+// Read the toast first: it is gone 2.4 seconds after the click, which a screenshot on
+// the software renderer is easily slow enough to outlast.
+const difficultyToast = await page.locator('.toast').count()
+  ? await page.locator('.toast').last().innerText()
+  : null;
+console.log('difficulty picked:', JSON.stringify({
+  toast: difficultyToast,
+  note: await page.locator('.setting-note').innerText(),
+  rules: await evaluate(() => window.voxelcraft.difficulty()),
+}));
+await shot('13b-difficulty');
 await page.click('.menu-button:has-text("ゲームに戻る")');
 await page.waitForTimeout(400);
+
+// 平和 empties the world of hostiles and takes their teeth out: a zombie standing on the
+// player's toes costs nothing.
+const peaceful = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  window.voxelcraft.setTime(0.8);
+  g.player.health = 8;
+  for (let i = 0; i < 3; i++) window.voxelcraft.spawnMob('zombie', 1.2);
+  return { spawned: window.voxelcraft.hostiles(), health: g.player.health };
+});
+await page.waitForTimeout(1500);
+console.log('peaceful:', JSON.stringify({
+  zombiesSpawned: peaceful.spawned,
+  zombiesLeft: await evaluate(() => window.voxelcraft.hostiles()),
+  healthBefore: peaceful.health,
+  // Not merely undamaged: 平和 mends the player while they stand there.
+  healthAfter: await evaluate(() => Math.round(window.voxelcraft.game.player.health * 10) / 10),
+}));
+
+// Hostiles come back when the setting does, which is the other half of the claim. Put it
+// back through the menu rather than the console: the setting is stored, and the reload
+// section further down would otherwise wake up on 平和 without saying so.
+await page.keyboard.press('Escape');
+await page.waitForTimeout(400);
+await page.click('.choice:has-text("ふつう")');
+await page.waitForTimeout(300);
+await page.click('.menu-button:has-text("ゲームに戻る")');
+await page.waitForTimeout(400);
+await evaluate(() => window.voxelcraft.spawnMob('zombie', 3));
+await page.waitForTimeout(600);
+console.log('back to ふつう:', JSON.stringify({
+  difficulty: (await evaluate(() => window.voxelcraft.difficulty())).current,
+  hostiles: await evaluate(() => window.voxelcraft.hostiles()),
+}));
+await evaluate(() => window.voxelcraft.heal());
 console.log('pause menu:', paused, 'resumed:', await evaluate(() => window.voxelcraft.game.paused === false));
 
 // --- save, reload and continue ----------------------------------------------

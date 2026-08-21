@@ -1,3 +1,4 @@
+import { DIFFICULTIES, type Difficulty, difficultyRules } from '../game/difficulty';
 import {
   RENDER_DISTANCE_RANGE,
   SENSITIVITY_RANGE,
@@ -43,6 +44,8 @@ export class Menus {
   private sensitivityInput!: HTMLInputElement;
   private distanceLabel!: HTMLElement;
   private sensitivityLabel!: HTMLElement;
+  private difficultyButtons!: { id: Difficulty; node: HTMLButtonElement }[];
+  private difficultyNote!: HTMLElement;
   private readonly toggles = new Map<ToggleKey, HTMLInputElement>();
   private readonly seedLabel = el('div', 'menu-note seed-label');
 
@@ -104,7 +107,21 @@ export class Menus {
     this.sensitivityInput.step = '1';
     this.sensitivityLabel = el('span', 'slider-value');
 
+    // Four buttons rather than a slider: these are named choices, not a scale, and the
+    // note underneath says what the chosen one actually does.
+    const choices = el('div', 'choice-row');
+    this.difficultyButtons = DIFFICULTIES.map((rules) => {
+      const node = el('button', 'choice', rules.label) as HTMLButtonElement;
+      node.type = 'button';
+      choices.appendChild(node);
+      return { id: rules.id, node };
+    });
+    this.difficultyNote = el('div', 'setting-note');
+
     settings.append(
+      el('div', 'setting-label', '難易度'),
+      choices,
+      this.difficultyNote,
       settingRow('描画距離', this.distanceInput, this.distanceLabel),
       settingRow('マウス感度', this.sensitivityInput, this.sensitivityLabel),
     );
@@ -129,6 +146,10 @@ export class Menus {
     const render = (): void => {
       this.distanceLabel.textContent = `${settings.renderDistance} チャンク`;
       this.sensitivityLabel.textContent = String(sensitivityToSlider(settings.sensitivity));
+      for (const choice of this.difficultyButtons) {
+        choice.node.classList.toggle('selected', choice.id === settings.difficulty);
+      }
+      this.difficultyNote.textContent = difficultyRules(settings.difficulty).note;
     };
     this.distanceInput.value = String(settings.renderDistance);
     this.sensitivityInput.value = String(sensitivityToSlider(settings.sensitivity));
@@ -138,6 +159,14 @@ export class Menus {
       input.checked = settings[key];
       input.onchange = () => {
         settings[key] = input.checked;
+        onChange(settings);
+      };
+    }
+
+    for (const choice of this.difficultyButtons) {
+      choice.node.onclick = () => {
+        settings.difficulty = choice.id;
+        render();
         onChange(settings);
       };
     }
