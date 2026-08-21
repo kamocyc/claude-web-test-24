@@ -279,7 +279,11 @@ export class ScreenManager {
       container,
       refresh: () => {
         container.refresh();
-        if (questButton && quest) questButton.disabled = !quest.ready;
+        if (questButton && quest) {
+          questButton.disabled = !quest.ready;
+          // A greyed-out button with no reason is a dead end; say what is missing.
+          questButton.title = quest.ready ? '' : quest.detail;
+        }
         for (const row of rows) {
           const affordable = canAfford(this.player.inventory, row.trade);
           row.button.disabled = !affordable;

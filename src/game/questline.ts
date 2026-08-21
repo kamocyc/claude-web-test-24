@@ -220,17 +220,38 @@ export class Questline {
   }
 
   /** What this villager has to say, if anything. Returns null when the step has nothing
-   *  to do with the village the player is standing in. */
-  interactionFor(village: VillageRecord, registry: VillageRegistry): QuestInteraction | null {
+   *  to do with the village the player is standing in.
+   *
+   *  `held` says how much of a good the player is already carrying. It only decides
+   *  whether the origin village offers to make up a lost crate, so a caller that has no
+   *  inventory to consult may leave it out and be told nothing is missing. */
+  interactionFor(
+    village: VillageRecord,
+    registry: VillageRegistry,
+    held: (good: GoodId) => number = () => Infinity,
+  ): QuestInteraction | null {
     if (this.step === 'accept_haul' && village.id === this.originId) {
       const target = this.pickTarget(village, registry);
       if (!target) return null;
       return {
         kind: 'accept',
         label: `${labelOf(village)}を${target.name}へ運ぶ`,
-        detail: `${target.name}は${labelOf(village)}を作れない。${HAUL_COUNT} 個ぶん運んでほしい`,
+        detail: `${target.name}は${labelOf(village)}を作れない。${HAUL_COUNT} 個ぶん持たせてくれる`,
         good: village.produces,
         count: HAUL_COUNT,
+      };
+    }
+    // A player who dropped or ate the crate can ask for the shortfall — only the
+    // shortfall, so this is a way out of a dead end and not a free supply of goods.
+    if (this.step === 'deliver_by_hand' && village.id === this.originId && this.cargo) {
+      const short = this.cargo.count - held(this.cargo.good);
+      if (short <= 0) return null;
+      return {
+        kind: 'accept',
+        label: '積み荷を受け取り直す',
+        detail: `${labelOfGood(this.cargo.good)}を あと ${short} 個渡してくれる`,
+        good: this.cargo.good,
+        count: short,
       };
     }
     if (this.step === 'deliver_by_hand' && village.id === this.targetId && this.cargo) {

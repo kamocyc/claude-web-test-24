@@ -107,6 +107,21 @@ describe('questline', () => {
     expect(quest.interactionFor(registry.get(ID_B)!, registry)?.kind).toBe('deliver');
   });
 
+  it('makes up a lost crate at the origin, but only the missing part of it', () => {
+    const { registry, quest } = setup();
+    quest.onVillageDiscovered(registry.get(ID_A)!);
+    quest.interactionFor(registry.get(ID_A)!, registry);
+    quest.complete('accept', registry);
+    const carrying = quest.interactionFor(registry.get(ID_A)!, registry, () => HAUL_COUNT);
+    expect(carrying).toBeNull();
+    const lost = quest.interactionFor(registry.get(ID_A)!, registry, () => HAUL_COUNT - 2);
+    expect(lost?.kind).toBe('accept');
+    expect(lost?.count).toBe(2);
+    // Taking the shortfall does not restart or advance the tutorial.
+    expect(quest.complete('accept', registry)).toBeNull();
+    expect(quest.step).toBe('deliver_by_hand');
+  });
+
   it('does not skip ahead when the wrong event arrives', () => {
     const { registry, quest } = setup();
     quest.onVillageDiscovered(registry.get(ID_A)!);

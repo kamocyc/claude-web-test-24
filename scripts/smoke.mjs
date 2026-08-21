@@ -35,6 +35,44 @@ const closeScreen = async () => {
   }
 };
 const debugText = () => page.locator('.debug').textContent();
+/** The tutorial's own route, looked up by its two villages. `routes()` is ordered by
+ *  discovery, so a third village joining the network is enough to shuffle the indices. */
+const QUEST_ROUTE = `(() => {
+  const q = window.voxelcraft.quest();
+  return window.voxelcraft.routes().find((r) =>
+    (r.from === q.origin && r.to === q.target) || (r.from === q.target && r.to === q.origin)) ?? null;
+})()`;
+/** Stands the player on flat, open, loaded ground and drops a villager in front of them.
+ *  Spawning where a teleport landed risks a roof, a wall, or an unloaded chunk, and a
+ *  villager that falls out of the world cannot be talked to. */
+const villagerInFront = async () => {
+  await page.waitForFunction(() => window.voxelcraft.pending() === 0, null, { timeout: 60000 })
+    .catch(() => {});
+  const spot = await page.evaluate(() => {
+    const g = window.voxelcraft.game;
+    window.voxelcraft.heal();
+    for (let r = 4; r < 80; r += 2) {
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
+        const x = Math.round(g.player.x + Math.cos(a) * r);
+        const z = Math.round(g.player.z + Math.sin(a) * r);
+        const here = g.world.heightAt(x, z);
+        const ahead = g.world.heightAt(x, z + 3);
+        if (here > 0 && here === ahead && g.world.getBlock(x, here + 1, z) === 0
+            && g.world.getBlock(x, here + 1, z + 3) === 0) {
+          g.player.teleportTo(x + 0.5, here + 1, z + 0.5);
+          g.player.yaw = Math.PI;
+          g.player.pitch = 0;
+          return { x, z, ground: here };
+        }
+      }
+    }
+    return null;
+  });
+  await page.waitForTimeout(400);
+  await page.evaluate(() => window.voxelcraft.spawnMob('villager', 2.5));
+  await page.waitForTimeout(800);
+  return spot;
+};
 const evaluate = (fn, arg) => page.evaluate(fn, arg);
 /** Right-clicks at the crosshair until the world reacts. A single dropped frame on the
  *  software renderer can swallow the press, and a retry is cheaper than a flaky run. */
@@ -206,7 +244,8 @@ console.log('crosshair pick:', JSON.stringify(await evaluate(() => {
 const tradeOpen = await useUntil(() => window.voxelcraft.game.screens.kind === 'trade');
 await shot('07-trade');
 if (tradeOpen) {
-  await page.locator('.trade-button:not([disabled])').first().click();
+  // Skip the tutorial row: this section is about buying, and the quest row sits above it.
+  await page.locator('.trade-row:not(.quest-row) .trade-button:not([disabled])').first().click();
   await page.waitForTimeout(400);
 }
 const tradeResult = await evaluate(() => {
@@ -228,7 +267,31 @@ console.log('objective panel:', JSON.stringify(await page.locator('.route-panel'
 
 // Take the haul, hand it over, and hear about roads. Walking it is the player's job.
 console.log('found nearby:', await evaluate(() => window.voxelcraft.discoverNearby(2)));
-console.log('accepted:', await evaluate(() => window.voxelcraft.questStep('accept')));
+
+// Accept it through the button the player actually clicks, not the debug hook: the row
+// is the only place the tutorial can be taken, so a disabled button is a dead tutorial.
+await villagerInFront();
+const questOpen = await useUntil(() => window.voxelcraft.game.screens.kind === 'trade');
+const questRow = page.locator('.quest-row');
+console.log('quest row:', JSON.stringify({
+  open: questOpen,
+  text: await questRow.innerText(),
+  clickable: await page.locator('.quest-button:not([disabled])').count() === 1,
+}));
+await shot('07v2-quest-row');
+const carriedBefore = await evaluate(() => window.voxelcraft.game.player.inventory.count(
+  window.voxelcraft.village().produces,
+));
+await page.locator('.quest-button').click();
+await page.waitForTimeout(400);
+console.log('accepted:', JSON.stringify({
+  step: (await evaluate(() => window.voxelcraft.quest())).step,
+  carriedBefore,
+  carriedAfter: await evaluate(() => window.voxelcraft.game.player.inventory.count(
+    window.voxelcraft.quest().cargo?.good ?? '',
+  )),
+}));
+await closeScreen();
 await page.waitForTimeout(2500);
 const unpaved = await evaluate(() => window.voxelcraft.routes());
 console.log('route before any road:', JSON.stringify(unpaved));
@@ -236,12 +299,45 @@ console.log('route before any road:', JSON.stringify(unpaved));
 console.log('unfinished panel:', JSON.stringify(await page.locator('.route-row').innerText()));
 await shot('07w-route-gap');
 
-console.log('delivered:', await evaluate(() => window.voxelcraft.questStep('deliver')));
-console.log('learned:', await evaluate(() => window.voxelcraft.questStep('learn')));
+// The hand-over and the road talk happen at the far village, through the same row. The
+// crate has to arrive in the player's pack for the button to be live, so this proves the
+// carry as well as the click.
+console.log('walked to the target:', JSON.stringify(await evaluate(() => window.voxelcraft.gotoQuestTarget())));
+console.log('stood at the target:', JSON.stringify(await villagerInFront()));
+await useUntil(() => window.voxelcraft.game.screens.kind === 'trade');
+if (await page.locator('.quest-button').count() === 1) {
+  console.log('delivery row:', JSON.stringify({
+    text: await page.locator('.quest-row').innerText(),
+    clickable: await page.locator('.quest-button:not([disabled])').count() === 1,
+  }));
+  await shot('07v3-deliver-row');
+  await page.locator('.quest-button').click();
+  await page.waitForTimeout(400);
+  // Next thing this village has to say: the road talk. A fresh villager, because the
+  // one just spoken to has had a few seconds to wander out of the crosshair.
+  await villagerInFront();
+  await useUntil(() => window.voxelcraft.game.screens.kind === 'trade');
+  if (await page.locator('.quest-button').count() === 1) {
+    console.log('road talk:', JSON.stringify(await page.locator('.quest-row').innerText()));
+    await page.locator('.quest-button').click();
+    await page.waitForTimeout(400);
+  }
+} else {
+  console.log('delivery row: NOT SHOWN — falling back to the debug hook');
+}
+await closeScreen();
+console.log('delivered and learned:', JSON.stringify(await evaluate(() => ({
+  step: window.voxelcraft.quest().step,
+  fallback: window.voxelcraft.quest().step === 'deliver_by_hand'
+    ? [window.voxelcraft.questStep('deliver'), window.voxelcraft.questStep('learn')]
+    : window.voxelcraft.quest().step === 'learn_roads'
+      ? [window.voxelcraft.questStep('learn')]
+      : null,
+}))));
 
 // Lay the road. By hand this is a few hundred blocks, which is a walk, not a smoke test.
 console.log('road blocks laid:', await evaluate(() => window.voxelcraft.buildRoad()));
-await page.waitForFunction(() => window.voxelcraft.routes()[0]?.connected === true, null, { timeout: 30000 });
+await page.waitForFunction(`${QUEST_ROUTE}?.connected === true`, null, { timeout: 30000 });
 console.log('route once paved:', JSON.stringify(await evaluate(() => window.voxelcraft.routes())));
 console.log('linked panel:', JSON.stringify(await page.locator('.route-row').innerText()));
 await shot('07x-route-linked');
@@ -254,14 +350,14 @@ console.log('demand:', JSON.stringify(await evaluate(() =>
   })))));
 
 // Repaving the same road: the route must actually get faster and carry more.
-const dirtRoute = await evaluate(() => window.voxelcraft.routes()[0]);
+const dirtRoute = await evaluate(QUEST_ROUTE);
 await evaluate(() => window.voxelcraft.buildRoad(undefined, undefined, 'stone_bricks'));
 await page.waitForFunction(
-  (q) => (window.voxelcraft.routes()[0]?.quality ?? 0) > q,
-  dirtRoute.quality,
+  `(${QUEST_ROUTE}?.quality ?? 0) > ${dirtRoute.quality}`,
+  null,
   { timeout: 30000 },
 );
-const pavedRoute = await evaluate(() => window.voxelcraft.routes()[0]);
+const pavedRoute = await evaluate(QUEST_ROUTE);
 console.log('road upgraded:', JSON.stringify({
   before: { grade: dirtRoute.grade, quality: dirtRoute.quality, load: dirtRoute.load },
   after: { grade: pavedRoute.grade, quality: pavedRoute.quality, load: pavedRoute.load },

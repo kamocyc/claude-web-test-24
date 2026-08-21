@@ -1335,22 +1335,47 @@ export class Game {
   private questInteractionFor(mob: Mob): (QuestInteraction & { ready: boolean; run(): void }) | null {
     const village = this.villages.at(mob.homeX, mob.homeZ);
     if (!village) return null;
-    const interaction = this.questline.interactionFor(village, this.villages);
+    const interaction = this.questline.interactionFor(village, this.villages, (good) =>
+      this.player.inventory.count(good),
+    );
     if (!interaction) return null;
-    const ready =
-      interaction.good === null ||
-      this.player.inventory.count(interaction.good) >= interaction.count;
+    // Only handing the crate over needs it in the pack. Accepting the job is what *gets*
+    // the player the crate, so gating that on already holding one shut the tutorial.
+    const held = interaction.good ? this.player.inventory.count(interaction.good) : 0;
+    const ready = interaction.kind !== 'deliver' || held >= interaction.count;
+    const detail =
+      ready || !interaction.good
+        ? interaction.detail
+        : `${interaction.detail}（今 ${held} / ${interaction.count} 個）`;
     return {
       ...interaction,
+      detail,
       ready,
       run: () => {
         if (!ready) return;
+        if (interaction.kind === 'accept' && interaction.good) {
+          // The village loads the player up: this step is about carrying, not farming.
+          const left = this.player.inventory.add({
+            id: interaction.good,
+            count: interaction.count,
+          });
+          if (left > 0) {
+            this.player.inventory.remove(interaction.good, interaction.count - left);
+            this.toast('持ち物がいっぱいで受け取れない。空けてからもう一度話しかけよう');
+            return;
+          }
+        }
         if (interaction.kind === 'deliver' && interaction.good) {
           this.player.inventory.remove(interaction.good, interaction.count);
           this.villages.addPoints(village.id, interaction.count);
           this.player.inventory.add({ id: 'emerald', count: 2 });
         }
-        this.toast(this.questline.complete(interaction.kind, this.villages));
+        // Re-supplying does not advance the step, so `complete` says nothing; the player
+        // still needs to be told the crate is in their pack.
+        this.toast(
+          this.questline.complete(interaction.kind, this.villages) ??
+            (interaction.kind === 'accept' ? '積み荷を受け取った' : null),
+        );
         this.linkQuestVillages();
       },
     };
@@ -1399,7 +1424,18 @@ export class Game {
   private layDebugRoad(x: number, y: number, z: number, block: BlockId = Block.DIRT_PATH): void {
     if (this.world.hasChunk(toChunkCoord(x), toChunkCoord(z))) {
       this.world.setBlock(x, y, z, block);
-      for (let h = 1; h <= 2; h++) this.world.setBlock(x, y + h, z, Block.AIR);
+      // Headroom, and then whatever falls into it. Cutting under a dune drops the entire
+      // sand column onto the fresh road one block at a time, and a road with something
+      // sitting on it is not a road — the index drops it and the route reads as broken.
+      for (let guard = 0; guard < 40; guard++) {
+        let cleared = false;
+        for (let h = 1; h <= 2; h++) {
+          if (this.world.getBlock(x, y + h, z) === Block.AIR) continue;
+          this.world.setBlock(x, y + h, z, Block.AIR);
+          cleared = true;
+        }
+        if (!cleared) break;
+      }
       return;
     }
     const key = chunkKey(toChunkCoord(x), toChunkCoord(z));
