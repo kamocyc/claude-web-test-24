@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CLEARABLE, PAVABLE, runRoad, treadBrush, treadColumn, treadLine, type PaveTarget } from '../game/paving';
-import { HEADROOM } from '../game/roads';
+import { HEADROOM, MAX_STEP } from '../game/roads';
 import { Block, type BlockId } from '../world/blocks';
 
 const GROUND = 60;
@@ -54,10 +54,32 @@ function unbroken(path: readonly { x: number; z: number; y: number }[]): boolean
   for (let i = 1; i < path.length; i++) {
     const a = path[i - 1];
     const b = path[i];
-    if (Math.abs(a.x - b.x) > 1 || Math.abs(a.z - b.z) > 1) return false;
-    if (Math.abs(a.y - b.y) > 2) return false;
+    if (Math.abs(a.x - b.x) + Math.abs(a.z - b.z) > 1) return false;
+    if (Math.abs(a.y - b.y) > MAX_STEP) return false;
   }
   return true;
+}
+
+/** Whether everything the builder laid is one piece under the rule the index applies:
+ *  left, right, up and down, within a step. Checking the columns it actually wrote beats
+ *  re-deriving the line it should have walked — the second only tests the test. */
+function oneRun(world: FakeWorld): boolean {
+  const cells = world.paths();
+  if (cells.length === 0) return false;
+  const at = new Map(cells.map((c) => [`${c.x},${c.z}`, c]));
+  const seen = new Set([`${cells[0].x},${cells[0].z}`]);
+  const queue = [cells[0]];
+  while (queue.length > 0) {
+    const here = queue.pop()!;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const key = `${here.x + dx},${here.z + dz}`;
+      const next = at.get(key);
+      if (!next || seen.has(key) || Math.abs(next.y - here.y) > MAX_STEP) continue;
+      seen.add(key);
+      queue.push(next);
+    }
+  }
+  return seen.size === cells.length;
 }
 
 /** The world as `runRoad` sees it: a heightmap to follow and somewhere to write. */
@@ -173,23 +195,20 @@ describe('the shovel sweep', () => {
 describe('running a road', () => {
   it('lays a column at every step, and every column touches the next', () => {
     const world = new FakeWorld();
-    const laid = runRoad(runner(world), { x: 0, z: 0 }, { x: 40, z: 17 }, GROUND, 2, 47);
-    expect(laid).toBe(41);
-    const path = Array.from({ length: 41 }, (_, i) => {
-      const x = Math.round((40 * i) / 40);
-      const z = Math.round((17 * i) / 40);
-      return { x, z, y: world.roadLevel(x, z) ?? -1 };
-    });
-    expect(unbroken(path)).toBe(true);
+    const laid = runRoad(runner(world), { x: 0, z: 0 }, { x: 40, z: 17 }, GROUND, 1, 47);
+    // An angled road is a staircase, not a diagonal, so its length is the two legs added
+    // together rather than the longer of them: 40 across, 17 up, and the column it starts
+    // on. A diagonal line of blocks looks like a road and is not one.
+    expect(laid).toBe(40 + 17 + 1);
+    expect(oneRun(world)).toBe(true);
   });
 
   it('cuts into a rise rather than climbing it in one step', () => {
     const world = new FakeWorld();
     // A wall halfway along: twenty blocks of it, straight up.
     for (let x = 20; x <= 40; x++) world.setHeight(x, 0, GROUND + 20);
-    runRoad(runner(world), { x: 0, z: 0 }, { x: 40, z: 0 }, GROUND, 2, 47);
-    const path = Array.from({ length: 41 }, (_, x) => ({ x, z: 0, y: world.roadLevel(x, 0) ?? -1 }));
-    expect(unbroken(path)).toBe(true);
+    runRoad(runner(world), { x: 0, z: 0 }, { x: 40, z: 0 }, GROUND, MAX_STEP, 47);
+    expect(oneRun(world)).toBe(true);
   });
 
   it('carries a road over the water instead of dropping it in', () => {
@@ -204,11 +223,10 @@ describe('running a road', () => {
     // A village street cut two blocks into the hillside at each end, with high ground in
     // between. Both ends have to be the street, or the road connects to nothing.
     for (let x = 0; x <= 40; x++) world.setHeight(x, 0, GROUND + 20);
-    runRoad(runner(world), { x: 0, z: 0 }, { x: 40, z: 0 }, GROUND, 2, 47, GROUND);
+    runRoad(runner(world), { x: 0, z: 0 }, { x: 40, z: 0 }, GROUND, MAX_STEP, 47, GROUND);
     expect(world.roadLevel(0, 0)).toBe(GROUND);
     expect(world.roadLevel(40, 0)).toBe(GROUND);
-    const path = Array.from({ length: 41 }, (_, x) => ({ x, z: 0, y: world.roadLevel(x, 0) ?? -1 }));
-    expect(unbroken(path)).toBe(true);
+    expect(oneRun(world)).toBe(true);
   });
 
   it('lays a single column when both ends are the same place', () => {
@@ -243,8 +261,10 @@ describe('making room overhead', () => {
 describe('running a road wide enough for a cart', () => {
   it('lays the same level either side of the line', () => {
     const world = new FakeWorld();
-    const laid = runRoad(runner(world), { x: 0, z: 0 }, { x: 20, z: 0 }, GROUND, 1, 0, undefined, 3);
-    expect(laid).toBe(21 * 3);
+    // The return is the road's length in columns, not the blocks a wide band put down.
+    const length = runRoad(runner(world), { x: 0, z: 0 }, { x: 20, z: 0 }, GROUND, 1, 0, undefined, 3);
+    expect(length).toBe(21);
+    expect(world.paths()).toHaveLength(21 * 3);
     for (let x = 0; x <= 20; x++) {
       for (let z = -1; z <= 1; z++) {
         expect(world.roadLevel(x, z), `nothing at ${x},${z}`).toBe(GROUND);
@@ -252,27 +272,14 @@ describe('running a road wide enough for a cart', () => {
     }
   });
 
-  it('widens the corner where the road turns', () => {
-    // A corner has a way in and a way out, and the rule asks for room in both, so both
-    // bands go down. A road that never turns is exactly three columns per step; one that
-    // does is wider than that, and only at the corners.
+  it('carries the width round the staircase of an angled road', () => {
     const world = new FakeWorld();
-    const straight = runRoad(runner(world), { x: 0, z: 0 }, { x: 20, z: 0 }, GROUND, 1, 0, undefined, 3);
-    expect(straight).toBe(21 * 3);
-
-    const turning = new FakeWorld();
-    const laid = runRoad(runner(turning), { x: 0, z: 0 }, { x: 20, z: 6 }, GROUND, 1, 0, undefined, 3);
-    expect(laid).toBeGreaterThan(21 * 3);
-  });
-
-  it('carries the width round a diagonal', () => {
-    const world = new FakeWorld();
-    runRoad(runner(world), { x: 0, z: 0 }, { x: 20, z: 20 }, GROUND, 1, 0, undefined, 3);
-    // Across a north-east line, the two sides are north-west and south-east of it.
-    for (let i = 1; i < 20; i++) {
-      expect(world.roadLevel(i, i), `middle at ${i}`).toBe(GROUND);
-      expect(world.roadLevel(i - 1, i + 1), `left at ${i}`).toBe(GROUND);
-      expect(world.roadLevel(i + 1, i - 1), `right at ${i}`).toBe(GROUND);
-    }
+    const length = runRoad(runner(world), { x: 0, z: 0 }, { x: 20, z: 20 }, GROUND, 1, 0, undefined, 3);
+    // A 45 degree road is all corners: twenty across and twenty up, plus the first column.
+    expect(length).toBe(41);
+    expect(oneRun(world)).toBe(true);
+    // Whether the width survived the staircase is the road index's question, and
+    // `roads.test.ts` asks it of a road this same builder laid on an angle.
+    expect(world.paths().length).toBeGreaterThan(length * 2);
   });
 });

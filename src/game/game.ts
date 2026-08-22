@@ -151,10 +151,16 @@ const GUIDE_FAULT = 0xff5a5a;
 const GUIDE_NARROW = 0xffc457;
 /** The doorway a route loads and unloads at. */
 const GUIDE_DEPOT = 0xffd479;
-/** Blocks of height a laid road may gain or lose per step. It is the index's own step,
- *  not a number of its own: a builder that could out-climb the rule would lay roads that
- *  look finished and do not join. */
-const ROAD_GRADE = MAX_STEP;
+/** Blocks of height a laid road may gain or lose per column — deliberately gentler than
+ *  the step the index will walk.
+ *
+ *  Matching the index exactly is not enough once a road is wide. An angled road is a
+ *  staircase, so the band either side of the line is made of cells that belong to columns
+ *  several steps apart, and a line climbing a block at every one of them leaves that band
+ *  two blocks out of level with what it is widening — a road three columns across
+ *  everywhere and passable nowhere. Half a block per column keeps the whole ribbon within
+ *  the one step the rule allows. */
+const ROAD_GRADE = MAX_STEP / 2;
 /** How far ahead `[R]` will run a road back to the player's feet. A road is continuous
  *  now, so this is the one place the player says "and the twenty blocks in between". */
 const ROAD_REACH = 20;
@@ -2355,11 +2361,7 @@ export class Game {
 
     const start = this.roads.streetPoint(from, to.x, to.z);
     const end = this.roads.streetPoint(to, from.x, from.z);
-    // `runRoad` counts columns and the band is three of them per step, so the road's
-    // length is what it laid divided by its width.
-    const blocks = Math.round(
-      this.runRoad(start, end, Block.DIRT_PATH, start.y, end.y, SAMPLE_WIDTH) / SAMPLE_WIDTH,
-    );
+    const blocks = this.runRoad(start, end, Block.DIRT_PATH, start.y, end.y, SAMPLE_WIDTH);
     this.villages.discover(from.id);
     this.villages.discover(to.id);
     this.transport.requestRoute(from.id, to.id);
@@ -2397,6 +2399,10 @@ export class Game {
   private roadRun(from: VillageRecord, to: VillageRecord): { blocks: number; water: number } {
     const start = this.roads.streetPoint(from, to.x, to.z);
     const end = this.roads.streetPoint(to, from.x, from.z);
+    // A road goes up, down, left and right, so its length is the two legs added together
+    // rather than the longer of them. Counting the way it used to be walked would pick a
+    // pair whose finished road is half again as long as the sample is meant to be.
+    const columns = Math.abs(end.x - start.x) + Math.abs(end.z - start.z) + 1;
     const steps = Math.max(Math.abs(end.x - start.x), Math.abs(end.z - start.z));
     let wet = 0;
     for (let i = 0; i <= steps; i++) {
@@ -2404,7 +2410,7 @@ export class Game {
       const z = Math.round(start.z + ((end.z - start.z) * i) / steps);
       if (this.groundHeightAt(x, z) <= SEA_LEVEL) wet++;
     }
-    return { blocks: steps + 1, water: wet / (steps + 1) };
+    return { blocks: columns, water: wet / (steps + 1) };
   }
 
   // --- spawn placement -------------------------------------------------------

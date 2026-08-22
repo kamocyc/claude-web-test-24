@@ -12,7 +12,7 @@
  *  scanning the world, makes the answer identical whether or not the chunk is loaded.
  *
  *  A road is continuous, and it is walkable. Two columns belong to one road only when they
- *  touch: one of the eight cells around a column, no more than `MAX_STEP` above or below
+ *  touch: directly up, down, left or right of it, no more than `MAX_STEP` above or below
  *  it, with `HEADROOM` cells clear overhead. Both numbers come from the creature that has
  *  to walk it — a porter's jump clears 1.11 blocks and its head is 1.95 up — because an
  *  index that calls a two block riser or the underside of an oak a road is an index that
@@ -99,19 +99,26 @@ export const MAX_NODES = 4096;
 /** Half width of a village's street cross, from `putRoad` in village.ts. */
 export const STREET_REACH = VILLAGE_RADIUS - 8;
 
-/** The four straight lines through a column: along x, along z, and both diagonals. */
+/** The two straight lines through a column: along x and along z. */
 const AXES: readonly (readonly [number, number])[] = [
   [1, 0],
   [0, 1],
-  [1, 1],
-  [1, -1],
 ];
 
-/** The eight cells a road may continue into. */
+/** The four cells a road may continue into. Corners are not among them: a road goes up,
+ *  down, left or right, which is what everybody means by "the road continues here".
+ *
+ *  Diagonals were allowed once and every awkward corner of this feature grew out of them.
+ *  Width could not be counted (a road running diagonally is three columns across and has
+ *  only four neighbours per column — fewer than a road pinched to one column has), so it
+ *  had to be measured against a direction; and measuring against a direction let a cart
+ *  come at a hole in the road on the diagonal and squeeze past two columns that had
+ *  nothing to do with the way it was going. Both problems are the same problem, and it is
+ *  this constant. */
 const AROUND: readonly (readonly [number, number])[] = [
-  [-1, -1], [0, -1], [1, -1],
+  [0, -1],
   [-1, 0], [1, 0],
-  [-1, 1], [0, 1], [1, 1],
+  [0, 1],
 ];
 
 export interface RoadPoint {
@@ -377,22 +384,18 @@ export class RoadNetwork {
     return out;
   }
 
-  /** True when two columns touch: side by side or corner to corner, within a step. */
+  /** True when two columns touch: directly beside one another, within a step. */
   private touches(a: RoadPoint, b: RoadPoint): boolean {
-    if (Math.abs(a.x - b.x) > 1 || Math.abs(a.z - b.z) > 1) return false;
+    if (Math.abs(a.x - b.x) + Math.abs(a.z - b.z) > 1) return false;
     return Math.abs(a.y - b.y) <= MAX_STEP;
   }
 
-  /** True when a cart standing here and heading `(dx, dz)` has road on both sides of it.
+  /** True when a cart standing here and heading `(dx, dz)` has road on both sides of it —
+   *  three columns across, measured across the way it is going.
    *
-   *  Measured *across* the way the cart is going, which is the only way width means
-   *  anything: three columns in a row along a single file road is a single file road.
-   *  Counting neighbours instead is tempting and wrong — a road running diagonally is
-   *  three across and has only four neighbours per column, fewer than a road pinched to
-   *  one column has, so no count can tell the two apart.
-   *
-   *  Which leaves the direction, and the direction is not a problem: the search is
-   *  already walking in one, and `runRoad` lays its band across the same one. */
+   *  Now that a road only ever runs up, down, left or right, "across" is just the other
+   *  axis, and the whole rule is the sentence a player would say out loud: the road has to
+   *  be three wide all the way. */
   wideAcross(x: number, z: number, dx: number, dz: number): boolean {
     const y = this.columns.get(key(x, z));
     if (y === undefined) return false;

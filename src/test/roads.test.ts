@@ -330,6 +330,37 @@ describe('waypoint trimming', () => {
 });
 
 
+describe('a road goes up, down, left and right', () => {
+  it('does not join two columns that only meet at a corner', () => {
+    // The rule this whole feature turns on. A line of blocks laid corner to corner reads
+    // as a road at a glance and is not one — and allowing it was where every awkward
+    // corner of the width rule came from.
+    const world = new FakeWorld();
+    for (let i = 0; i <= 178; i++) world.lay(31 + i, GROUND, i, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world);
+    roads.seedFromEdits();
+    expect(roads.columns.size).toBe(179);
+    // Every column is indexed, and no two of them are one road.
+    const a = village('a', 0, 0);
+    const b = village('b', 240, 178);
+    expect(roads.survey(a, b).connected).toBe(false);
+  });
+
+  it('joins them once the corner is filled in', () => {
+    const world = new FakeWorld();
+    for (let i = 0; i <= 178; i++) {
+      world.lay(31 + i, GROUND, i, Block.DIRT_PATH);
+      // The step that turns a staircase from a diagonal into a road.
+      if (i > 0) world.lay(31 + i, GROUND, i - 1, Block.DIRT_PATH);
+    }
+    const roads = new RoadNetwork(world);
+    roads.seedFromEdits();
+    const a = village('a', 0, 0);
+    const b = village('b', 240, 178);
+    expect(roads.survey(a, b).connected).toBe(true);
+  });
+});
+
 describe('the step and the headroom', () => {
   /** A road that climbs `rise` in one go half way along, and comes back down a block at
    *  a time so the far end still meets the village it is arriving at. Only the one riser
@@ -490,11 +521,10 @@ describe('a road wide enough for a cart', () => {
     expect(band(1).wideAcross(100, 0, 1, 0)).toBe(false);
   });
 
-  it('stops at a single missing block, rather than squeezing past it on the diagonal', () => {
+  it('stops at a single missing block', () => {
     // One column out of one side is a hole in the road, and a hole in the road is where
-    // the cart stops. Testing only the column a step lands on used to let a cart come at
-    // the hole diagonally and find two other columns either side of that heading — so the
-    // road was three wide everywhere except the one place the cart went through.
+    // the cart stops. A road only joins up left, right, up and down, so there is no way
+    // round it any more.
     const world = new FakeWorld();
     for (let x = 31; x <= 209; x++) {
       for (let z = -1; z <= 1; z++) {
@@ -525,7 +555,8 @@ describe('a road wide enough for a cart', () => {
   });
 
   it('counts a swept diagonal as wide', () => {
-    // What the shovel's 3x3 sweep leaves behind when the player walks a diagonal.
+    // What the shovel's 3x3 sweep leaves behind when the player walks a diagonal: a solid
+    // band, which is wide whichever of the four ways a cart is going through it.
     const world = new FakeWorld();
     for (let i = 0; i <= 40; i++) {
       for (let dz = -1; dz <= 1; dz++) {
@@ -536,7 +567,8 @@ describe('a road wide enough for a cart', () => {
     }
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    expect(roads.wideAcross(120, 20, 1, 1)).toBe(true);
+    expect(roads.wideAcross(120, 20, 1, 0)).toBe(true);
+    expect(roads.wideAcross(120, 20, 0, 1)).toBe(true);
   });
 });
 
@@ -567,8 +599,8 @@ describe('walking from a doorway onto the road', () => {
 
 describe('the road builder and the width rule agree', () => {
   /** Two villages on an angle, joined by `runRoad` at the given width. The angle is the
-   *  case that matters: a diagonal road rounds to a mixture of straight and diagonal
-   *  steps, and the two halves of this feature have to mean the same thing at each one. */
+   *  case that matters: an angled road comes out as a staircase, and the builder and the
+   *  rule have to mean the same thing at every step and every corner of it. */
   function built(width: number): { roads: RoadNetwork; a: VillageRecord; b: VillageRecord } {
     const world = new FakeWorld();
     const a = village('a', 0, 0);
@@ -586,6 +618,30 @@ describe('the road builder and the width rule agree', () => {
 
   it('runs a cart the whole length of a road it laid three wide', () => {
     const { roads, a, b } = built(3);
+    const result = roads.survey(a, b);
+    if (!result.connected) throw new Error('fixture is not connected');
+    expect(result.cart.ok).toBe(true);
+  });
+
+  it('runs a cart up an angled road that climbs, too', () => {
+    // The case the sample world is: an angled road that also gains height. The staircase
+    // doubles the number of columns, so a builder allowed to climb a block at every one of
+    // them puts the band cells either side of a column at heights that cannot both flank
+    // it — and the road is three wide everywhere and passes nowhere.
+    const world = new FakeWorld();
+    const a = village('a', 0, 0);
+    const b = village('b', 200, 160);
+    const roads = new RoadNetwork(world);
+    const start = roads.streetPoint(a, b.x, b.z);
+    const end = roads.streetPoint(b, a.x, a.z);
+    runRoad(
+      {
+        ground: (x) => GROUND + Math.floor((x - start.x) / 2),
+        lay: (x, y, z) => world.lay(x, y, z, Block.DIRT_PATH),
+      },
+      start, end, GROUND, MAX_STEP / 2, 0, GROUND, 3,
+    );
+    roads.seedFromEdits();
     const result = roads.survey(a, b);
     if (!result.connected) throw new Error('fixture is not connected');
     expect(result.cart.ok).toBe(true);

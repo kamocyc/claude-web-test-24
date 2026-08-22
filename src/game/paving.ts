@@ -155,19 +155,19 @@ export interface RoadRunner {
  *  way a road builder starts the descent early rather than discovering the problem at the
  *  gate. In between, the ground decides.
  *
+ *  An angled road comes out as a staircase rather than a diagonal, because a road joins
+ *  up left, right, up and down and nowhere else. That costs about four blocks in ten over
+ *  a diagonal run, and buys a road that is a road everywhere along it rather than one that
+ *  looks continuous and is not.
+ *
  *  `width` lays the same level either side of the line, across the direction of *this
- *  step* rather than of the road as a whole. That distinction is the whole of it: a road
- *  running north-east rounds to a mixture of diagonal and straight steps, and a band laid
- *  square to the average of those is narrow at every one that differs — which is a road
- *  that looks three wide, is three wide, and fails the rule that asks whether it is.
+ *  step*, and each column gets the band for the way in as well as the way out — which
+ *  only differ at a corner, and a corner given one of the two is a corner a cart cannot
+ *  turn. Laying the band flat rather than following the ground under each side is
+ *  deliberate too: a road wide enough to pull a cart down is a road somebody levelled.
  *
- *  Each column gets the band for the way in *and* the way out, which matters wherever the
- *  two differ — a corner. The rule asks whether a cart has room both as it arrives and as
- *  it leaves, so a corner given only one of the two is a corner it cannot turn. Widening
- *  the corner is also what a road builder does.
- *
- *  Laying the band flat rather than following the ground under each side is deliberate
- *  too: a road wide enough to pull a cart down is a road somebody levelled. */
+ *  Returns the road's length in columns, which is what every caller wants to say out
+ *  loud — not the number of blocks a wide band put down. */
 export function runRoad(
   runner: RoadRunner,
   from: { x: number; z: number },
@@ -187,49 +187,84 @@ export function runRoad(
           x: Math.round(from.x + ((to.x - from.x) * i) / steps),
           z: Math.round(from.z + ((to.z - from.z) * i) / steps),
         };
-  let y = startY;
-  let laid = 0;
-  /** The way out of column `i`, and the way into it. Rounding can repeat a column, so
-   *  both keep looking until the column actually moves. */
-  const headings = (i: number, x: number, z: number): { x: number; z: number }[] => {
-    const out: { x: number; z: number }[] = [];
-    for (let j = i + 1; j <= steps; j++) {
-      const ahead = at(j);
-      const d = { x: Math.sign(ahead.x - x), z: Math.sign(ahead.z - z) };
-      if (d.x === 0 && d.z === 0) continue;
-      out.push(d);
-      break;
-    }
-    for (let j = i - 1; j >= 0; j--) {
-      const behind = at(j);
-      const d = { x: Math.sign(x - behind.x), z: Math.sign(z - behind.z) };
-      if (d.x === 0 && d.z === 0) continue;
-      if (!out.some((o) => o.x === d.x && o.z === d.z)) out.push(d);
-      break;
-    }
-    return out.length > 0 ? out : [{ x: 1, z: 0 }];
-  };
+
+  // The line between the two points, with every corner folded into two steps so that no
+  // two columns of the road are only diagonally adjacent. A road joins up left, right,
+  // up and down and nowhere else, so a builder that stepped diagonally would lay a line
+  // of blocks that looks like a road and is not one.
+  const spine: { x: number; z: number }[] = [];
   for (let i = 0; i <= steps; i++) {
-    const { x, z } = at(i);
+    const here = at(i);
+    const last = spine[spine.length - 1];
+    if (last && last.x === here.x && last.z === here.z) continue;
+    if (last && last.x !== here.x && last.z !== here.z) spine.push({ x: here.x, z: last.z });
+    spine.push(here);
+  }
+  if (spine.length === 0) spine.push({ x: from.x, z: from.z });
+
+  // The height of every column of the line, worked out before anything is written. A road
+  // that gains height has to be settled in one pass: the widening either side of it lands
+  // on cells the line itself will use further along, and a band block dropped a level
+  // above the line breaks the very road it was widening.
+  const finish = spine.length - 1;
+  const levels: number[] = [];
+  let y = startY;
+  for (let i = 0; i <= finish; i++) {
+    const { x, z } = spine[i];
     let wanted = Math.max(runner.ground(x, z), floor);
     const rise = grade * i;
     wanted = Math.min(startY + rise, Math.max(startY - rise, wanted));
     if (endY !== undefined) {
-      const reach = grade * (steps - i);
+      const reach = grade * (finish - i);
       wanted = Math.min(endY + reach, Math.max(endY - reach, wanted));
     }
+    // `grade` may be a fraction of a block per column — a road wide enough for a cart has
+    // to gain height slowly enough that the band either side of it stays level with the
+    // line it is widening, and the cells of that band belong to columns several steps
+    // apart once the road is a staircase.
     y = Math.max(y - grade, Math.min(y + grade, wanted));
-    const done = new Set<string>();
-    for (const heading of headings(i, x, z)) {
+    levels.push(Math.round(y));
+  }
+
+  // The line first, then the widening around it, and never the same column twice: the
+  // line's own height wins wherever the two want the same cell.
+  const claimed = new Map<string, number>();
+  for (let i = 0; i <= finish; i++) {
+    const { x, z } = spine[i];
+    if (claimed.has(`${x},${z}`)) continue;
+    claimed.set(`${x},${z}`, levels[i]);
+    runner.lay(x, levels[i], z);
+  }
+  for (let i = 0; i <= finish; i++) {
+    const { x, z } = spine[i];
+    for (const heading of headingsAt(spine, i)) {
       for (let side = -span; side <= span; side++) {
         const cx = x - heading.z * side;
         const cz = z + heading.x * side;
-        if (done.has(`${cx},${cz}`)) continue;
-        done.add(`${cx},${cz}`);
-        runner.lay(cx, y, cz);
-        laid++;
+        if (claimed.has(`${cx},${cz}`)) continue;
+        claimed.set(`${cx},${cz}`, levels[i]);
+        runner.lay(cx, levels[i], cz);
       }
     }
   }
-  return laid;
+  return spine.length;
+}
+
+/** The way into a column of the road and the way out of it, without repeats. They differ
+ *  at a corner, and the band is laid across both: the width rule asks whether a cart has
+ *  room as it arrives and as it leaves, so a corner given only one of the two is a corner
+ *  it cannot turn. */
+function headingsAt(
+  spine: readonly { x: number; z: number }[],
+  i: number,
+): { x: number; z: number }[] {
+  const out: { x: number; z: number }[] = [];
+  const add = (a: { x: number; z: number }, b: { x: number; z: number }): void => {
+    const d = { x: Math.sign(b.x - a.x), z: Math.sign(b.z - a.z) };
+    if (d.x === 0 && d.z === 0) return;
+    if (!out.some((o) => o.x === d.x && o.z === d.z)) out.push(d);
+  };
+  if (i + 1 < spine.length) add(spine[i], spine[i + 1]);
+  if (i > 0) add(spine[i - 1], spine[i]);
+  return out.length > 0 ? out : [{ x: 1, z: 0 }];
 }

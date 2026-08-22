@@ -112,13 +112,14 @@ export interface Milestone {
 
 /** Blocks of road still to lay across a gap.
  *
- *  A road is continuous now, so a block covers a metre — except on the diagonal, where a
- *  corner-to-corner step covers √2 of them. The count is what the player has to do; the
- *  metres are how far they have to walk to do it. Both get said, because a road that used
- *  to be nineteen blocks placed twenty apart is now a real stretch of digging, and
- *  pretending otherwise is how the second route got a reputation. */
+ *  A road goes up, down, left and right, so one block covers one metre and no more — an
+ *  angled stretch is a staircase, and a staircase is longer than the line it follows.
+ *  This is therefore the floor rather than the answer: the true count is anywhere from
+ *  here to half again, depending on how square the gap is. Saying the floor and the
+ *  metres together is honest; dividing by √2, as this did while corners counted, was
+ *  telling the player the job was smaller than it is. */
 export function roadBlocksFor(missing: number): number {
-  return Math.max(1, Math.round(missing / Math.SQRT2));
+  return Math.max(1, Math.round(missing));
 }
 
 /** "あと 368m・道 260 個ぶん". Used wherever a gap is reported. */
