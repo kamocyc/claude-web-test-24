@@ -323,7 +323,11 @@ export class Questline {
   }
 
   /** Nearest other village the registry knows about. It need not be discovered — being
-   *  told where to go is exactly what makes the hand delivery reveal it. */
+   *  told where to go is exactly what makes the hand delivery reveal it.
+   *
+   *  A hamlet belonging to this village wins outright. That is what it is for: two
+   *  villages are hundreds of blocks apart, which makes the first errand a hike and the
+   *  road it teaches an afternoon's digging. */
   private pickTarget(origin: VillageRecord, registry: VillageRegistry): VillageRecord | null {
     if (this.targetId) {
       const existing = registry.get(this.targetId);
@@ -333,7 +337,12 @@ export class Questline {
     let bestDistance = Infinity;
     for (const candidate of registry.byId.values()) {
       if (candidate.id === origin.id) continue;
+      const own = candidate.outpost && candidate.parent === origin.id;
       const distance = Math.hypot(candidate.x - origin.x, candidate.z - origin.z);
+      if (own) {
+        this.targetId = candidate.id;
+        return candidate;
+      }
       if (distance < bestDistance) {
         bestDistance = distance;
         best = candidate;

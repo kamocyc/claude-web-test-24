@@ -70,11 +70,13 @@ import {
   VillageRegistry,
   displayName,
   kindLabel,
+  radiusOf,
   rankLabel,
   type VillageRecord,
 } from './villages';
 import type { LedgerView } from '../ui/ledger';
-import { applyGrowth, growthChunks } from './villageGrowth';
+import { applyGrowth, growthChunks, growthVillagers } from './villageGrowth';
+import { outpostRecord, outpostSite } from './outpost';
 import { MILESTONES, Questline, type NetworkState, type QuestInteraction } from './questline';
 import { biomeDef } from '../world/generation/biome';
 import { riverCovers } from '../world/generation/rivers';
@@ -581,7 +583,7 @@ export class Game {
     // Before lighting is seeded, so a village that grew while this chunk was away has its
     // new walls in place when the light is baked against them.
     for (const village of this.villages.byId.values()) {
-      if (village.stage <= 0) continue;
+      if (village.stage <= 0 && !village.outpost) continue;
       if (Math.abs(village.x - chunk.originX) > VILLAGE_RADIUS + CHUNK_SIZE) continue;
       if (Math.abs(village.z - chunk.originZ) > VILLAGE_RADIUS + CHUNK_SIZE) continue;
       this.buildGrowth(village, chunk);
@@ -1121,12 +1123,36 @@ export class Game {
     const here = this.villages.at(this.player.x, this.player.z);
     if (here && this.villages.discover(here.id)) {
       this.hud.toast(`${here.name}に着いた`);
+      // Before the questline picks a target: the hamlet has to exist for it to be chosen.
+      if (this.questline.step === 'find_village') this.ensureOutpost(here);
       this.toast(this.questline.onVillageDiscovered(here));
       this.linkQuestVillages();
     }
     this.villages.produce(dt);
     this.transport.update(dt, this.player.x, this.player.z);
     this.drainPendingVillagers();
+  }
+
+  /** Gives the first village the player walks into a hamlet to trade with, fifty blocks
+   *  away, and builds it. Only the tutorial's own village gets one: everywhere else, the
+   *  three hundred block gap between villages is the game.
+   *
+   *  Nothing happens if there is nowhere level enough within reach — the tutorial simply
+   *  falls back to the nearest real village, which is what it did before. */
+  private ensureOutpost(parent: VillageRecord): void {
+    if (parent.outpost || parent.parent) return;
+    for (const record of this.villages.byId.values()) {
+      if (record.outpost && record.parent === parent.id) return;
+    }
+    const site = outpostSite(this.options.seed, parent, (x, z) => this.groundHeightAt(x, z));
+    if (!site) return;
+    const record = this.villages.adopt(outpostRecord(this.options.seed, parent, site));
+    // Build whatever is already loaded now; the rest builds itself as chunks arrive,
+    // because applying is idempotent.
+    for (const { cx, cz } of growthChunks(this.options.seed, record, [])) {
+      const chunk = this.world.getChunk(cx, cz);
+      if (chunk) this.buildGrowth(record, chunk);
+    }
   }
 
   /** Once the tutorial knows both ends, transport starts watching that pair so the panel
@@ -1211,7 +1237,7 @@ export class Game {
     // Deliveries are what keep a village's offers worth walking to.
     for (const mob of this.mobs.mobs) {
       if (mob.kind !== 'villager' || !to) continue;
-      if (Math.hypot(mob.homeX - to.x, mob.homeZ - to.z) > VILLAGE_RADIUS) continue;
+      if (Math.hypot(mob.homeX - to.x, mob.homeZ - to.z) > radiusOf(to)) continue;
       restockTrades(mob.trades);
     }
     this.toast(this.questline.onArrival(arrival.route));
@@ -1248,11 +1274,16 @@ export class Game {
     // `populatedChunks` records "ever populated" forever, so it cannot be reused here:
     // clearing it would spawn the village's original villagers a second time. The village
     // remembers how far it has staffed itself instead.
-    if (village.spawnedStage >= village.stage) return;
-    for (const villager of result.villagers) {
+    //
+    // Everyone the village owes moves in at once, not just the ones whose house is in this
+    // chunk: the rest queue until their own chunk arrives. Spawning only this chunk's
+    // share would leave the others behind, because this line closes the gate for good.
+    const staffed = Math.max(village.stage, village.outpost ? 1 : 0);
+    if (village.spawnedStage >= staffed) return;
+    for (const villager of growthVillagers(this.options.seed, village, occupied)) {
       this.spawnOrQueueVillager(villager.x, villager.y, villager.z, villager.profession, village.stage);
     }
-    village.spawnedStage = village.stage;
+    village.spawnedStage = staffed;
   }
 
   private spawnOrQueueVillager(x: number, y: number, z: number, profession: string, stage: number): void {
@@ -1276,7 +1307,8 @@ export class Game {
   private refreshVillageTrades(village: VillageRecord): void {
     for (const mob of this.mobs.mobs) {
       if (mob.kind !== 'villager' || !mob.profession) continue;
-      if (Math.hypot(mob.homeX - village.x, mob.homeZ - village.z) > VILLAGE_RADIUS) continue;
+      // A hamlet's reach is its own, or refreshing it would re-roll its parent's people.
+      if (Math.hypot(mob.homeX - village.x, mob.homeZ - village.z) > radiusOf(village)) continue;
       this.rollTrades(mob, village);
     }
   }
@@ -1781,6 +1813,7 @@ export class Game {
           kind: v.kind, produces: v.produces, input: v.input, inputStock: v.inputStock,
           needs: [...v.needs], stage: v.stage, points: v.points, stock: v.stock,
           received: v.received, discovered: v.discovered,
+          outpost: v.outpost ?? false, parent: v.parent ?? null,
         })),
       /** The village the player is standing in, or the nearest known one. */
       village: (): VillageRecord | null => {

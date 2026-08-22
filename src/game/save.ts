@@ -55,6 +55,15 @@ export interface SavedVillage {
   /** Absent in saves written before workshops existed. */
   inputStock?: number;
   received?: number;
+  /** A tutorial hamlet is not on the village grid, so unlike every other village it
+   *  cannot be re-derived from the seed and its whole description is stored. */
+  outpost?: boolean;
+  parent?: string;
+  x?: number;
+  z?: number;
+  baseY?: number;
+  variant?: string;
+  name?: string;
 }
 
 /** Only the pair. The road itself is already in `edits`, so a route surveys itself again

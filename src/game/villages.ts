@@ -31,6 +31,14 @@ export const MAX_STAGE = STAGE_POINTS.length;
 export const RANKS: readonly string[] = ['集落', '村', '大きな村', '町', '都市'];
 /** Walking onto the plateau is what counts as finding a village. */
 export const DISCOVER_RADIUS = VILLAGE_RADIUS;
+/** A hamlet is smaller, and stands close enough to its parent that sharing the parent's
+ *  radius would have the two of them claiming the same ground. */
+export const OUTPOST_DISCOVER_RADIUS = 16;
+
+/** How close the player has to be for this to be the place they are standing in. */
+export function radiusOf(record: { outpost?: boolean }): number {
+  return record.outpost ? OUTPOST_DISCOVER_RADIUS : DISCOVER_RADIUS;
+}
 /** Seconds per unit produced at stage 0, and the ceiling stock piles up to. */
 export const PRODUCE_SECONDS = 6;
 export const MAX_STOCK = 64;
@@ -132,6 +140,11 @@ export interface VillageRecord {
   spawnedStage: number;
   /** Fractional carry so production does not depend on the frame rate. */
   progress: number;
+  /** A tutorial hamlet rather than a village off the grid. It behaves like a village in
+   *  every way the rest of the game cares about; it is only smaller, closer, and stored
+   *  in full because nothing can re-derive it. */
+  outpost?: boolean;
+  parent?: VillageId;
 }
 
 export interface SavedVillage {
@@ -146,6 +159,48 @@ export interface SavedVillage {
    *  empty and fills up again from the next delivery. */
   inputStock?: number;
   received?: number;
+  /** A tutorial hamlet is not on the village grid, so unlike every other village it
+   *  cannot be re-derived and its whole description is stored alongside its progress. */
+  outpost?: boolean;
+  parent?: string;
+  x?: number;
+  z?: number;
+  baseY?: number;
+  variant?: string;
+  name?: string;
+}
+
+const VARIANTS: readonly VillageVariant[] = ['plains', 'desert', 'snowy'];
+
+/** Rebuilds a hamlet from what was stored, or nothing when the entry is missing a piece
+ *  of the description a hamlet cannot do without. */
+export function outpostFromSave(entry: SavedVillage): VillageRecord | null {
+  if (typeof entry.x !== 'number' || typeof entry.z !== 'number' || typeof entry.baseY !== 'number') {
+    return null;
+  }
+  const variant = VARIANTS.find((v) => v === entry.variant) ?? 'plains';
+  return {
+    id: entry.id,
+    x: entry.x,
+    z: entry.z,
+    baseY: entry.baseY,
+    variant,
+    name: entry.name ?? '出張所',
+    kind: 'farm',
+    produces: entry.produces,
+    input: null,
+    inputStock: entry.inputStock ?? 0,
+    needs: [],
+    stage: entry.stage,
+    points: entry.points,
+    stock: entry.stock,
+    received: entry.received ?? 0,
+    discovered: entry.discovered,
+    spawnedStage: entry.spawnedStage,
+    progress: 0,
+    outpost: true,
+    parent: entry.parent,
+  };
 }
 
 export function villageId(x: number, z: number): VillageId {
@@ -300,12 +355,29 @@ export class VillageRegistry {
     return this.byId.get(id);
   }
 
-  /** The village the given point stands in, if any. */
+  /** The village the given point stands in, if any. The nearest one, because a hamlet
+   *  stands close enough to its parent for both to claim the ground between them. */
   at(x: number, z: number): VillageRecord | undefined {
+    let best: VillageRecord | undefined;
+    let bestDistance = Infinity;
     for (const record of this.byId.values()) {
-      if (Math.hypot(record.x - x, record.z - z) <= DISCOVER_RADIUS) return record;
+      const distance = Math.hypot(record.x - x, record.z - z);
+      if (distance > radiusOf(record) || distance >= bestDistance) continue;
+      best = record;
+      bestDistance = distance;
     }
-    return undefined;
+    return best;
+  }
+
+  /** Takes in a village nothing can re-derive — today that means a tutorial hamlet. Any
+   *  saved progress waiting under its id lands on it, exactly as for a grid village. */
+  adopt(record: VillageRecord): VillageRecord {
+    const existing = this.byId.get(record.id);
+    if (existing) return existing;
+    this.byId.set(record.id, record);
+    this.applyPending(record);
+    this.refreshNeeds(record);
+    return record;
   }
 
   /** True only the first time, so the caller can announce it. */
@@ -410,6 +482,11 @@ export class VillageRegistry {
       spawnedStage: v.spawnedStage,
       inputStock: v.inputStock,
       received: v.received,
+      // A hamlet is not on the grid, so nothing can work out where it was or what it was
+      // called. It is the one village whose description travels with its progress.
+      ...(v.outpost
+        ? { outpost: true, parent: v.parent, x: v.x, z: v.z, baseY: v.baseY, variant: v.variant, name: v.name }
+        : {}),
     }));
     // A village the player has not been back to since loading is still only in `pending`.
     // Writing just the re-derived ones would quietly throw away everything earned
@@ -427,6 +504,13 @@ export class VillageRegistry {
     for (const entry of data) {
       if (typeof entry?.id !== 'string') continue;
       this.pending.set(entry.id, entry);
+    }
+    // A hamlet is rebuilt here rather than waiting for the player to walk back into it:
+    // `ensureNear` re-derives villages from the grid, and a hamlet is not on it.
+    for (const entry of data) {
+      if (!entry?.outpost || this.byId.has(entry.id)) continue;
+      const record = outpostFromSave(entry);
+      if (record) this.adopt(record);
     }
     for (const record of this.byId.values()) {
       this.applyPending(record);

@@ -334,6 +334,21 @@ await closeScreen();
 const home = await evaluate(() => window.voxelcraft.village());
 console.log('village economy:', JSON.stringify({ name: home?.name, produces: home?.produces, discovered: home?.discovered }));
 console.log('quest:', JSON.stringify(await evaluate(() => window.voxelcraft.quest())));
+// The tutorial is sent to a hamlet built beside the first village, not to the next village
+// three hundred blocks away: a crate can be carried there, and the road joined by hand.
+console.log('tutorial pair:', JSON.stringify(await evaluate(() => {
+  const q = window.voxelcraft.quest();
+  const all = window.voxelcraft.villages();
+  const origin = all.find((v) => v.id === q.origin);
+  const hamlet = all.find((v) => v.outpost && v.parent === q.origin);
+  if (!origin || !hamlet) return { hamlet: null };
+  return {
+    from: origin.name,
+    to: hamlet.name,
+    makes: hamlet.produces,
+    apart: Math.round(Math.hypot(hamlet.x - origin.x, hamlet.z - origin.z)),
+  };
+})));
 await shot('07v-village-quest');
 console.log('objective panel:', JSON.stringify(await page.locator('.route-panel').innerText()));
 

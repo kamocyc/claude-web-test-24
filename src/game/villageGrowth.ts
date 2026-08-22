@@ -12,7 +12,7 @@
 import { Block, type BlockId } from '../world/blocks';
 import { CHUNK_SIZE, type Chunk } from '../world/chunk';
 import type { World } from '../world/world';
-import { planGrowth, type GrowthPlan, type Placement, type VillagerMarker } from '../world/generation/village';
+import { planGrowth, planOutpost, type GrowthPlan, type Placement, type VillagerMarker } from '../world/generation/village';
 import type { VillageRecord } from './villages';
 
 /** What growth is allowed to build over. Anything else — a chest, a torch, a wall the
@@ -68,6 +68,18 @@ export function growthFor(
   return plan;
 }
 
+/** The hamlet's own buildings. Cached on the same terms as growth, and just as
+ *  deterministic: the same hamlet always builds the same two houses. */
+export function outpostBuildings(seed: number, village: VillageRecord): GrowthPlan {
+  const key = `${village.id},outpost`;
+  let plan = cache.get(key);
+  if (!plan) {
+    plan = planOutpost(seed, { cellX: 0, cellZ: 0, x: village.x, z: village.z }, village.baseY, village.variant);
+    cache.set(key, plan);
+  }
+  return plan;
+}
+
 export function clearGrowthCache(): void {
   cache.clear();
 }
@@ -103,8 +115,14 @@ export function applyGrowth(
   occupied: readonly { x0: number; z0: number; w: number; d: number }[],
 ): GrowthResult {
   const result: GrowthResult = { villagers: [], chests: [], changed: 0 };
+  const plans: GrowthPlan[] = [];
+  // A hamlet has no generated buildings at all, so its own two houses are what it is
+  // made of; everything after that is the growth it earns like anywhere else.
+  if (village.outpost) plans.push(outpostBuildings(seed, village));
   for (let stage = 1; stage <= village.stage; stage++) {
-    const plan = growthFor(seed, village, stage, occupied);
+    plans.push(growthFor(seed, village, stage, occupied));
+  }
+  for (const plan of plans) {
     for (const p of plan.placements) {
       if (!inChunk(chunk, p)) continue;
       if (place(world, p)) result.changed++;
@@ -113,6 +131,22 @@ export function applyGrowth(
     for (const c of plan.chests) if (inChunk(chunk, c)) result.chests.push(c);
   }
   return result;
+}
+
+/** Every villager a village owes, wherever their house happens to fall. Chunk by chunk
+ *  would strand the ones whose house is in a chunk that arrives later — and whichever
+ *  chunk came first would close the gate behind them. */
+export function growthVillagers(
+  seed: number,
+  village: VillageRecord,
+  occupied: readonly { x0: number; z0: number; w: number; d: number }[],
+): VillagerMarker[] {
+  const out: VillagerMarker[] = [];
+  if (village.outpost) out.push(...outpostBuildings(seed, village).villagers);
+  for (let stage = 1; stage <= village.stage; stage++) {
+    out.push(...growthFor(seed, village, stage, occupied).villagers);
+  }
+  return out;
 }
 
 /** Every chunk key a village's growth could reach, so a stage-up can rebuild the ones
@@ -124,8 +158,13 @@ export function growthChunks(
 ): { cx: number; cz: number }[] {
   const seen = new Set<string>();
   const out: { cx: number; cz: number }[] = [];
+  const plans: GrowthPlan[] = [];
+  if (village.outpost) plans.push(outpostBuildings(seed, village));
   for (let stage = 1; stage <= village.stage; stage++) {
-    for (const p of growthFor(seed, village, stage, occupied).placements) {
+    plans.push(growthFor(seed, village, stage, occupied));
+  }
+  for (const plan of plans) {
+    for (const p of plan.placements) {
       const cx = Math.floor(p.x / CHUNK_SIZE);
       const cz = Math.floor(p.z / CHUNK_SIZE);
       const key = `${cx},${cz}`;

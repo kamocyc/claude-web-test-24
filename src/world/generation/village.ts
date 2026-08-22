@@ -462,6 +462,82 @@ export interface GrowthPlan {
  *  bigger; these are what make it read as a different kind of place. */
 export const STAGE_LANDMARKS: readonly string[] = ['', '', 'market', 'lamps', 'gates'];
 
+/** A hamlet: two small houses, a plot and a scrap of path, laid out inside sixteen blocks
+ *  so it can stand fifty blocks from a village without reaching its plateau.
+ *
+ *  Its own layout rather than a growth stage, because a growth stage is arranged along
+ *  streets a hamlet does not have — and because it must stay small: the whole point of it
+ *  is to be somewhere the player can carry a crate to and lay a road to by hand. */
+/** Radius of the ground a hamlet levels for itself, and how far it will fill downwards to
+ *  reach it. Together they decide how uneven a spot can be and still be built on. */
+export const OUTPOST_PAD = 12;
+export const OUTPOST_FILL = 7;
+
+export function planOutpost(
+  seed: number,
+  site: VillageSite,
+  baseY: number,
+  variant: VillageVariant,
+): GrowthPlan {
+  const plan: GrowthPlan = { placements: [], villagers: [], chests: [], footprints: [] };
+  const rng = mulberry32(hashInts(seed ^ 0x51d3, site.x, site.z));
+  const palette = paletteFor(variant);
+  const put = (x: number, y: number, z: number, b: BlockId): void => {
+    plan.placements.push({ x, y, z, b });
+  };
+  const sink: HouseSink = { villagers: plan.villagers, chests: plan.chests };
+
+  // The pad. A village stands on a plateau the terrain generator flattened for it; a
+  // hamlet is written into a world that has already been generated, so it levels its own
+  // ground — filling up to `baseY` and clearing the air above. Filling rather than
+  // cutting, because the writer only ever replaces soil, plants and air: it will build a
+  // hillside up to meet a floor, and it will not carve into one.
+  for (let dz = -OUTPOST_PAD; dz <= OUTPOST_PAD; dz++) {
+    for (let dx = -OUTPOST_PAD; dx <= OUTPOST_PAD; dx++) {
+      if (dx * dx + dz * dz > OUTPOST_PAD * OUTPOST_PAD) continue;
+      const x = site.x + dx;
+      const z = site.z + dz;
+      put(x, baseY - 1, z, variant === 'desert' ? Block.SAND : Block.GRASS);
+      for (let depth = 2; depth <= OUTPOST_FILL; depth++) put(x, baseY - depth, z, Block.DIRT);
+      for (let y = baseY; y <= baseY + 5; y++) put(x, y, z, Block.AIR);
+    }
+  }
+
+  // Two houses either side of a short path, doors facing each other across it.
+  const houses: { slot: Slot; w: number; d: number }[] = [
+    { slot: { x: site.x, z: site.z - 2, facing: 3 }, w: 6, d: 5 },
+    { slot: { x: site.x + 2, z: site.z + 2, facing: 1 }, w: 5, d: 5 },
+  ];
+  for (const house of houses) {
+    const footprint = footprintFor(house.slot, house.w, house.d);
+    plan.footprints.push(footprint);
+    buildHouse(
+      put,
+      sink,
+      {
+        ...footprint,
+        facing: house.slot.facing,
+        profession: PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)],
+        hasChest: true,
+      },
+      baseY,
+      palette,
+    );
+  }
+
+  // A scrap of street between the two doors, laid the way a village lays its own. The
+  // player is about to be taught to join places up with road; the hamlet may as well
+  // start with the little it has.
+  for (let x = site.x - 4; x <= site.x + 6; x++) putRoad(put, x, baseY, site.z, palette.path);
+
+  const fx = site.x - 8;
+  const fz = site.z + 6;
+  buildFarm(put, rng, fx, fz, baseY);
+  plan.footprints.push({ x0: fx - 3, z0: fz - 4, w: 7, d: 9 });
+
+  return plan;
+}
+
 export function planGrowth(
   seed: number,
   site: VillageSite,
