@@ -14,6 +14,7 @@ import {
   CLIMB_COST,
   HEADROOM,
   MAX_STEP,
+  RAIL_SPEED,
   ROAD_SPEED,
   roadGrade,
 } from '../game/roads';
@@ -21,6 +22,7 @@ import {
   BLOCKS_PER_PORTER,
   CART_LOAD,
   MAX_PORTERS,
+  TRAIN_LOAD,
   loadFor,
 } from '../game/transport';
 import {
@@ -46,7 +48,8 @@ export const KEYS: readonly { key: string; what: string }[] = [
   { key: '左クリック', what: '採掘・攻撃' },
   { key: '右クリック', what: '設置・使用・交易' },
   { key: 'シャベル＋右クリック長押し', what: '歩きながら道を敷く（周囲 3×3）' },
-  { key: 'R', what: '見ている所（20 マス先まで）から足もとまで道を敷く' },
+  { key: 'レール＋右クリック長押し', what: '歩きながら 1 列のレールを敷く（持ち物から減る）' },
+  { key: 'R', what: '見ている所（20 マス先まで）から足もとまで道を敷く（レールを持っていればレールで）' },
   { key: 'F', what: '見ている建物をその村の集荷所にする' },
   { key: '1-9 / ホイール', what: 'ホットバー' },
   { key: 'E', what: '持ち物' },
@@ -109,7 +112,7 @@ function surfaceRows(): string[][] {
       blocks.map(blockLabel).join(' / '),
       roadGrade(speed),
       `${speed.toFixed(2)} 倍`,
-      `${loadFor(speed)}（荷車なら ${loadFor(speed) * CART_LOAD}）`,
+      `${loadFor(speed)}（荷車 ${loadFor(speed) * CART_LOAD} / 列車 ${loadFor(speed) * TRAIN_LOAD}）`,
     ]);
 }
 
@@ -197,6 +200,16 @@ export function helpView(state: HelpState): HelpView {
         `荷車は一度に ${CART_LOAD} 倍運ぶ。速さは変わらない — 速さは舗装、量は幅。`,
         '村の通りは最初から幅 3 なので、広げるのは村と村の間だけ。掃き敷きは 3×3 なので、できた道の上をもう一度歩けば広がる。',
         '1 か所でも狭いと荷車は出ない。その場所には琥珀色の光の柱が立ち、パネルが方角と距離を言う。',
+      ],
+    },
+    {
+      heading: '鉄道 — 全区間がレールの路線',
+      notes: [
+        '路線の全区間がレールなら、荷車の代わりに列車が走る。幅は問わない — 単線で足りる。',
+        `レールは一番速い路面（${RAIL_SPEED.toFixed(2)} 倍）で、列車は一度に ${TRAIN_LOAD} 倍運ぶ。速さと量が同時に上がるのはこれだけ。`,
+        'レールは作業台で作る（鉄インゴットと木材）。敷くぶんだけ持ち物から減る、唯一の路面。',
+        'レールを持って右クリック長押しで 1 列ずつ敷ける。R も、レールを持っていればレールで敷く。既にある道の上に敷けば、その区間がレールに上がる。',
+        '1 か所でもレールが途切れていると列車は出ず、荷車か徒歩に降格する（荷は消えない）。途切れた場所には紫の光の柱が立つ。',
       ],
     },
     {

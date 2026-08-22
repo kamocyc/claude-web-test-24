@@ -61,6 +61,7 @@ export const Block = {
   DRAIN: 56,
   FLOODGATE_CLOSED: 57,
   FLOODGATE_OPEN: 58,
+  RAIL: 59,
 } as const;
 
 export type BlockId = number;
@@ -186,6 +187,13 @@ def({ id: B.FLOODGATE_CLOSED, name: 'floodgate_closed', label: '水門', hardnes
 // The open gate lets water and entities straight through, so it is neither solid nor
 // opaque; only its frame is drawn.
 def({ id: B.FLOODGATE_OPEN, name: 'floodgate_open', label: '水門（開）', hardness: 3, tool: 'pickaxe', tier: 1, solid: false, opaque: false, replaceable: false, tex: { all: 'floodgate_open' }, drop: 'floodgate' });
+
+// --- rail --------------------------------------------------------------------
+// Rail is an ordinary cube, and its top is drawn as a crossing rather than as a
+// straight run. The road index joins columns up, down, left and right, so every rail
+// column really is a junction: a straight sleeper pattern would have to pick an axis
+// and be wrong about it at every corner.
+def({ id: B.RAIL, name: 'rail', label: 'レール', hardness: 0.8, tool: 'pickaxe', tier: 1, tex: { top: 'rail_top', side: 'rail_side', bottom: 'gravel' } });
 
 for (let i = 0; i < DEFS.length; i++) {
   if (!DEFS[i]) throw new Error(`block id ${i} has no definition`);

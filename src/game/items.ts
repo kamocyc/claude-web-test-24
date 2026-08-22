@@ -86,6 +86,7 @@ blockItem('drain', Block.DRAIN);
 // One item for both states of the gate; it is placed closed and toggled in place.
 blockItem('floodgate', Block.FLOODGATE_CLOSED);
 blockItem('gold_ore', Block.GOLD_ORE, { smeltsTo: 'gold_ingot' });
+blockItem('rail', Block.RAIL);
 
 // Cobblestone smelts back into smooth stone.
 ITEMS.get('cobblestone')!.smeltsTo = 'stone';

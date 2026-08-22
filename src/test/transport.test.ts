@@ -3,12 +3,14 @@ import {
   BASE_LOAD,
   CART_LOAD,
   PORTER_SPEED,
+  TRAIN_LOAD,
   TransportNetwork,
   loadFor,
   payFor,
   portersFor,
   type PorterHost,
   type TransportEvents,
+  type Vehicle,
 } from '../game/transport';
 import { RoadNetwork, type RoadWorld } from '../game/roads';
 import { MAX_STAGE, STAGE_POINTS, VillageRegistry, villageId, type VillageSeed, type VillageSource } from '../game/villages';
@@ -620,5 +622,117 @@ describe('which end a trip starts from', () => {
     run(transport, 60);
     expect(registry.get(ID_A)?.stock).toBeLessThan(before);
     expect(transport.routes[0].porters.length).toBeGreaterThan(0);
+  });
+});
+
+describe('a train on a railway', () => {
+  it('runs where every column is rail, however narrow the line', () => {
+    const { transport } = build({ surface: Block.RAIL });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    const route = transport.routes[0];
+    expect(route.connected).toBe(true);
+    expect(route.vehicle).toBe('train');
+    expect(route.railPinch).toBeNull();
+  });
+
+  it('carries more than the best cart, and gets there faster', () => {
+    // Rail is the one upgrade that moves both numbers, which is what makes it worth
+    // paying iron for once there is nothing left to widen.
+    const rail = build({ surface: Block.RAIL });
+    rail.transport.requestRoute(ID_A, ID_B);
+    run(rail.transport, 3);
+    const cart = build({ surface: Block.STONE_BRICKS, width: 3 });
+    cart.transport.requestRoute(ID_A, ID_B);
+    run(cart.transport, 3);
+
+    const byRail = rail.transport.routes[0];
+    const byCart = cart.transport.routes[0];
+    expect(byCart.vehicle).toBe('cart');
+    expect(rail.transport.loadOf(byRail)).toBeGreaterThan(cart.transport.loadOf(byCart));
+    expect(rail.transport.speedOf(byRail)).toBeGreaterThan(cart.transport.speedOf(byCart));
+    expect(rail.transport.loadOf(byRail)).toBe(loadFor(byRail.quality) * TRAIN_LOAD);
+  });
+
+  it('beats width when the line is both railed and wide', () => {
+    const { transport } = build({ surface: Block.RAIL, width: 3 });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    expect(transport.routes[0].vehicle).toBe('train');
+  });
+
+  it('goes back to a cart when one rail is pulled up, without losing cargo', () => {
+    const { world, roads, transport, registry, events } = build({ surface: Block.RAIL, width: 3 });
+    transport.requestRoute(ID_A, ID_B);
+    registry.produce(600);
+    // Eight seconds, not thirty: a train covers seven blocks a second, so by thirty it
+    // has been there and back and there is nothing in flight to protect.
+    run(transport, 8);
+    expect(transport.routes[0].vehicle).toBe('train');
+    const carrying = transport.routes[0].porters.reduce((sum, p) => sum + p.cargo, 0);
+    expect(carrying).toBeGreaterThan(0);
+
+    for (const z of [-1, 0, 1]) {
+      world.lay(120, GROUND, z, Block.DIRT_PATH);
+      roads.onBlockChanged(120, GROUND, z, Block.RAIL, Block.DIRT_PATH);
+    }
+    run(transport, 3);
+    // One dirt column is still a road, and the road is still three across: the line
+    // demotes to the cart it had already earned rather than breaking.
+    expect(transport.routes[0].vehicle).toBe('cart');
+    expect(transport.routes[0].connected).toBe(true);
+    expect(events.disconnected).toBe(0);
+    expect(transport.routes[0].railPinch).not.toBeNull();
+    expect(transport.routes[0].porters.reduce((sum, p) => sum + p.cargo, 0)).toBe(carrying);
+  });
+
+  it('sends the cargo home when the railway itself is dug up', () => {
+    const { world, roads, transport, registry, events } = build({ surface: Block.RAIL });
+    transport.requestRoute(ID_A, ID_B);
+    registry.produce(600);
+    // Eight seconds, not thirty: a train covers seven blocks a second, so by thirty it
+    // has been there and back and there is nothing in flight to protect.
+    run(transport, 8);
+    expect(transport.routes[0].vehicle).toBe('train');
+    const carrying = transport.routes[0].porters.reduce((sum, p) => sum + p.cargo, 0);
+    expect(carrying).toBeGreaterThan(0);
+    const stock = registry.get(ID_A)!.stock;
+
+    world.lay(120, GROUND, 0, Block.AIR);
+    roads.onBlockChanged(120, GROUND, 0, Block.RAIL, Block.AIR);
+    run(transport, 3);
+    expect(transport.routes[0].connected).toBe(false);
+    expect(events.disconnected).toBe(1);
+    expect(registry.get(ID_A)!.stock).toBe(stock + carrying);
+    expect(transport.routes[0].railPinch).toBeNull();
+  });
+
+  it('draws a train while a train is running it, and a walker afterwards', () => {
+    // The mob is only ever a picture of the shipment, so when the road stops deserving a
+    // train the picture has to change with it — otherwise a locomotive keeps rolling
+    // down a line that no longer has rails under it.
+    const drawn: Vehicle[] = [];
+    const host: PorterHost = {
+      spawnPorter: (_point, vehicle) => {
+        drawn.push(vehicle);
+        return drawn.length;
+      },
+      porterPosition: () => null,
+      movePorter: () => {},
+      removePorter: () => {},
+    };
+    const { world, roads, transport, registry } = build({ surface: Block.RAIL, host });
+    transport.requestRoute(ID_A, ID_B);
+    registry.produce(600);
+    // Standing at the origin, so the mob is actually drawn: `run` puts the player ten
+    // thousand blocks away, where a shipment is a number and nothing is spawned.
+    for (let t = 0; t < 2; t += 0.5) transport.update(0.5, 0, 0);
+    expect(drawn).toContain('train');
+
+    world.lay(120, GROUND, 0, Block.DIRT_PATH);
+    roads.onBlockChanged(120, GROUND, 0, Block.RAIL, Block.DIRT_PATH);
+    for (let t = 0; t < 2; t += 0.5) transport.update(0.5, 0, 0);
+    expect(transport.routes[0].vehicle).toBe('porter');
+    expect(drawn[drawn.length - 1]).toBe('porter');
   });
 });

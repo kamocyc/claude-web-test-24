@@ -1053,6 +1053,10 @@ body.screen-open #viewport {
   color: #ffc457;
 }
 
+.route-note.rail {
+  color: #b08cff;
+}
+
 .route-note.cost {
   color: rgba(255, 255, 255, 0.6);
 }

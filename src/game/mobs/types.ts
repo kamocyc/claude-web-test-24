@@ -8,7 +8,8 @@ export type MobKind =
   | 'sheep'
   | 'villager'
   | 'porter'
-  | 'cart';
+  | 'cart'
+  | 'train';
 
 export interface MobDrop {
   id: string;
@@ -110,11 +111,19 @@ const DEFS: Record<MobKind, MobDef> = {
     attackCooldown: 0, sightRange: 12, burnsInDaylight: false, ranged: false,
     drops: [],
   },
+  // Narrow again, and on purpose: what puts a train on a line is the surface, not the
+  // width, so it has to fit down the single track that earned it.
+  train: {
+    kind: 'train', label: '列車', hostile: false, maxHealth: 20,
+    width: 0.9, height: 1.95, speed: 1.9, attackDamage: 0, attackRange: 0,
+    attackCooldown: 0, sightRange: 12, burnsInDaylight: false, ranged: false,
+    drops: [],
+  },
 };
 
 /** Mobs the transport network owns and drives along a route. They never spawn by
  *  themselves, they never wander, and they never run away from anything. */
-export const HAULING_KINDS: readonly MobKind[] = ['porter', 'cart'];
+export const HAULING_KINDS: readonly MobKind[] = ['porter', 'cart', 'train'];
 
 export function mobDef(kind: MobKind): MobDef {
   return DEFS[kind];

@@ -21,7 +21,7 @@ import type { GoodId, VillageId, VillageRegistry } from './villages';
 /** What is doing the hauling. A cart only runs where the road is three columns wide the
  *  whole way, which is the one thing widening a road buys — and the reason widening one
  *  is worth an afternoon. */
-export type Vehicle = 'porter' | 'cart';
+export type Vehicle = 'porter' | 'cart' | 'train';
 
 /** Blocks per second on a plain dirt path. Road quality multiplies it. */
 export const PORTER_SPEED = 3.2;
@@ -46,6 +46,12 @@ export const PAY_DISTANCE = 800;
 /** What a cart multiplies a trip by. Speed is left alone deliberately: pavement is what
  *  makes a road fast and width is what makes it carry, so the two jobs stay legible. */
 export const CART_LOAD = 3;
+
+/** What a train multiplies a trip by. More than a cart, and unlike a cart it comes with
+ *  the speed as well — rail is the one surface the player pays iron for, so it is the one
+ *  upgrade that moves both numbers. Widening a road is still what a cart is for; this is
+ *  what comes after there is nothing left to widen. */
+export const TRAIN_LOAD = 4;
 /** Detour past which the panel starts saying so. Under it a road is merely following the
  *  ground; over it, it is going somewhere else first. */
 export const DETOUR_NOTICE = 1.15;
@@ -123,6 +129,10 @@ export interface Route {
   /** What hauls this route, and where the road is too narrow for a cart when it is not. */
   vehicle: Vehicle;
   cartPinch: RoadPoint | null;
+  /** Where the rails run out on a line somebody has started laying them on. Null when the
+   *  line is all rail, and null when none of it is: a beacon over every dirt road in the
+   *  world would answer a question nobody asked. */
+  railPinch: RoadPoint | null;
   /** The longest stretch at either end between a depot's door and the road proper. */
   doorGap: number;
   /** Straight-line distance still to be paved, when not connected. */
@@ -259,6 +269,7 @@ export class TransportNetwork {
       detour: 1,
       vehicle: 'porter',
       cartPinch: null,
+      railPinch: null,
       doorGap: 0,
       missing: 0,
       gapFrom: null,
@@ -392,7 +403,9 @@ export class TransportNetwork {
         : result.direct;
       route.direct = Math.max(1, ends);
       route.detour = route.length / route.direct;
-      const vehicle: Vehicle = result.cart.ok ? 'cart' : 'porter';
+      // Rail beats width: it is the more specific claim about the road, and the more
+      // expensive one to have made.
+      const vehicle: Vehicle = result.rail.ok ? 'train' : result.cart.ok ? 'cart' : 'porter';
       if (vehicle !== route.vehicle) {
         // The mobs are the wrong shape now. Drop them; the next frame draws the right
         // ones where the shipments actually are, and no cargo moves.
@@ -404,6 +417,7 @@ export class TransportNetwork {
         route.vehicle = vehicle;
       }
       route.cartPinch = result.cart.ok ? null : result.cart.pinch;
+      route.railPinch = result.rail.ok ? null : result.rail.pinch;
       route.missing = 0;
       route.gapFrom = null;
       route.gapTo = null;
@@ -417,6 +431,7 @@ export class TransportNetwork {
     route.gapTo = result.frontierTo;
     route.nearMiss = result.nearMiss;
     route.cartPinch = null;
+    route.railPinch = null;
     route.vehicle = 'porter';
     if (was) {
       // The road was broken while goods were on it. Send them home rather than losing
@@ -486,7 +501,9 @@ export class TransportNetwork {
   }
 
   loadOf(route: Route): number {
-    return loadFor(route.quality) * (route.vehicle === 'cart' ? CART_LOAD : 1);
+    const multiplier =
+      route.vehicle === 'train' ? TRAIN_LOAD : route.vehicle === 'cart' ? CART_LOAD : 1;
+    return loadFor(route.quality) * multiplier;
   }
 
   private advance(route: Route, dt: number, playerX: number, playerZ: number): void {
