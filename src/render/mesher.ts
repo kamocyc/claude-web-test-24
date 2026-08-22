@@ -1,4 +1,4 @@
-import { type BlockId, Block, LEAVES, blockDef } from '../world/blocks';
+import { type BlockId, Block, CRAFTED, LEAVES, blockDef } from '../world/blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, type Chunk } from '../world/chunk';
 import { waterFraction } from '../world/water';
 import type { World } from '../world/world';
@@ -167,7 +167,16 @@ const FACES: Face[] = RAW_FACES.map((face) => {
   return { ...face, ao };
 });
 
-const AO_LEVELS = [0.54, 0.73, 0.89, 1];
+/** Brightness against how much is crowding a corner, from nothing to three ways in. */
+const AO_CURVE = [1, 0.89, 0.73, 0.54];
+
+/** The curve read at a fractional amount, so a leaf can shade a corner by part of a
+ *  block's worth. */
+function ambient(amount: number): number {
+  const crowding = Math.min(3, Math.max(0, amount));
+  const step = Math.min(2, Math.floor(crowding));
+  return AO_CURVE[step] + (AO_CURVE[step + 1] - AO_CURVE[step]) * (crowding - step);
+}
 
 /** How far a convex edge is cut back from the block's outline. This is the whole of
  *  the roundness: it is real geometry, so it shows in the silhouette against the sky
@@ -183,10 +192,41 @@ const EDGE_SHADE = 0.93;
  *  angles reads as a stack of boxes however round its corners are. */
 const ORGANIC = 0.13;
 
+const EMPTY_CELL = 0;
+const ROUND_CELL = 1;
+const SHARP_CELL = 2;
+
 /** Cached per block id: survey() asks this eight times a vertex, and walking through
- *  the block definition each time is measurable. */
-const FILLS: boolean[] = [];
-for (let id = 0; id < 512; id++) FILLS[id] = blockDef(id).render === 'cube';
+ *  the block definition each time is measurable. Empty, filling and rounded off, or
+ *  filling and left square.
+ *
+ *  There are two of these because foliage and everything else do not agree about what
+ *  counts as filled. A canopy is one continuous mass to itself, so a leaf pressed
+ *  against another leaf has nothing to round. But to the ground it is not scenery it
+ *  is part of: FIRM_KIND leaves it out, so a hillside rounds its edge away from a
+ *  canopy resting on it instead of running seamlessly into it. Each set of faces is
+ *  consistent with itself, which is all watertightness ever asked for; the two are
+ *  separate surfaces and were never going to meet. */
+const CELL_KIND = new Uint8Array(512);
+const FIRM_KIND = new Uint8Array(512);
+for (let id = 0; id < CELL_KIND.length; id++) {
+  if (blockDef(id).render !== 'cube') continue;
+  CELL_KIND[id] = CRAFTED.has(id) ? SHARP_CELL : ROUND_CELL;
+  FIRM_KIND[id] = LEAVES.has(id) ? EMPTY_CELL : CELL_KIND[id];
+}
+
+/** How much of a shadow a cell casts into the corner beside it. Leaves are not opaque
+ *  and so cast none at all, which is what leaves a canopy sitting against a hillside
+ *  looking welded to it. Rather less than a wall, though: light does get through. */
+const SHADOW_CAST = new Float32Array(512);
+/** Whether a cell stops light outright, which decides where the light either side of a
+ *  corner may be sampled from. */
+const OPAQUE_CELL: boolean[] = [];
+for (let id = 0; id < SHADOW_CAST.length; id++) {
+  const opaque = blockDef(id).opaque;
+  OPAQUE_CELL[id] = opaque;
+  SHADOW_CAST[id] = opaque ? 1 : LEAVES.has(id) ? 0.62 : 0;
+}
 
 const TRANSPARENT_BLOCKS = new Set<BlockId>([Block.GLASS, Block.ICE]);
 
@@ -313,12 +353,11 @@ export function buildChunkMesh(
     return world.getBlockLight(originX + x, y, originZ + z);
   };
 
-  const occludes = (x: number, y: number, z: number): boolean => blockDef(blockAt(x, y, z)).opaque;
 
-  /** Whether a cell is a full cube, and so shares its outline with the one next door.
-   *  Deliberately not the same test as occlusion: glass and leaves stop no light but
-   *  they do fill their cell, and a surface that runs into one has not stopped. */
-  const fills = (x: number, y: number, z: number): boolean => FILLS[blockAt(x, y, z)];
+  /** What a cell is, to whoever is asking. Deliberately not the same test as
+   *  occlusion: glass and leaves stop no light but they do fill their cell, and a
+   *  surface that runs into one has not stopped. */
+  const kindAt = (kinds: Uint8Array, x: number, y: number, z: number): number => kinds[blockAt(x, y, z)];
 
   const waterAt = (x: number, y: number, z: number): number => {
     if (y < 0 || y >= CHUNK_HEIGHT) return 0;
@@ -376,6 +415,15 @@ export function buildChunkMesh(
   let siteZ = 0;
   let siteOpen = 0;
 
+  // The six faces of a block ask about the same points over and over -- three of them
+  // meet at every corner -- so each answer is kept until the next block. A point of a
+  // block lands on one of four values per axis, which is what makes the slot a number
+  // rather than a lookup.
+  const cellStamp = new Int32Array(64);
+  const cellSite = new Int8Array(64 * 4);
+  let visiting = 0;
+  const slotOf = (local: number): number => (local === 0 ? 0 : local === 1 ? 3 : local < 0.5 ? 1 : 2);
+
   /** Looks at the eight cells meeting at a point and reports how many of the six
    *  directions lead entirely away from anything solid.
    *
@@ -389,7 +437,7 @@ export function buildChunkMesh(
    *  owns it. That is the whole trick. Every face arriving at a point is pulled to the
    *  same place, so a rounded rim can run out against a block that does not round at
    *  all and still leave no hole behind. */
-  const survey = (qx: number, qy: number, qz: number): number => {
+  const survey = (kinds: Uint8Array, qx: number, qy: number, qz: number): number => {
     const xHi = Number.isInteger(qx) ? qx : Math.floor(qx);
     const yHi = Number.isInteger(qy) ? qy : Math.floor(qy);
     const zHi = Number.isInteger(qz) ? qz : Math.floor(qz);
@@ -398,14 +446,31 @@ export function buildChunkMesh(
     const xLo = Number.isInteger(qx) ? qx - 1 : xHi;
     const yLo = Number.isInteger(qy) ? qy - 1 : yHi;
     const zLo = Number.isInteger(qz) ? qz - 1 : zHi;
-    const c000 = fills(xLo, yLo, zLo);
-    const c001 = fills(xLo, yLo, zHi);
-    const c010 = fills(xLo, yHi, zLo);
-    const c011 = fills(xLo, yHi, zHi);
-    const c100 = fills(xHi, yLo, zLo);
-    const c101 = fills(xHi, yLo, zHi);
-    const c110 = fills(xHi, yHi, zLo);
-    const c111 = fills(xHi, yHi, zHi);
+    const k000 = kinds[blockAt(xLo, yLo, zLo)];
+    const k001 = kinds[blockAt(xLo, yLo, zHi)];
+    const k010 = kinds[blockAt(xLo, yHi, zLo)];
+    const k011 = kinds[blockAt(xLo, yHi, zHi)];
+    const k100 = kinds[blockAt(xHi, yLo, zLo)];
+    const k101 = kinds[blockAt(xHi, yLo, zHi)];
+    const k110 = kinds[blockAt(xHi, yHi, zLo)];
+    const k111 = kinds[blockAt(xHi, yHi, zHi)];
+    siteX = 0;
+    siteY = 0;
+    siteZ = 0;
+    siteOpen = 0;
+    // One square-cornered block anywhere around a point holds the whole point still.
+    // Asking the point rather than the face is again what keeps this consistent: the
+    // wall beside a workbench flattens its rounding off as it reaches it, from both
+    // sides at once, instead of tearing.
+    if ((k000 | k001 | k010 | k011 | k100 | k101 | k110 | k111) & SHARP_CELL) return 0;
+    const c000 = k000 !== EMPTY_CELL;
+    const c001 = k001 !== EMPTY_CELL;
+    const c010 = k010 !== EMPTY_CELL;
+    const c011 = k011 !== EMPTY_CELL;
+    const c100 = k100 !== EMPTY_CELL;
+    const c101 = k101 !== EMPTY_CELL;
+    const c110 = k110 !== EMPTY_CELL;
+    const c111 = k111 !== EMPTY_CELL;
     const xUp = !(c100 || c101 || c110 || c111) ? 1 : 0;
     const xDown = !(c000 || c001 || c010 || c011) ? 1 : 0;
     const yUp = !(c010 || c011 || c110 || c111) ? 1 : 0;
@@ -416,6 +481,33 @@ export function buildChunkMesh(
     siteY = yUp - yDown;
     siteZ = zUp - zDown;
     siteOpen = xUp + xDown + yUp + yDown + zUp + zDown;
+    return siteOpen;
+  };
+
+  /** survey(), with this block's answers remembered. */
+  const surveyed = (
+    kinds: Uint8Array,
+    qx: number,
+    qy: number,
+    qz: number,
+    localX: number,
+    localY: number,
+    localZ: number,
+  ): number => {
+    const slot = slotOf(localX) * 16 + slotOf(localY) * 4 + slotOf(localZ);
+    if (cellStamp[slot] === visiting) {
+      siteX = cellSite[slot * 4];
+      siteY = cellSite[slot * 4 + 1];
+      siteZ = cellSite[slot * 4 + 2];
+      siteOpen = cellSite[slot * 4 + 3];
+      return siteOpen;
+    }
+    survey(kinds, qx, qy, qz);
+    cellStamp[slot] = visiting;
+    cellSite[slot * 4] = siteX;
+    cellSite[slot * 4 + 1] = siteY;
+    cellSite[slot * 4 + 2] = siteZ;
+    cellSite[slot * 4 + 3] = siteOpen;
     return siteOpen;
   };
 
@@ -444,8 +536,11 @@ export function buildChunkMesh(
         }
         if (def.render === 'none') continue;
 
-        const rounded = def.render === 'cube';
+        const rounded = CELL_KIND[id] === ROUND_CELL;
         const organic = LEAVES.has(id);
+        // Foliage is a world to itself; everything else agrees to ignore it.
+        const kinds = organic ? CELL_KIND : FIRM_KIND;
+        visiting++;
 
         for (let faceIndex = 0; faceIndex < FACES.length; faceIndex++) {
           const face = FACES[faceIndex];
@@ -472,10 +567,10 @@ export function buildChunkMesh(
           // where the rounding will need somewhere to happen. Every face of this block
           // asks the same question of the same cell, so the sides they share are cut
           // in the same places and no face is left hanging off the end of another.
-          const lowU = rounded && !fills(x - tx, y - ty, z - tz);
-          const highU = rounded && !fills(x + tx, y + ty, z + tz);
-          const lowV = rounded && !fills(x - bx, y - by, z - bz);
-          const highV = rounded && !fills(x + bx, y + by, z + bz);
+          const lowU = rounded && kindAt(kinds, x - tx, y - ty, z - tz) === EMPTY_CELL;
+          const highU = rounded && kindAt(kinds, x + tx, y + ty, z + tz) === EMPTY_CELL;
+          const lowV = rounded && kindAt(kinds, x - bx, y - by, z - bz) === EMPTY_CELL;
+          const highV = rounded && kindAt(kinds, x + bx, y + by, z + bz) === EMPTY_CELL;
           let across = 0;
           us[across++] = 0;
           if (lowU) us[across++] = BAND;
@@ -493,10 +588,19 @@ export function buildChunkMesh(
           for (let c = 0; c < 4; c++) {
             const corner = face.corners[c];
             const [o1, o2, o3] = face.ao[c];
-            const side1 = occludes(x + o1[0], y + o1[1], z + o1[2]);
-            const side2 = occludes(x + o2[0], y + o2[1], z + o2[2]);
-            const corner3 = occludes(x + o3[0], y + o3[1], z + o3[2]);
-            const level = side1 && side2 ? 0 : 3 - ((side1 ? 1 : 0) + (side2 ? 1 : 0) + (corner3 ? 1 : 0));
+            const near1 = blockAt(x + o1[0], y + o1[1], z + o1[2]);
+            const near2 = blockAt(x + o2[0], y + o2[1], z + o2[2]);
+            const near3 = blockAt(x + o3[0], y + o3[1], z + o3[2]);
+            const side1 = OPAQUE_CELL[near1];
+            const side2 = OPAQUE_CELL[near2];
+            const corner3 = OPAQUE_CELL[near3];
+            // Two sides closing in on a corner bury it, which is what the product term
+            // says; below that it is simply how much is in the way. Foliage counts for
+            // part of a block, so a canopy lays a soft contact shadow on what it rests
+            // against and a leaf tucked behind another one goes dark.
+            const cast1 = SHADOW_CAST[near1];
+            const cast2 = SHADOW_CAST[near2];
+            const crowding = cast1 + cast2 + SHADOW_CAST[near3] + cast1 * cast2;
 
             let skySum = skyAt(nx, ny, nz);
             let blockSum = blockLightAt(nx, ny, nz);
@@ -519,7 +623,7 @@ export function buildChunkMesh(
               samples++;
             }
             const [cu, cv] = corner.uv;
-            cornerShade[cu][cv] = AO_LEVELS[level];
+            cornerShade[cu][cv] = ambient(crowding);
             cornerSky[cu][cv] = skySum / samples / 15;
             cornerBlock[cu][cv] = blockSum / samples / 15;
           }
@@ -548,9 +652,12 @@ export function buildChunkMesh(
               // Where this vertex started, before anything moved it. Everything below
               // is keyed on it, and both faces meeting on an edge arrive at the same
               // numbers for it, which is the whole reason the rounding closes up.
-              const flatX = x + ox + u * tx + v * bx;
-              const flatY = y + oy + u * ty + v * by;
-              const flatZ = z + oz + u * tz + v * bz;
+              const localX = ox + u * tx + v * bx;
+              const localY = oy + u * ty + v * by;
+              const localZ = oz + u * tz + v * bz;
+              const flatX = x + localX;
+              const flatY = y + localY;
+              const flatZ = z + localZ;
 
               let px = flatX;
               let py = flatY;
@@ -565,7 +672,7 @@ export function buildChunkMesh(
               // test is worth making because most of a landscape is flat.
               const mayRound =
                 (u === 0 && lowU) || (u === 1 && highU) || (v === 0 && lowV) || (v === 1 && highV);
-              if (mayRound && survey(flatX, flatY, flatZ) >= 2) {
+              if (mayRound && surveyed(kinds, flatX, flatY, flatZ, localX, localY, localZ) >= 2) {
                 px -= BEVEL * siteX;
                 py -= BEVEL * siteY;
                 pz -= BEVEL * siteZ;
@@ -582,7 +689,7 @@ export function buildChunkMesh(
                 leans = siteOpen - alongFace;
               }
               if (heights) {
-                py = y + (oy + u * ty + v * by === 1 ? heights[ox + u * tx + v * bx][oz + u * tz + v * bz] : 0);
+                py = y + (localY === 1 ? heights[localX][localZ] : 0);
               }
               if (organic) {
                 px += between(warpX, u, v);

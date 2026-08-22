@@ -200,6 +200,28 @@ export const LEAVES: ReadonlySet<BlockId> = new Set<BlockId>([
   Block.SPRUCE_LEAVES,
 ]);
 
+/** Blocks that were built rather than grown or laid down, and keep their corners.
+ *  Rounding is the language the landscape is drawn in: a hillside that has weathered
+ *  into soft steps and a workbench somebody squared off with an axe should not be
+ *  spoken about the same way, and the contrast is what makes either read. */
+export const CRAFTED: ReadonlySet<BlockId> = new Set<BlockId>([
+  Block.COBBLESTONE,
+  Block.MOSSY_COBBLESTONE,
+  Block.STONE_BRICKS,
+  Block.OAK_PLANKS,
+  Block.GLASS,
+  Block.WOOL,
+  Block.CRAFTING_TABLE,
+  Block.FURNACE,
+  Block.CHEST,
+  Block.BOOKSHELF,
+  Block.SPRING,
+  Block.PUMP,
+  Block.DRAIN,
+  Block.FLOODGATE_CLOSED,
+  Block.FLOODGATE_OPEN,
+]);
+
 export const BLOCKS: readonly BlockDef[] = DEFS;
 export const AIR_DEF = DEFS[Block.AIR];
 

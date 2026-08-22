@@ -242,9 +242,12 @@ const GRASS_DEEP: Color = [92, 172, 92];
 const SAND: Color = [243, 226, 174];
 const WOOD: Color = [209, 174, 126];
 const BARK: Color = [150, 116, 84];
-const LEAF: Color = [112, 192, 102];
-const SPRUCE_LEAF: Color = [92, 162, 118];
-const BIRCH_LEAF: Color = [164, 214, 118];
+// Foliage sits deliberately below the meadow it grows out of. A canopy really is
+// darker and cooler than sunlit grass -- it is shading itself -- and when the two were
+// the same green a tree touching a hillside read as one welded lump of colour.
+const LEAF: Color = [82, 158, 86];
+const SPRUCE_LEAF: Color = [66, 130, 104];
+const BIRCH_LEAF: Color = [120, 180, 90];
 const WATER: Color = [96, 172, 240];
 const SNOW_C: Color = [234, 241, 252];
 
@@ -539,7 +542,10 @@ function leafTile(base: Color): () => Draw {
     return (ctx: CanvasRenderingContext2D) => {
       paint(ctx, (x, y) => {
         const canopy = fbm(field, x, y, 5, 3);
-        if (canopy < 0.34) return null;
+        // Gaps in the canopy, but fewer of them now the leaves are dark: every one is
+        // a pinhole of sky, and against a deeper green they were reading as dirt on
+        // the lens rather than as light coming through.
+        if (canopy < 0.29) return null;
         const cluster = fbm(field, x + 0.3, y + 0.7, 7, 2);
         let color = mixColor(shade(base, -34), shade(base, 16), cluster);
         // A darker line where one leaf laps over the next.
