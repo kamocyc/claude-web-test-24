@@ -226,6 +226,7 @@ export function helpView(state: HelpState): HelpView {
         `加工: ${CRAFTS.map((c) => `${itemLabel(c.input)}→${itemLabel(c.output)}`).join('、')}`,
         `村は自分が作れない物を欲しがる。求めている品を届けると発展度は ${NEEDED_POINTS} 倍。`,
         '荷運びは帰り道も空ではない。出発村が到着村の生産品を欲しがっていれば、それを積んで帰る。',
+        '発展した村は空いた区画に家と畑を建てるが、道が通っている区画には建てない。敷いた道はそのまま残る。',
       ],
       table: { head: ['段階', '必要な発展度', '変わること'], rows: stageRows() },
     },

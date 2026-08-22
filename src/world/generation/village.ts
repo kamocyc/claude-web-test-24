@@ -52,6 +52,18 @@ export interface Footprint {
   d: number;
 }
 
+/** A plot and the level its ground has to be at, so whoever writes the plan into a world
+ *  can put ground under it and take the hillside off the top of it.
+ *
+ *  A village stands on a plateau the terrain generator flattened for it, but the
+ *  flattening fades out over the outermost fourteen blocks — and the back row of plots a
+ *  growing village fills reaches into exactly that band. Planning is world-blind, so it
+ *  cannot know how far out of true a plot is; it can only say which ground it is counting
+ *  on being flat. `y` is the level of the top solid block, one below the floor. */
+export interface Pad extends Footprint {
+  y: number;
+}
+
 /** A step outwards from a door, indexed by the side it faces. Matches `footprintFor`,
  *  which grows a house away from the street its slot belongs to — so the door always ends
  *  up on the wall nearest that street. */
@@ -495,9 +507,14 @@ function doorPath(
   }
 }
 
+/** A field is always this size, so a plan can say which ground it needs before it lays
+ *  a single block of it. */
+export const FARM_WIDTH = 5;
+export const FARM_DEPTH = 7;
+
 function buildFarm(put: PutFn, rng: Rng, cx: number, cz: number, baseY: number): void {
-  const w = 5;
-  const d = 7;
+  const w = FARM_WIDTH;
+  const d = FARM_DEPTH;
   for (let dz = 0; dz < d; dz++) {
     for (let dx = 0; dx < w; dx++) {
       const x = cx + dx - (w >> 1);
@@ -536,6 +553,8 @@ export interface GrowthPlan {
   /** What this stage built on. Stage n + 1 is handed these along with the original
    *  village's, or the two would try to stand in the same place. */
   footprints: Footprint[];
+  /** The ground each of those plots needs, for a writer that can see the world. */
+  pads: Pad[];
 }
 
 /** The landmark each stage adds on top of its houses. Houses alone make a village
@@ -559,7 +578,7 @@ export function planOutpost(
   baseY: number,
   variant: VillageVariant,
 ): GrowthPlan {
-  const plan: GrowthPlan = { placements: [], villagers: [], chests: [], buildings: [], footprints: [] };
+  const plan: GrowthPlan = { placements: [], villagers: [], chests: [], buildings: [], footprints: [], pads: [] };
   const rng = mulberry32(hashInts(seed ^ 0x51d3, site.x, site.z));
   const palette = paletteFor(variant);
   const put = (x: number, y: number, z: number, b: BlockId): void => {
@@ -630,7 +649,7 @@ export function planGrowth(
   stage: number,
   occupied: readonly Footprint[],
 ): GrowthPlan {
-  const plan: GrowthPlan = { placements: [], villagers: [], chests: [], buildings: [], footprints: [] };
+  const plan: GrowthPlan = { placements: [], villagers: [], chests: [], buildings: [], footprints: [], pads: [] };
   if (stage <= 0) return plan;
 
   const rng = mulberry32(hashInts(seed ^ 0x9a0f, site.x, site.z, stage));
@@ -660,6 +679,7 @@ export function planGrowth(
     if (taken.some((b) => overlaps(footprint, b))) continue;
     taken.push(footprint);
     plan.footprints.push(footprint);
+    plan.pads.push({ ...footprint, y: baseY });
     built++;
     buildHouse(
       put,
@@ -683,6 +703,7 @@ export function planGrowth(
     if (!taken.some((b) => overlaps(plot, b))) {
       taken.push(plot);
       plan.footprints.push(plot);
+      plan.pads.push({ ...plot, y: baseY });
       buildMarket(put, sink, plot, baseY + 1, palette, PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)]);
     }
   } else if (landmark === 'lamps') {
@@ -697,6 +718,10 @@ export function planGrowth(
     const fx = site.x + Math.round(Math.cos(angle) * dist);
     const fz = site.z + Math.round(Math.sin(angle) * dist);
     if (taken.some((b) => overlaps({ x0: fx - 3, z0: fz - 4, w: 7, d: 9 }, b))) continue;
+    // A field wants level ground as much as a house does: its channel is a block of
+    // water, and water on a slope is a waterfall. `buildFarm` lays its soil one below the
+    // level it is handed, so that is the level the pad has to reach.
+    plan.pads.push({ x0: fx - 2, z0: fz - 3, w: FARM_WIDTH, d: FARM_DEPTH, y: baseY - 1 });
     buildFarm(put, rng, fx, fz, baseY);
   }
 

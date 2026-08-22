@@ -64,7 +64,7 @@ import { findSpawn } from './seeds';
 import { SPEEDS, nearestSpeed, type Settings } from './settings';
 import { tickFurnace } from './smelting';
 import { generateTrades, restockTrades, tradesFromJSON, tradesToJSON } from './trading';
-import { VILLAGE_RADIUS, type HouseRecord } from '../world/generation/village';
+import { VILLAGE_RADIUS, type Footprint, type HouseRecord } from '../world/generation/village';
 import {
   HEADROOM,
   MAX_STEP,
@@ -86,6 +86,7 @@ import {
   type Vehicle,
 } from './transport';
 import {
+  STAGE_POINTS,
   VillageRegistry,
   displayName,
   kindLabel,
@@ -98,7 +99,7 @@ import {
 import type { LedgerView } from '../ui/ledger';
 import type { RouteIdle } from '../ui/routePanel';
 import { helpView, type HelpView } from '../ui/help';
-import { applyGrowth, growthChunks, growthFor, growthVillagers, outpostBuildings } from './villageGrowth';
+import { applyGrowth, growthChunks, growthFor, growthVillagers, outpostBuildings, ownPaving, roadCrosses } from './villageGrowth';
 import {
   buildingAt,
   buildingsOf,
@@ -226,7 +227,7 @@ export class Game {
   /** Draped guide lines by route, so a road is only walked over again when it moves. */
   private readonly guideLines = new Map<string, { key: string; points: GuidePoint[] }>();
   /** Buildings by village, rebuilt only when the village grows a new one. */
-  private readonly villageBuildings = new Map<string, { stage: number; list: VillageBuilding[] }>();
+  private readonly villageBuildings = new Map<string, { stage: number; roads: number; list: VillageBuilding[] }>();
   /** The building the player is looking at, refreshed with the rest of the interaction. */
   private lookedAt: { building: VillageBuilding; village: VillageRecord } | null = null;
   private focusCache: { at: number; route: Route | undefined } = { at: -1e9, route: undefined };
@@ -343,7 +344,13 @@ export class Game {
         movePorter: (id, point, speed) => this.movePorter(id, point, speed),
         removePorter: (id) => this.removePorter(id),
       },
-      { doorOf: (id) => this.depotDoor(id) },
+      {
+        doorOf: (id) => this.depotDoor(id),
+        plotsOf: (id) => {
+          const village = this.villages.get(id);
+          return village ? this.buildingsFor(village) : [];
+        },
+      },
     );
     this.hud = new Hud(this.atlas);
     this.screens = new ScreenManager(
@@ -1498,21 +1505,34 @@ export class Game {
     if (originId && targetId) this.transport.requestRoute(originId, targetId);
   }
 
-  /** Every addressable building of a village, cached until the village grows. */
+  /** The level of the road indexed at a column, if there is one. A field rather than a
+   *  method so it can be handed to village growth as it stands. */
+  private readonly roadLevelAt = (x: number, z: number): number | undefined =>
+    this.roads.columns.get(`${x},${z}`);
+
+  /** Every addressable building of a village, cached until the village grows or the road
+   *  network moves — a house on a plot somebody has since paved is never built, so it
+   *  cannot be somebody's depot either. */
   private buildingsFor(village: VillageRecord): VillageBuilding[] {
     const cached = this.villageBuildings.get(village.id);
-    if (cached && cached.stage === village.stage) return cached.list;
+    if (cached && cached.stage === village.stage && cached.roads === this.roads.revision) {
+      return cached.list;
+    }
     const houses: HouseRecord[] = [];
     // A hamlet is not on the village grid, so it has no generated houses at all: the two
     // it was written with are its whole stock of buildings.
     if (village.outpost) houses.push(...outpostBuildings(this.options.seed, village).buildings);
     else houses.push(...this.generator.villageBuildings(village.x, village.z));
     const occupied = village.outpost ? [] : this.generator.villageBuildings(village.x, village.z);
+    const paved = ownPaving(this.options.seed, village, occupied);
     for (let stage = 1; stage <= village.stage; stage++) {
-      houses.push(...growthFor(this.options.seed, village, stage, occupied).buildings);
+      for (const house of growthFor(this.options.seed, village, stage, occupied).buildings) {
+        if (roadCrosses(house, village.baseY + 1, this.world, this.roadLevelAt, paved)) continue;
+        houses.push(house);
+      }
     }
     const list = buildingsOf(village, houses);
-    this.villageBuildings.set(village.id, { stage: village.stage, list });
+    this.villageBuildings.set(village.id, { stage: village.stage, roads: this.roads.revision, list });
     return list;
   }
 
@@ -1830,8 +1850,7 @@ export class Game {
    *  villagers in. */
   private buildGrowth(village: VillageRecord, chunk: Chunk): void {
     const occupied = this.generator.villageBuildings(village.x, village.z);
-    const result = applyGrowth(this.world, this.options.seed, village, chunk, occupied, (x, z) =>
-      this.roads.columns.get(`${x},${z}`));
+    const result = applyGrowth(this.world, this.options.seed, village, chunk, occupied, this.roadLevelAt);
     for (const chest of result.chests) {
       if (this.world.getBlockEntity(chest.x, chest.y, chest.z)) continue;
       this.world.setBlockEntity(
@@ -1850,7 +1869,7 @@ export class Game {
     // share would leave the others behind, because this line closes the gate for good.
     const staffed = Math.max(village.stage, village.outpost ? 1 : 0);
     if (village.spawnedStage >= staffed) return;
-    for (const villager of growthVillagers(this.options.seed, village, occupied)) {
+    for (const villager of growthVillagers(this.options.seed, village, occupied, this.world, this.roadLevelAt)) {
       this.spawnOrQueueVillager(villager.x, villager.y, villager.z, villager.profession, village.stage);
     }
     village.spawnedStage = staffed;
@@ -2681,6 +2700,7 @@ export class Game {
           depot: depot?.id ?? null,
           list: this.buildingsFor(here).map((b) => ({
             id: b.id, label: b.label, role: b.role,
+            x0: b.x0, z0: b.z0, w: b.w, d: b.d,
             door: b.door, outside: b.outside,
             depot: b.id === depot?.id,
           })),
@@ -2698,6 +2718,37 @@ export class Game {
         here.depot = building.id;
         this.transport.invalidate();
         return building.label;
+      },
+      /** Develops the village the player is standing in, one stage at a time, the way a
+       *  delivery does. Hauling forty crates to watch a house go up is the game rather
+       *  than the browser test. */
+      growHere: (stage = 4): { name: string; stage: number; plots: Footprint[]; next: Footprint[] } | null => {
+        const here = this.villages.at(this.player.x, this.player.z);
+        if (!here) return null;
+        const occupied = this.generator.villageBuildings(here.x, here.z);
+        const plots: Footprint[] = [];
+        while (here.stage < stage) {
+          const grew = this.villages.addPoints(here.id, STAGE_POINTS[here.stage]);
+          if (grew === null) break;
+          // Banking the points is only half of it: a delivery raises the buildings too,
+          // and that is the half this is here to look at.
+          this.onVillageGrew(here.id, grew);
+          plots.push(...growthFor(this.options.seed, here, grew, occupied).footprints);
+        }
+        // The plots the stage after this one would fill, so a test can put something on
+        // one before the village gets there. Planning a stage does not build it.
+        const next = here.stage >= STAGE_POINTS.length
+          ? []
+          : growthFor(this.options.seed, here, here.stage + 1, occupied).footprints;
+        return { name: here.name, stage: here.stage, plots, next };
+      },
+      /** Every block one growth stage wants to put down, for working out why one of them
+       *  is not there. */
+      planFor: (stage: number) => {
+        const here = this.villages.at(this.player.x, this.player.z);
+        if (!here) return [];
+        const occupied = this.generator.villageBuildings(here.x, here.z);
+        return growthFor(this.options.seed, here, stage, occupied).placements;
       },
       /** State of the road index, for working out why a road is not joining up. */
       roadIndex: () => ({ columns: this.roads.columns.size, revision: this.roads.revision }),

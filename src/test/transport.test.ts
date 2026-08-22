@@ -233,6 +233,7 @@ describe('transport routes', () => {
     const doors = {
       doorOf: (id: string) =>
         id === ID_A ? { x: 4, z: 4, y: GROUND } : { x: 236, z: -6, y: GROUND },
+      plotsOf: () => [],
     };
     const world = new FakeWorld();
     for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
@@ -253,6 +254,51 @@ describe('transport routes', () => {
     expect(route.waypoints[0]).toEqual({ x: 4, z: 4, y: GROUND });
     expect(route.waypoints[route.waypoints.length - 1]).toEqual({ x: 236, z: -6, y: GROUND });
     expect(transport.pointAt(route, 0)).toEqual({ x: 4, z: 4, y: GROUND });
+  });
+
+  it('walks round the houses between the door and the street', () => {
+    // The depot is behind a row of houses. The straight line from its door to the road
+    // goes through two of them, and a porter steering at its shipment walks into the
+    // wall and stays there — so the goods go round instead.
+    // A row of houses between the depot and the road, with one gap in it.
+    const houses = [
+      { x0: 8, z0: -6, w: 12, d: 5 },
+      { x0: 22, z0: -6, w: 12, d: 5 },
+    ];
+    const doors = {
+      doorOf: (id: string) =>
+        id === ID_A ? { x: 18, z: -12, y: GROUND } : { x: 236, z: -6, y: GROUND },
+      plotsOf: (id: string) => (id === ID_A ? houses : []),
+    };
+    const world = new FakeWorld();
+    for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world);
+    roads.seedFromEdits();
+    const registry = new VillageRegistry(SEED, SOURCE);
+    registry.ensureNear(0, 0);
+    registry.discover(ID_A);
+    registry.discover(ID_B);
+    const transport = new TransportNetwork(roads, registry, {}, null, doors);
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+
+    const route = transport.routes[0];
+    expect(route.connected).toBe(true);
+    expect(route.waypoints[0]).toEqual({ x: 18, z: -12, y: GROUND });
+    // Walk the whole line a step at a time: no part of it may be inside a house.
+    for (let i = 1; i < route.waypoints.length; i++) {
+      const a = route.waypoints[i - 1];
+      const b = route.waypoints[i];
+      const steps = Math.max(Math.abs(b.x - a.x), Math.abs(b.z - a.z));
+      for (let s = 0; s <= steps; s++) {
+        const x = Math.round(a.x + ((b.x - a.x) * s) / (steps || 1));
+        const z = Math.round(a.z + ((b.z - a.z) * s) / (steps || 1));
+        const inside = houses.some((h) => x >= h.x0 && x < h.x0 + h.w && z >= h.z0 && z < h.z0 + h.d);
+        expect(inside, `the walk goes through a house at ${x},${z}`).toBe(false);
+      }
+    }
+    // And the panel says the whole detour is unpaved, because it is.
+    expect(route.doorGap).toBeGreaterThan(12);
   });
 
   it('runs between village centres when nothing names a door', () => {

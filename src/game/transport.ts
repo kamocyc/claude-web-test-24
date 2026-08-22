@@ -14,6 +14,7 @@
  *  back — a pair of villages that each want what the other makes is worth twice the
  *  road. */
 
+import { pathAroundPlots } from './buildings';
 import { roadGrade, toWaypoints, type RoadNetwork, type RoadPoint, type SurveyResult } from './roads';
 import type { GoodId, VillageId, VillageRegistry } from './villages';
 
@@ -157,6 +158,9 @@ export const PORTER_LOST = 24;
  *  transport only needs the point, so it never learns what a building is. */
 export interface DepotSource {
   doorOf(village: VillageId): RoadPoint | null;
+  /** The village's building plots, so the walk from a doorway to the road can go round
+   *  them instead of through them. */
+  plotsOf(village: VillageId): readonly { x0: number; z0: number; w: number; d: number }[];
 }
 
 /** What the game hands transport so it can show a porter. Kept narrow so the simulation
@@ -370,10 +374,10 @@ export class TransportNetwork {
       const tail = result.waypoints[result.waypoints.length - 2];
       let doorGap = 0;
       if (route.fromDoor) {
-        doorGap = Math.max(doorGap, this.joinDoor(route.fromDoor, head, walked, 'head'));
+        doorGap = Math.max(doorGap, this.joinDoor(route.from, route.fromDoor, head, walked, 'head'));
       }
       if (route.toDoor) {
-        doorGap = Math.max(doorGap, this.joinDoor(route.toDoor, tail, walked, 'tail'));
+        doorGap = Math.max(doorGap, this.joinDoor(route.to, route.toDoor, tail, walked, 'tail'));
       }
       route.doorGap = doorGap;
       route.waypoints = walked;
@@ -429,25 +433,51 @@ export class TransportNetwork {
     return true;
   }
 
-  /** Puts a depot's doorway on the front or the back of the walk, following the index
-   *  from the door onto the road where there is a way, and drawing the straight line only
-   *  where there is not. Returns how far that unpaved last leg is, which is what the panel
-   *  reports: the walk to the door counts towards every trip, so paving it is work that
-   *  pays. */
+  /** Puts a depot's doorway on the front or the back of the walk, and works out how the
+   *  goods get from one to the other.
+   *
+   *  Three answers, best first. A spur somebody laid from their own depot to the road is
+   *  road, so the index walks it. Failing that the goods walk across the village, going
+   *  round the houses rather than through them — which is what the porter following them
+   *  has to do, and what it could not do while this was a straight line drawn from the
+   *  doorway to a street thirty blocks away. Failing even that, the straight line, which
+   *  is at least somewhere to go.
+   *
+   *  Returns how far the unpaved part of that leg is, which is what the panel reports: the
+   *  walk to the door counts towards every trip, so paving it is work that pays. */
   private joinDoor(
+    village: VillageId,
     door: RoadPoint,
     onto: RoadPoint | undefined,
     walked: RoadPoint[],
     end: 'head' | 'tail',
   ): number {
-    const spur = onto ? this.roads.pathBetween(door, onto, 32) : null;
-    const link = spur ? toWaypoints(spur) : [];
+    if (!onto) return 0;
+    const spur = this.roads.pathBetween(door, onto, 32);
+    // The walk round the houses joins the survey where the survey starts — the point on
+    // the village's own street — rather than at the first road column past it, so the two
+    // meet without a step sideways. Its last point is that same street point, which the
+    // walk already holds, so it is dropped.
+    const edge = end === 'head' ? walked[0] : walked[walked.length - 1];
+    const round = spur || !edge
+      ? null
+      : pathAroundPlots(door, edge, this.depots?.plotsOf(village) ?? []);
+    const link = spur ? toWaypoints(spur) : round ? toWaypoints(round.slice(0, -1)) : [];
     const parts = end === 'head' ? [door, ...link] : [...link.reverse(), door];
     if (end === 'head') walked.unshift(...parts);
     else walked.push(...parts);
-    const first = link.length > 0 ? link[end === 'head' ? 0 : link.length - 1] : onto;
-    if (!first) return 0;
-    return Math.hypot(first.x - door.x, first.z - door.z);
+    // A spur is road as far as the first column it reaches; a walk round the houses is
+    // unpaved the whole way, and saying so is what keeps the notice worth reading.
+    if (spur) {
+      const first = link[end === 'head' ? 0 : link.length - 1] ?? onto;
+      return Math.hypot(first.x - door.x, first.z - door.z);
+    }
+    if (!round) return Math.hypot(onto.x - door.x, onto.z - door.z);
+    let walk = 0;
+    for (let i = 1; i < round.length; i++) {
+      walk += Math.hypot(round[i].x - round[i - 1].x, round[i].z - round[i - 1].z);
+    }
+    return walk;
   }
 
   /** Speed in blocks per second, and the load one trip carries. */

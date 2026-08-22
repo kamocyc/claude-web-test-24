@@ -553,6 +553,47 @@ console.log('route once paved:', JSON.stringify(await evaluate(() => window.voxe
 console.log('linked panel:', JSON.stringify(await page.locator('.route-row').innerText()));
 await shot('07x-route-linked');
 
+// The last leg of every trip is the walk between the road and the depot's doorway, and
+// the porter mob steers straight at wherever its shipment has got to. So every step of
+// the line the shipment slides along has to be somewhere a walker could stand: a
+// shipment that slides into a wall is a porter standing against one.
+const throughWalls = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const here = window.voxelcraft.village();
+  const route = g.transport.routes.find((r) => r.from === here.id || r.to === here.id);
+  if (!route || route.waypoints.length === 0) return null;
+  const solid = (x, y, z) => g.world.getBlock(x, y, z) !== 0 && g.world.getBlock(x, y, z) !== 9;
+  /** Somewhere near `y` to stand, with two clear cells over it. The line's height is
+   *  interpolated between its corners, so it drifts from the ground over a long straight;
+   *  a wall is four blocks of solid over the floor it stands on, which is further than
+   *  any drift. */
+  const standable = (x, y, z) => {
+    for (let h = y - 3; h <= y + 3; h++) {
+      if (solid(x, h, z) && !solid(x, h + 1, z) && !solid(x, h + 2, z)) return true;
+    }
+    return false;
+  };
+  const walled = [];
+  for (let i = 1; i < route.waypoints.length; i++) {
+    const a = route.waypoints[i - 1];
+    const b = route.waypoints[i];
+    const steps = Math.max(Math.abs(b.x - a.x), Math.abs(b.z - a.z)) || 1;
+    for (let s = 0; s <= steps; s++) {
+      const f = s / steps;
+      const x = Math.round(a.x + (b.x - a.x) * f);
+      const z = Math.round(a.z + (b.z - a.z) * f);
+      const y = Math.round(a.y + (b.y - a.y) * f);
+      if (g.world.heightAt(x, z) < 0) continue;
+      if (!standable(x, y, z)) walled.push(`${x},${y},${z}`);
+    }
+  }
+  return { waypoints: route.waypoints.length, doorGap: Math.round(route.doorGap), walled: walled.slice(0, 8), blocked: walled.length };
+});
+console.log('the walk through the village:', JSON.stringify(throughWalls));
+if (throughWalls && throughWalls.blocked > 0) {
+  throw new Error(`the shipment's line runs through ${throughWalls.blocked} cells nobody can stand in`);
+}
+
 // Every village wants particular goods, and a workshop cannot work without its input.
 // Which pair of villages is worth joining follows from that, so it is worth showing.
 console.log('demand:', JSON.stringify(await evaluate(() =>
@@ -1714,6 +1755,98 @@ await until(() => (document.querySelector('.debug')?.textContent ?? '').length >
 await frame();
 await shot('14-second-world');
 console.log('world from the URL:', JSON.stringify(await debugText()));
+
+// A village develops here, in a world nothing else in this run is standing on: growing one
+// raises houses, levels their plots and lays their doorsteps, and every one of those
+// changes the ground a road would be laid across.
+await settled(90000);
+console.log('village to grow:', JSON.stringify(await evaluate(() => window.voxelcraft.gotoVillage())));
+await settled(90000);
+// --- the village develops ----------------------------------------------------
+// Two things go wrong when a village builds itself out into the ring where its plateau
+// stops being flat: a house stands over a hole on the downhill side, and a house raised
+// over somebody's road ends up with a road-shaped gap through its walls and floor.
+const developed = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const here = window.voxelcraft.village();
+  // A road straight through the middle of a plot the village is about to fill, laid the
+  // way a shovel lays one.
+  const before = window.voxelcraft.growHere(1);
+  // A plot the village has not built on yet, so the road is there first.
+  const plot = before.next[0];
+  const lane = plot.z0 + (plot.d >> 1);
+  const road = [];
+  for (let x = plot.x0 - 10; x < plot.x0 + plot.w + 10; x++) {
+    const y = g.world.heightAt(x, lane);
+    if (y < 0) continue;
+    g.world.setBlock(x, y, lane, 7);
+    for (let h = 1; h <= 2; h++) g.world.setBlock(x, y + h, lane, 0);
+    road.push([x, y, lane]);
+  }
+  const after = window.voxelcraft.growHere(4);
+
+  // A road twenty-odd blocks long crosses more than the one plot it was aimed at, so
+  // every plot it touches is one the village should have left alone.
+  const paved = new Set(road.map(([x, , z]) => `${x},${z}`));
+  const crossed = [];
+  const clear = [];
+  for (const p of after.plots) {
+    let hit = false;
+    for (let x = p.x0; x < p.x0 + p.w && !hit; x++) {
+      for (let z = p.z0; z < p.z0 + p.d; z++) if (paved.has(`${x},${z}`)) { hit = true; break; }
+    }
+    (hit ? crossed : clear).push(p);
+  }
+
+  // Nothing may stand on a plot the road runs through...
+  let onTheRoadsPlots = 0;
+  const floor = here.baseY + 1;
+  for (const p of crossed) {
+    for (let x = p.x0; x < p.x0 + p.w; x++) {
+      for (let z = p.z0; z < p.z0 + p.d; z++) {
+        for (let y = floor; y <= floor + 4; y++) if (g.world.getBlock(x, y, z) !== 0) onTheRoadsPlots++;
+      }
+    }
+  }
+  // ...and the road itself is untouched.
+  let roadLost = 0;
+  for (const [x, y, z] of road) if (g.world.getBlock(x, y, z) !== 7) roadLost++;
+
+  // Every plot it built has a floor, ground under the floor, and something standing on
+  // it: a check that only ever looks for holes would pass a village that built nothing.
+  let floating = 0;
+  let noFloor = 0;
+  let checked = 0;
+  let raised = 0;
+  for (const p of clear) {
+    for (let x = p.x0; x < p.x0 + p.w; x++) {
+      for (let z = p.z0; z < p.z0 + p.d; z++) {
+        for (let y = floor; y <= floor + 3; y++) if (g.world.getBlock(x, y, z) !== 0) raised++;
+      }
+    }
+  }
+  for (const p of clear) {
+    for (let x = p.x0; x < p.x0 + p.w; x++) {
+      for (let z = p.z0; z < p.z0 + p.d; z++) {
+        if (g.world.heightAt(x, z) < 0) continue;
+        checked++;
+        if (g.world.getBlock(x, here.baseY, z) === 0) noFloor++;
+        if (g.world.getBlock(x, here.baseY - 1, z) === 0) floating++;
+      }
+    }
+  }
+  return { village: after.name, stage: after.stage, plots: after.plots.length, crossed: crossed.length, road: road.length, roadLost, onTheRoadsPlots, checked, raised, noFloor, floating };
+});
+console.log('village grew:', JSON.stringify(developed));
+if (developed.road === 0) throw new Error('no road was laid across the plot');
+if (developed.roadLost > 0) throw new Error(`village growth took ${developed.roadLost} blocks of road away`);
+if (developed.crossed === 0) throw new Error('the road crossed none of the plots the village wanted');
+if (developed.onTheRoadsPlots > 0) throw new Error(`village growth built ${developed.onTheRoadsPlots} blocks on the road's plots`);
+if (developed.checked === 0) throw new Error('no developed plot was loaded to check');
+if (developed.raised < 50) throw new Error(`the village put up almost nothing: ${developed.raised} blocks`);
+if (developed.noFloor > 0) throw new Error(`${developed.noFloor} cells of a developed house have no floor`);
+if (developed.floating > 0) throw new Error(`${developed.floating} cells of a developed house stand over a hole`);
+await shot('15-developed');
 
 console.log(errors.length === 0 ? 'NO PAGE ERRORS' : `ERRORS:\n${errors.join('\n')}`);
 await browser.close();

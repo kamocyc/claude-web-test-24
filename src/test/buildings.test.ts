@@ -6,6 +6,7 @@ import {
   defaultDepot,
   depotOf,
   describeBuilding,
+  pathAroundPlots,
 } from '../game/buildings';
 import {
   FACING_STEP,
@@ -133,5 +134,64 @@ describe('buildings a village earns', () => {
     expect(market).toBeDefined();
     if (!market) return;
     expect(market.outside.z).toBe(market.door.z - 1);
+  });
+});
+
+describe('the walk from a doorway to the road', () => {
+  const ground = 64;
+  const at = (x: number, z: number) => ({ x, y: ground, z });
+
+  it('goes straight when nothing is in the way', () => {
+    const path = pathAroundPlots(at(0, 0), at(0, 6), []);
+    expect(path).not.toBeNull();
+    expect(path?.[0]).toEqual(at(0, 0));
+    expect(path?.[path.length - 1]).toEqual(at(0, 6));
+    expect(path).toHaveLength(7);
+  });
+
+  it('goes round a house instead of through it', () => {
+    // A house squarely between the two, with room either side.
+    const house = { x0: -2, z0: 2, w: 5, d: 3 };
+    const path = pathAroundPlots(at(0, 0), at(0, 8), [house]);
+    expect(path).not.toBeNull();
+    for (const p of path ?? []) {
+      const inside = p.x >= house.x0 && p.x < house.x0 + house.w && p.z >= house.z0 && p.z < house.z0 + house.d;
+      expect(inside, `walks through the house at ${p.x},${p.z}`).toBe(false);
+    }
+    // Every step is one block, up down left or right, so a porter following it never
+    // cuts a corner across something.
+    for (let i = 1; i < (path?.length ?? 0); i++) {
+      const a = (path ?? [])[i - 1];
+      const b = (path ?? [])[i];
+      expect(Math.abs(a.x - b.x) + Math.abs(a.z - b.z)).toBe(1);
+    }
+  });
+
+  it('starts at the doorway even though the doorway is inside the house', () => {
+    // A door is a cell in its own wall: the walk has to be allowed to stand in it.
+    const house = { x0: 0, z0: 0, w: 5, d: 5 };
+    const path = pathAroundPlots(at(2, 0), at(2, -6), [house]);
+    expect(path?.[0]).toEqual(at(2, 0));
+  });
+
+  it('gives up rather than wandering when a house is a wall', () => {
+    // Boxed in on every side: there is no way round, and the caller falls back to its
+    // straight line.
+    const walls = [
+      { x0: -4, z0: -4, w: 9, d: 1 },
+      { x0: -4, z0: 4, w: 9, d: 1 },
+      { x0: -4, z0: -4, w: 1, d: 9 },
+      { x0: 4, z0: -4, w: 1, d: 9 },
+    ];
+    expect(pathAroundPlots(at(0, 0), at(0, 20), walls)).toBeNull();
+  });
+
+  it('climbs evenly when the two ends are at different levels', () => {
+    const path = pathAroundPlots({ x: 0, y: 60, z: 0 }, { x: 0, y: 64, z: 8 }, []);
+    expect(path?.[0].y).toBe(60);
+    expect(path?.[path.length - 1].y).toBe(64);
+    for (let i = 1; i < (path?.length ?? 0); i++) {
+      expect(Math.abs((path ?? [])[i].y - (path ?? [])[i - 1].y)).toBeLessThanOrEqual(1);
+    }
   });
 });
