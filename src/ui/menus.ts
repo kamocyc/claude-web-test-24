@@ -24,6 +24,8 @@ const TOGGLE_LABELS: [ToggleKey, string][] = [
 export interface TitleActions {
   onNewWorld(seed: string): void;
   onContinue(): void;
+  /** The fixed world, plus a finished road between two villages to stand on. */
+  onSampleWorld(): void;
 }
 
 /** Title, pause and death overlays. */
@@ -36,6 +38,7 @@ export class Menus {
   private readonly loadingText = el('div', 'menu-note', 'ワールドを生成しています...');
   private readonly seedInput = el('input', 'seed-input');
   private readonly continueButton = el('button', 'menu-button', '続きから');
+  private readonly sampleButton = el('button', 'menu-button subtle', '見本ワールド（道つき）');
   private readonly verifyButton = el('button', 'menu-button subtle', '検証用ワールド');
   private newButton!: HTMLButtonElement;
   private resumeButton!: HTMLButtonElement;
@@ -73,15 +76,18 @@ export class Menus {
       '<b>WASD</b> 移動 / <b>Space</b> ジャンプ / <b>Shift</b> 忍び足 / <b>Ctrl</b> ダッシュ',
       '<b>左クリック</b> 採掘・攻撃 / <b>右クリック</b> 設置・使用・交易',
       '<b>1-9</b> ホットバー / <b>E</b> 持ち物 / <b>L</b> 交易台帳 / <b>Esc</b> ポーズ',
-      '<b>F3</b> デバッグ表示 / <b>G</b> 座標へワープ',
+      '<b>シャベルを持って右クリック長押し</b> 歩きながら道を敷く / <b>R</b> 見ている所から足もとまで道',
+      '<b>F</b> 見ている建物を集荷所に / <b>F3</b> デバッグ表示 / <b>G</b> 座標へワープ',
     ].join('<br>');
     this.verifyButton.title = '毎回まったく同じ地形で始まる、確認用の固定シード';
+    this.sampleButton.title = '村と村を結ぶ 400 マスほどの道が、はじめから敷いてある世界';
     this.title.append(
       heading,
       subtitle,
       this.seedInput,
       newButton,
       this.continueButton,
+      this.sampleButton,
       this.verifyButton,
       help,
     );
@@ -198,6 +204,10 @@ export class Menus {
     this.verifyButton.onclick = () => {
       this.seedInput.value = VERIFICATION_SEED_TEXT;
       actions.onNewWorld(VERIFICATION_SEED_TEXT);
+    };
+    this.sampleButton.onclick = () => {
+      this.seedInput.value = VERIFICATION_SEED_TEXT;
+      actions.onSampleWorld();
     };
   }
 

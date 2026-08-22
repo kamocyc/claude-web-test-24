@@ -9,7 +9,7 @@
  *  Applying is idempotent, which is what removes the need to track anything: a village
  *  that grew while its chunks were unloaded simply builds itself when the player returns. */
 
-import { Block, type BlockId } from '../world/blocks';
+import { Block, blockDef, type BlockId } from '../world/blocks';
 import { CHUNK_SIZE, type Chunk } from '../world/chunk';
 import type { World } from '../world/world';
 import { planGrowth, planOutpost, type GrowthPlan, type Placement, type VillagerMarker } from '../world/generation/village';
@@ -111,11 +111,26 @@ function inChunk(chunk: Chunk, p: { x: number; z: number }): boolean {
   );
 }
 
+/** The level of the road at a column, if the road index holds one. */
+export type RoadLookup = (x: number, z: number) => number | undefined;
+
+/** Blocks of headroom a road keeps. The index itself only reads the cell directly above a
+ *  road, but a porter is nearly two blocks tall and has to fit through. */
+const ROAD_HEADROOM = 2;
+
 /** Writes one placement, unless something worth keeping already stands there. */
-function place(world: World, p: Placement): boolean {
+function place(world: World, p: Placement, roadAt?: RoadLookup): boolean {
   const current = world.getBlock(p.x, p.y, p.z);
   if (current === p.b) return false;
   if (!NATURAL.has(current)) return false;
+  // A village growing over its own road used to be invisible, because a road was allowed
+  // to skip twenty blocks and the survey simply stepped over the sealed column. Now one
+  // column is the difference between one road and two, so the wall yields: the road was
+  // somebody's afternoon, and a house can stand a block to the side.
+  if (roadAt && blockDef(p.b).solid) {
+    const road = roadAt(p.x, p.z);
+    if (road !== undefined && p.y > road && p.y <= road + ROAD_HEADROOM) return false;
+  }
   return world.setBlock(p.x, p.y, p.z, p.b);
 }
 
@@ -133,6 +148,7 @@ export function applyGrowth(
   village: VillageRecord,
   chunk: Chunk,
   occupied: readonly { x0: number; z0: number; w: number; d: number }[],
+  roadAt?: RoadLookup,
 ): GrowthResult {
   const result: GrowthResult = { villagers: [], chests: [], changed: 0 };
   const plans: GrowthPlan[] = [];
@@ -145,7 +161,7 @@ export function applyGrowth(
   for (const plan of plans) {
     for (const p of finalPlacements(plan)) {
       if (!inChunk(chunk, p)) continue;
-      if (place(world, p)) result.changed++;
+      if (place(world, p, roadAt)) result.changed++;
     }
     for (const v of plan.villagers) if (inChunk(chunk, v)) result.villagers.push(v);
     for (const c of plan.chests) if (inChunk(chunk, c)) result.chests.push(c);

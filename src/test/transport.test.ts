@@ -9,7 +9,7 @@ import {
   type PorterHost,
   type TransportEvents,
 } from '../game/transport';
-import { RoadNetwork, MAX_LINK, type RoadTerrain, type RoadWorld } from '../game/roads';
+import { RoadNetwork, type RoadWorld } from '../game/roads';
 import { MAX_STAGE, STAGE_POINTS, VillageRegistry, villageId, type VillageSeed, type VillageSource } from '../game/villages';
 import { Block, type BlockId } from '../world/blocks';
 import { blockIndex, chunkKey, toChunkCoord, toLocalCoord } from '../world/chunk';
@@ -45,7 +45,6 @@ class FakeWorld implements RoadWorld {
   }
 }
 
-const TERRAIN: RoadTerrain = { height: () => GROUND };
 const SOURCE: VillageSource = { villagesAround: () => [A, B] };
 
 /** A porter mob that never gets anywhere: it spawns and then stands exactly where it was
@@ -76,16 +75,16 @@ class StuckHost implements PorterHost {
 interface BuildOptions {
   /** What the road is paved with, or null for no road at all. */
   surface?: BlockId | null;
-  /** Blocks between one laid column and the next. 1 is a road somebody finished. */
-  step?: number;
   /** Somewhere to draw porters, when the test cares about the visible ones. */
   host?: PorterHost;
 }
 
-function build({ surface = Block.DIRT_PATH, step = 1, host }: BuildOptions = {}) {
+/** The villages' streets end at x=30 and x=210, and a road connects by touching one, so
+ *  an unbroken run from 31 to 209 is the finished road. */
+function build({ surface = Block.DIRT_PATH, host }: BuildOptions = {}) {
   const world = new FakeWorld();
-  if (surface !== null) for (let x = 50; x <= 190; x += step) world.lay(x, GROUND, 0, surface);
-  const roads = new RoadNetwork(world, TERRAIN);
+  if (surface !== null) for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 0, surface);
+  const roads = new RoadNetwork(world);
   roads.seedFromEdits();
   const registry = new VillageRegistry(SEED, SOURCE);
   registry.ensureNear(0, 0);
@@ -228,8 +227,8 @@ describe('transport routes', () => {
         id === ID_A ? { x: 4, z: 4, y: GROUND } : { x: 236, z: -6, y: GROUND },
     };
     const world = new FakeWorld();
-    for (let x = 50; x <= 190; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
-    const roads = new RoadNetwork(world, TERRAIN);
+    for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     const registry = new VillageRegistry(SEED, SOURCE);
     registry.ensureNear(0, 0);
@@ -276,9 +275,9 @@ describe('transport routes', () => {
   });
 
   it('sends the cargo home when the road is dug up mid-journey', () => {
-    // A dashed road: pulling one column out of it opens a gap too wide to step over,
-    // which is what a player digging up a road actually does to a finished one.
-    const { world, roads, transport, registry, events } = build({ step: MAX_LINK });
+    // One column out of a finished road is a hole, and a road with a hole in it is two
+    // roads — which is exactly what a player with a pickaxe does to one.
+    const { world, roads, transport, registry, events } = build();
     transport.requestRoute(ID_A, ID_B);
     run(transport, 3);
     registry.produce(600);
@@ -298,7 +297,7 @@ describe('transport routes', () => {
   });
 
   it('stops delivering once the road is gone', () => {
-    const { world, roads, transport, registry, events } = build({ step: MAX_LINK });
+    const { world, roads, transport, registry, events } = build();
     transport.requestRoute(ID_A, ID_B);
     run(transport, 3);
     world.lay(110, GROUND, 0, Block.AIR);
@@ -318,18 +317,6 @@ describe('transport routes', () => {
     }
     expect(registry.get(ID_B)?.stage).toBe(MAX_STAGE);
     expect(registry.get(ID_B)?.points).toBeGreaterThanOrEqual(STAGE_POINTS[0]);
-  });
-
-  it('walks a dashed road more slowly than one that was finished', () => {
-    const finished = build();
-    const dashed = build({ step: MAX_LINK });
-    finished.transport.requestRoute(ID_A, ID_B);
-    dashed.transport.requestRoute(ID_A, ID_B);
-    run(finished.transport, 3);
-    run(dashed.transport, 3);
-    expect(dashed.transport.routes[0].connected).toBe(true);
-    // Both work. Filling the gaps in is still worth doing.
-    expect(dashed.transport.routes[0].quality).toBeLessThan(finished.transport.routes[0].quality);
   });
 
   it('carries more, and faster, on a better surface', () => {
@@ -386,7 +373,7 @@ describe('transport routes', () => {
 
   it('restores a route even before its villages are re-derived from the seed', () => {
     const world = new FakeWorld();
-    const roads = new RoadNetwork(world, TERRAIN);
+    const roads = new RoadNetwork(world);
     const registry = new VillageRegistry(1, SOURCE);
     const transport = new TransportNetwork(roads, registry);
     transport.loadJSON([{ from: ID_A, to: ID_B }]);
@@ -395,8 +382,8 @@ describe('transport routes', () => {
 
   it('keeps trying to survey a route whose villages are not known yet', () => {
     const world = new FakeWorld();
-    for (let x = 50; x <= 190; x += MAX_LINK) world.lay(x, GROUND, 0, Block.DIRT_PATH);
-    const roads = new RoadNetwork(world, TERRAIN);
+    for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     // A save restores routes before the player has walked near enough for the villages
     // to be re-derived from the seed.

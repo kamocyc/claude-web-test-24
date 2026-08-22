@@ -57,9 +57,9 @@ describe('the goal after the tutorial', () => {
     const view = state([a, b], [gap]);
 
     expect(second.pair?.(view)).toBe(gap);
-    // The distance alone reads as an afternoon's digging; the road may be dashed every
-    // twenty blocks, so what the player actually has to place is nineteen of them.
-    expect(second.detail(view)).toContain('道 19 個ぶん');
+    // Naming the two villages is the point: "open a second route" on its own left the
+    // player with nowhere to put a shovel.
+    expect(second.detail(view)).toContain('道 260 個ぶん');
     expect(second.detail(view)).toContain(a.name);
     expect(second.detail(view)).toContain(b.name);
     expect(second.marker?.(view)).toEqual({ x: 60, z: 0, kind: 'gap' });
@@ -78,9 +78,11 @@ describe('the goal after the tutorial', () => {
 
   it('counts blocks, not metres', () => {
     expect(roadBlocksFor(0)).toBe(1);
-    expect(roadBlocksFor(20)).toBe(1);
-    expect(roadBlocksFor(21)).toBe(2);
-    expect(gapText(368)).toBe('あと 368m・道 19 個ぶん');
+    // A road is continuous, so the count is the distance — less the corner-cutting a
+    // diagonal step buys.
+    expect(roadBlocksFor(20)).toBe(14);
+    expect(roadBlocksFor(200)).toBe(141);
+    expect(gapText(368)).toBe('あと 368m・道 260 個ぶん');
   });
 });
 

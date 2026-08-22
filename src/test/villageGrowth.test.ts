@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { applyGrowth, clearGrowthCache, growthChunks, growthFor } from '../game/villageGrowth';
 import { overlaps, planGrowth, planVillage, type Footprint } from '../world/generation/village';
-import { Block } from '../world/blocks';
+import { Block, blockDef } from '../world/blocks';
 import { Chunk, CHUNK_SIZE, CHUNK_VOLUME } from '../world/chunk';
 import { World } from '../world/world';
 import type { VillageRecord } from '../game/villages';
@@ -275,6 +275,38 @@ describe('applying village growth', () => {
     let both = 0;
     for (const chunk of chunksOf(fresh)) both += applyGrowth(fresh, 1, two, chunk, []).changed;
     expect(both).toBeGreaterThan(single);
+  });
+
+  it('will not build a wall over a road', () => {
+    // A village that grew across its own road used to be invisible: a road could skip
+    // twenty blocks, so the survey stepped over the sealed column. Now that one column is
+    // the difference between one road and two, the wall is the thing that gives way.
+    clearGrowthCache();
+    const world = grassWorld();
+    const village = record(2);
+    // Pretend the whole plateau is paved. Whatever growth wants to build, it wants to
+    // build somewhere in here.
+    const roadAt = (x: number, z: number): number | undefined =>
+      Math.abs(x - SITE.x) <= 40 && Math.abs(z - SITE.z) <= 40 ? BASE_Y : undefined;
+    for (const chunk of chunksOf(world)) applyGrowth(world, 1, village, chunk, [], roadAt);
+    for (let z = SITE.z - 40; z <= SITE.z + 40; z++) {
+      for (let x = SITE.x - 40; x <= SITE.x + 40; x++) {
+        for (let y = BASE_Y + 1; y <= BASE_Y + 2; y++) {
+          expect(blockDef(world.getBlock(x, y, z)).solid, `sealed the road at ${x},${y},${z}`)
+            .toBe(false);
+        }
+      }
+    }
+  });
+
+  it('builds normally where there is no road', () => {
+    clearGrowthCache();
+    const world = grassWorld();
+    let changed = 0;
+    for (const chunk of chunksOf(world)) {
+      changed += applyGrowth(world, 1, record(2), chunk, [], () => undefined).changed;
+    }
+    expect(changed).toBeGreaterThan(0);
   });
 
   it('lists the chunks its buildings reach into', () => {

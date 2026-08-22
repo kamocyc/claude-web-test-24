@@ -572,6 +572,171 @@ await until(() => {
 });
 await shot('07x3-guide-linked');
 
+// --- one block is the whole difference ---------------------------------------
+// A road may no longer skip, and the point of saying so is that it is checkable: take a
+// single column out of a finished road and the route has to fall apart, then go back
+// together when it is put back.
+const bite = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const q = window.voxelcraft.quest();
+  const a = g.villages.get(q.origin);
+  const b = g.villages.get(q.target);
+  const mx = Math.round((a.x + b.x) / 2);
+  const mz = Math.round((a.z + b.z) / 2);
+  const near = window.voxelcraft.roadColumnsNear(mx, mz, 6);
+  if (!near.length) return null;
+  let best = near[0];
+  for (const c of near) {
+    if (Math.hypot(c.x - mx, c.z - mz) < Math.hypot(best.x - mx, best.z - mz)) best = c;
+  }
+  const was = g.world.getBlock(best.x, best.y, best.z);
+  g.world.setBlock(best.x, best.y, best.z, 0);
+  return { x: best.x, y: best.y, z: best.z, was };
+});
+if (!bite) throw new Error('no road column to take a bite out of');
+await page.waitForFunction(`${QUEST_ROUTE}?.connected === false`, null, { timeout: 30000 });
+console.log('one block dug out:', JSON.stringify({
+  at: bite,
+  route: await evaluate(QUEST_ROUTE),
+}));
+await evaluate((c) => window.voxelcraft.game.world.setBlock(c.x, c.y, c.z, c.was), bite);
+await page.waitForFunction(`${QUEST_ROUTE}?.connected === true`, null, { timeout: 30000 });
+console.log('and put back:', JSON.stringify(await evaluate(QUEST_ROUTE)));
+
+// --- laying road by hand -----------------------------------------------------
+// Which is the other half of the bargain: if a road may not skip, then laying one must
+// not be four hundred clicks. A shovel held down while the player walks paves the ground
+// under them; [R] paves the twenty blocks they are pointing at. Either of them leaving a
+// dotted line would put the game back where it started.
+
+/** The longest run of road the index would walk as one, around a point. */
+const runAround = async (x, z, radius = 40) =>
+  evaluate(([px, pz, r]) => {
+    const columns = window.voxelcraft.roadColumnsNear(px, pz, r);
+    const at = new Map(columns.map((c) => [`${c.x},${c.z}`, c]));
+    const seen = new Set();
+    let biggest = 0;
+    for (const start of columns) {
+      if (seen.has(`${start.x},${start.z}`)) continue;
+      seen.add(`${start.x},${start.z}`);
+      const queue = [start];
+      let size = 0;
+      while (queue.length) {
+        const here = queue.pop();
+        size++;
+        for (let dz = -1; dz <= 1; dz++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const key = `${here.x + dx},${here.z + dz}`;
+            const next = at.get(key);
+            if (!next || seen.has(key) || Math.abs(next.y - here.y) > 2) continue;
+            seen.add(key);
+            queue.push(next);
+          }
+        }
+      }
+      biggest = Math.max(biggest, size);
+    }
+    return { columns: columns.length, biggest };
+  }, [x, z, radius]);
+
+/** Two stretches of open, level, dry ground well outside the village, each running due
+ *  north so the player can be pointed straight down one of them. Paving is about the
+ *  ground under the player, so the test has to pick ground rather than hope. */
+const strips = await evaluate(() => {
+  const gen = window.voxelcraft.game.generator;
+  const v = window.voxelcraft.village();
+  const found = [];
+  for (let radius = 70; radius <= 150; radius += 10) {
+    for (let step = 0; step < 24; step++) {
+      const angle = (step * Math.PI) / 12;
+      const x = Math.round(v.x + Math.cos(angle) * radius);
+      const z = Math.round(v.z + Math.sin(angle) * radius);
+      let low = Infinity;
+      let high = -Infinity;
+      for (let i = 0; i <= 26; i++) {
+        const h = gen.height(x, z - i);
+        low = Math.min(low, h);
+        high = Math.max(high, h);
+      }
+      if (low <= 47) continue;
+      found.push({ x, z, spread: high - low });
+    }
+  }
+  found.sort((a, b) => a.spread - b.spread);
+  const picked = [];
+  for (const spot of found) {
+    if (picked.every((p) => Math.hypot(p.x - spot.x, p.z - spot.z) > 50)) picked.push(spot);
+    if (picked.length === 2) break;
+  }
+  return picked;
+});
+console.log('open ground:', JSON.stringify(strips));
+if (strips.length < 2) throw new Error('nowhere flat enough to pave');
+
+const standOn = async (spot, pitch) => {
+  await evaluate(([x, z, look]) => {
+    const g = window.voxelcraft.game;
+    window.voxelcraft.teleport(x, z);
+    g.player.flying = false;
+    // Straight into the player's hand: the hotbar is full of whatever they have mined.
+    g.player.inventory.slots[0] = { id: 'iron_shovel', count: 1 };
+    g.player.inventory.selected = 0;
+    g.player.yaw = 0;
+    g.player.pitch = look;
+  }, [spot.x, spot.z, pitch]);
+  await settled();
+  await frame();
+};
+
+await standOn(strips[0], -1.05);
+const beforeSweep = await runAround(strips[0].x, strips[0].z);
+await page.mouse.move(640, 360);
+await page.mouse.down({ button: 'right' });
+await page.keyboard.down('KeyW');
+await page.waitForTimeout(4000);
+await page.keyboard.up('KeyW');
+await page.mouse.up({ button: 'right' });
+await frame();
+const swept = await runAround(strips[0].x, strips[0].z);
+console.log('shovel sweep:', JSON.stringify({
+  before: beforeSweep,
+  after: swept,
+  walkedTo: await evaluate(() => window.voxelcraft.position()),
+}));
+// Continuity is the property under test: every column the sweep laid has to belong to
+// one run the index would walk, not to a scatter of 3x3 patches with holes between them.
+if (swept.columns < 24 || swept.biggest !== swept.columns) {
+  throw new Error(`the sweep left a dotted line: ${JSON.stringify(swept)}`);
+}
+// Turn and look back down what was just paved: the road is behind the player, because
+// they walked over it.
+await evaluate(() => {
+  const g = window.voxelcraft.game;
+  g.player.yaw = Math.PI;
+  g.player.pitch = -0.55;
+});
+await frame();
+await shot('07y-shovel-sweep');
+
+// [R]: point at something out of arm's reach and the ground between here and there is
+// road, in one keystroke.
+await standOn(strips[1], -0.12);
+const beforeRanged = await runAround(strips[1].x, strips[1].z, 26);
+await page.keyboard.press('KeyR');
+await frame();
+const ranged = await runAround(strips[1].x, strips[1].z, 26);
+console.log('[R] road:', JSON.stringify({
+  at: strips[1],
+  before: beforeRanged,
+  after: ranged,
+  toast: await page.locator('.toast').last().innerText().catch(() => null),
+}));
+if (ranged.biggest < beforeRanged.biggest + 6) {
+  throw new Error(`[R] laid no usable road: ${JSON.stringify({ beforeRanged, ranged })}`);
+}
+await shot('07y2-ranged-road');
+
+
 // A route runs between two doorways, not two map pins: the shipment leaves the building
 // the player picked and arrives at the other village's.
 const ends = await evaluate(() => {
@@ -668,6 +833,13 @@ if (!goal.aim) throw new Error('the goal after the tutorial points nowhere');
 const grown = await evaluate(() =>
   window.voxelcraft.villages().slice().sort((a, b) => b.stage - a.stage)[0]);
 console.log('grown village:', JSON.stringify(grown));
+// A village that grew across its own road used to cut it — invisible while a road could
+// skip twenty blocks, fatal now that it cannot.
+const survived = await evaluate(QUEST_ROUTE);
+console.log('route after the village grew:', JSON.stringify({
+  connected: survived?.connected, missing: survived?.missing,
+}));
+if (!survived?.connected) throw new Error('the village grew over its own road');
 if (grown) {
   await evaluate((v) => window.voxelcraft.teleport(v.x, v.z), grown);
   await settled();
@@ -708,6 +880,29 @@ console.log('porters walking:', await evaluate(() => window.voxelcraft.porters()
 console.log('quest at the end:', JSON.stringify(await evaluate(() => window.voxelcraft.quest())));
 console.log('routes at the end:', JSON.stringify(await evaluate(() => window.voxelcraft.routes())));
 await closeScreen();
+
+// --- the sample road ---------------------------------------------------------
+// What the title screen's 見本ワールド hands a new player: two villages a few hundred
+// blocks apart with a finished road between them, laid exactly the way a player's would
+// be. It has to survey as connected, or the sample is a lie.
+const sample = await evaluate(() => window.voxelcraft.sampleRoad());
+console.log('sample road:', JSON.stringify(sample));
+if (!sample || sample.blocks < 250) {
+  throw new Error(`the sample road is too short: ${JSON.stringify(sample)}`);
+}
+await settled();
+await page.waitForFunction(
+  () => window.voxelcraft.routes().some((r) => r.connected && r.length > 250),
+  null,
+  { timeout: 60000 },
+);
+console.log('sample route:', JSON.stringify(await evaluate(() =>
+  window.voxelcraft.routes().filter((r) => r.length > 250))));
+await evaluate(() => {
+  window.voxelcraft.game.player.pitch = -0.12;
+});
+await frame();
+await shot('07y3-sample-road');
 
 // --- farming and eating ------------------------------------------------------
 const farm = await evaluate(() => {

@@ -6,7 +6,6 @@
  *  arrive. Pure data — the game drives it with events and reads back an objective. */
 
 import { itemLabel } from './items';
-import { MAX_LINK } from './roads';
 import type { Route } from './transport';
 import {
   MAX_STAGE,
@@ -98,15 +97,16 @@ export interface Milestone {
 
 /** Blocks of road still to lay across a gap.
  *
- *  A road may be dashed up to `MAX_LINK`, so the metres between two ends of a road are
- *  emphatically *not* the work: 368m of gap is nineteen blocks placed twenty apart, not
- *  three hundred and sixty-eight. Saying the distance alone made the second route read as
- *  an afternoon's digging when it is a walk with a shovel. */
+ *  A road is continuous now, so a block covers a metre — except on the diagonal, where a
+ *  corner-to-corner step covers √2 of them. The count is what the player has to do; the
+ *  metres are how far they have to walk to do it. Both get said, because a road that used
+ *  to be nineteen blocks placed twenty apart is now a real stretch of digging, and
+ *  pretending otherwise is how the second route got a reputation. */
 export function roadBlocksFor(missing: number): number {
-  return Math.max(1, Math.ceil(missing / MAX_LINK));
+  return Math.max(1, Math.round(missing / Math.SQRT2));
 }
 
-/** "あと 368m・道 19 個ぶん". Used wherever a gap is reported. */
+/** "あと 368m・道 260 個ぶん". Used wherever a gap is reported. */
 export function gapText(missing: number): string {
   return `あと ${Math.round(missing)}m・道 ${roadBlocksFor(missing)} 個ぶん`;
 }
@@ -478,7 +478,7 @@ export class Questline {
         return {
           step: this.step,
           title: `${origin.name}と${target.name}を道でつなぐ`,
-          detail: `歩ける道を敷く。${MAX_LINK} マスまでのとぎれなら許されるので、置くのは飛び飛びでよい`,
+          detail: 'シャベルを持って押しっぱなしで歩けば、足もとが道になる（[R] で 20 マス先から手もとまで一気に）',
           marker: { x: target.x, z: target.z, kind: 'village' },
         };
       }

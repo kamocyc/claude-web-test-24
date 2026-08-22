@@ -1,13 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  MAX_LINK,
   MAX_STEP,
   RoadNetwork,
   ROAD_BLOCKS,
   ROAD_SPEED,
   roadGrade,
   toWaypoints,
-  type RoadTerrain,
   type RoadWorld,
 } from '../game/roads';
 import { Block, type BlockId } from '../world/blocks';
@@ -55,10 +53,6 @@ class FakeWorld implements RoadWorld {
   isLoadedAt(x: number, z: number): boolean {
     return this.loaded.has(chunkKey(toChunkCoord(x), toChunkCoord(z)));
   }
-
-  terrain(): RoadTerrain {
-    return { height: (x, z) => this.ground.get(`${x},${z}`) ?? GROUND };
-  }
 }
 
 function village(id: string, x: number, z: number): VillageRecord {
@@ -73,9 +67,11 @@ function village(id: string, x: number, z: number): VillageRecord {
 const A = village('a', 0, 0);
 const B = village('b', 240, 0);
 
-/** Stepping stones every `step` blocks between the two villages' street ends. */
-function pave(world: FakeWorld, step: number, from = 50, to = 190): void {
-  for (let x = from; x <= to; x += step) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+/** An unbroken road between the two villages' street ends, which sit at x=30 and x=210.
+ *  A road connects by touching an arm of a village's street cross, so it starts one block
+ *  out from each. */
+function pave(world: FakeWorld, from = 31, to = 209, y = GROUND): void {
+  for (let x = from; x <= to; x++) world.lay(x, y, 0, Block.DIRT_PATH);
 }
 
 describe('road index', () => {
@@ -85,7 +81,7 @@ describe('road index', () => {
     // Natural gravel exists in the world but was never placed, so it is not a road.
     world.load(30, 0);
     world.blocks.set(`30,${GROUND},0`, Block.GRAVEL);
-    const roads = new RoadNetwork(world, world.terrain());
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     expect(roads.columns.has('10,0')).toBe(true);
     expect(roads.columns.has('30,0')).toBe(false);
@@ -95,15 +91,15 @@ describe('road index', () => {
     const world = new FakeWorld();
     world.lay(10, GROUND, 0, Block.DIRT_PATH);
     world.lay(10, GROUND + 1, 0, Block.OAK_LOG);
-    const roads = new RoadNetwork(world, world.terrain());
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     expect(roads.columns.has('10,0')).toBe(false);
   });
 
   it('rebuilds the same index from the same edits', () => {
     const world = new FakeWorld();
-    pave(world, 10);
-    const roads = new RoadNetwork(world, world.terrain());
+    pave(world, 31, 60);
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     const first = [...roads.columns.entries()].sort();
     roads.seedFromEdits();
@@ -112,7 +108,7 @@ describe('road index', () => {
 
   it('bumps the revision when a road block appears', () => {
     const world = new FakeWorld();
-    const roads = new RoadNetwork(world, world.terrain());
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     const before = roads.revision;
     world.lay(10, GROUND, 0, Block.DIRT_PATH);
@@ -124,7 +120,7 @@ describe('road index', () => {
   it('drops a column when its road is dug up', () => {
     const world = new FakeWorld();
     world.lay(10, GROUND, 0, Block.DIRT_PATH);
-    const roads = new RoadNetwork(world, world.terrain());
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     world.lay(10, GROUND, 0, Block.AIR);
     roads.onBlockChanged(10, GROUND, 0, Block.DIRT_PATH, Block.AIR);
@@ -143,7 +139,7 @@ describe('road index', () => {
   it('remembers what each column is paved with', () => {
     const world = new FakeWorld();
     world.lay(10, GROUND, 0, Block.DIRT_PATH);
-    const roads = new RoadNetwork(world, world.terrain());
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     expect(roads.surfaces.get('10,0')).toBe(Block.DIRT_PATH);
 
@@ -157,17 +153,17 @@ describe('road index', () => {
   it('hands the minimap the surface along with the column', () => {
     const world = new FakeWorld();
     world.lay(10, GROUND, 0, Block.GRAVEL);
-    const roads = new RoadNetwork(world, world.terrain());
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     expect(roads.columnsIn(0, -5, 20, 5)).toEqual([{ x: 10, z: 0, y: GROUND, b: Block.GRAVEL }]);
   });
 });
 
 describe('road quality', () => {
-  function qualityOf(surface: BlockId, step = 1): number {
+  function qualityOf(surface: BlockId): number {
     const world = new FakeWorld();
-    for (let x = 50; x <= 190; x += step) world.lay(x, GROUND, 0, surface);
-    const roads = new RoadNetwork(world, world.terrain());
+    for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 0, surface);
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     const result = roads.survey(A, B);
     if (!result.connected) throw new Error('fixture is not connected');
@@ -185,12 +181,6 @@ describe('road quality', () => {
     expect(qualityOf(Block.STONE_BRICKS)).toBeCloseTo(ROAD_SPEED.get(Block.STONE_BRICKS) ?? 0, 5);
   });
 
-  it('rates a dashed road below the surface it is dashed with', () => {
-    // A road may skip, and one that does still works. It is simply slower than one
-    // somebody finished, which is what makes filling it in worth doing.
-    expect(qualityOf(Block.STONE_BRICKS, MAX_LINK)).toBeLessThan(qualityOf(Block.DIRT_PATH));
-  });
-
   it('names the grades in order', () => {
     const names = [0.8, 1, 1.2, 1.45, 1.7].map((q) => roadGrade(q));
     expect(new Set(names).size).toBe(names.length);
@@ -201,22 +191,24 @@ describe('road quality', () => {
     // it would report a paved road as rough, and would hand a porter waypoints that cut
     // its corners.
     const world = new FakeWorld();
-    for (let x = 50; x <= 190; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
-    const roads = new RoadNetwork(world, world.terrain());
+    pave(world);
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     const result = roads.survey(A, B);
     if (!result.connected) throw new Error('fixture is not connected');
     // Two village stubs plus one straight run, once the straight parts are folded away.
     expect(toWaypoints(result.waypoints).length).toBeLessThanOrEqual(4);
     expect(result.length).toBeGreaterThan(150);
+    // And every block of it is a waypoint before the straight parts are folded away.
+    expect(result.waypoints.length).toBeGreaterThan(150);
   });
 });
 
 describe('road survey', () => {
   it('connects two villages across a paved route', () => {
     const world = new FakeWorld();
-    pave(world, MAX_LINK);
-    const roads = new RoadNetwork(world, world.terrain());
+    pave(world);
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     const result = roads.survey(A, B);
     expect(result.connected).toBe(true);
@@ -227,46 +219,57 @@ describe('road survey', () => {
     expect(result.waypoints[result.waypoints.length - 1].x).toBeGreaterThanOrEqual(B.x - 30);
   });
 
-  it('allows a road to be dashed up to the link distance', () => {
+  it('refuses a road with a single block missing', () => {
     const world = new FakeWorld();
-    pave(world, MAX_LINK);
-    const roads = new RoadNetwork(world, world.terrain());
+    pave(world, 31, 119);
+    pave(world, 121, 209);
+    const roads = new RoadNetwork(world);
+    roads.seedFromEdits();
+    expect(roads.survey(A, B).connected).toBe(false);
+  });
+
+  it('follows a road round a corner', () => {
+    const world = new FakeWorld();
+    for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 40, Block.DIRT_PATH);
+    for (let z = 0; z <= 40; z++) world.lay(31, GROUND, z, Block.DIRT_PATH);
+    for (let z = 0; z <= 40; z++) world.lay(209, GROUND, z, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     expect(roads.survey(A, B).connected).toBe(true);
   });
 
-  it('refuses a gap wider than the link distance', () => {
-    const world = new FakeWorld();
-    pave(world, MAX_LINK + 1);
-    const roads = new RoadNetwork(world, world.terrain());
-    roads.seedFromEdits();
-    expect(roads.survey(A, B).connected).toBe(false);
+  it('takes a road up a slope but not up a wall', () => {
+    // A hill in the middle: two blocks up per step for twenty steps, then back down.
+    const gentle = new FakeWorld();
+    const height = (x: number): number => GROUND + MAX_STEP * Math.max(0, 20 - Math.abs(120 - x));
+    for (let x = 31; x <= 209; x++) gentle.lay(x, height(x), 0, Block.DIRT_PATH);
+    const up = new RoadNetwork(gentle);
+    up.seedFromEdits();
+    expect(up.survey(A, B).connected).toBe(true);
+
+    const steep = new FakeWorld();
+    pave(steep, 31, 119);
+    pave(steep, 120, 209, GROUND + MAX_STEP + 1);
+    const wall = new RoadNetwork(steep);
+    wall.seedFromEdits();
+    expect(wall.survey(A, B).connected).toBe(false);
   });
 
-  it('refuses to cross a cliff even when the gap is short', () => {
+  it('crosses water on a bridge, because a bridge is blocks somebody laid', () => {
     const world = new FakeWorld();
-    pave(world, MAX_LINK);
-    // A wall of ground halfway along: within the link distance, but not walkable.
-    for (let x = 118; x <= 122; x++) world.setGround(x, 0, GROUND + MAX_STEP + 4);
-    const roads = new RoadNetwork(world, world.terrain());
+    pave(world);
+    // Open sea under the middle of it. The road is above the water, so it carries.
+    for (let x = 100; x <= 140; x++) world.setGround(x, 0, 40);
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    expect(roads.survey(A, B).connected).toBe(false);
-  });
-
-  it('refuses to cross open water', () => {
-    const world = new FakeWorld();
-    pave(world, MAX_LINK);
-    for (let x = 118; x <= 122; x++) world.setGround(x, 0, 40);
-    const roads = new RoadNetwork(world, world.terrain());
-    roads.seedFromEdits();
-    expect(roads.survey(A, B).connected).toBe(false);
+    expect(roads.survey(A, B).connected).toBe(true);
   });
 
   it('reports where each side runs out when the road is unfinished', () => {
     const world = new FakeWorld();
-    pave(world, MAX_LINK, 50, 110);
-    pave(world, MAX_LINK, 170, 190);
-    const roads = new RoadNetwork(world, world.terrain());
+    pave(world, 31, 110);
+    pave(world, 170, 209);
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     const result = roads.survey(A, B);
     expect(result.connected).toBe(false);
@@ -278,7 +281,7 @@ describe('road survey', () => {
 
   it('points at the village street when no road has been started', () => {
     const world = new FakeWorld();
-    const roads = new RoadNetwork(world, world.terrain());
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     const result = roads.survey(A, B);
     expect(result.connected).toBe(false);
@@ -289,8 +292,8 @@ describe('road survey', () => {
 
   it('gives the same answer whether or not the chunks are loaded', () => {
     const world = new FakeWorld();
-    pave(world, MAX_LINK);
-    const roads = new RoadNetwork(world, world.terrain());
+    pave(world);
+    const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     const away = roads.survey(A, B);
     for (let x = 0; x <= 240; x += 16) world.load(x, 0);

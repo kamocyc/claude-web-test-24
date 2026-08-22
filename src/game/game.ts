@@ -66,6 +66,7 @@ import { tickFurnace } from './smelting';
 import { generateTrades, restockTrades, tradesFromJSON, tradesToJSON } from './trading';
 import { VILLAGE_RADIUS, type HouseRecord } from '../world/generation/village';
 import { RoadNetwork, type RoadPoint } from './roads';
+import { runRoad, treadBrush, treadLine, type PaveTarget } from './paving';
 import { PORTER_LEASH, TransportNetwork, loadFor, type Arrival, type PorterView, type Route } from './transport';
 import {
   VillageRegistry,
@@ -127,9 +128,22 @@ const GUIDE_GAP = 0xffa04d;
 const GUIDE_PORTER = 0x8ef0b8;
 /** The doorway a route loads and unloads at. */
 const GUIDE_DEPOT = 0xffd479;
-/** Blocks of height a debug road may gain or lose per step, matching what a walker can
- *  manage on a paved slope. */
+/** Blocks of height a laid road may gain or lose per step, matching what a walker can
+ *  manage on a paved slope — and what the road index will step between. */
 const ROAD_GRADE = 2;
+/** How far ahead `[R]` will run a road back to the player's feet. A road is continuous
+ *  now, so this is the one place the player says "and the twenty blocks in between". */
+const ROAD_REACH = 20;
+/** The length of road the sample world starts with, in blocks. Villages sit on a 320
+ *  block grid, so this picks a neighbour rather than the village next door. */
+const SAMPLE_ROAD = 400;
+/** Seconds between two passes of a held shovel, so paving happens at a walking pace
+ *  rather than at the frame rate. */
+const PAVE_INTERVAL = 0.06;
+/** How far behind a jumped cursor the sweep will fill in. A crosshair skips several
+ *  blocks whenever the player turns, and a road with a hole in it is two roads. */
+const PAVE_BRIDGE = 12;
+
 /** Chunk meshes rebuilt per frame; higher values load faster but stutter more. */
 const MESH_BUDGET = 3;
 /** Water-only rebuilds are much cheaper, so more of them fit in a frame. */
@@ -142,6 +156,9 @@ export interface GameOptions {
   seed: number;
   save: SaveData | null;
   settings: Settings;
+  /** Start with a road already built between two villages, and the player standing on
+   *  one end of it. See `buildSampleRoad`. */
+  sample?: boolean;
   onQuit(): void;
 }
 
@@ -198,6 +215,13 @@ export class Game {
   /** Block being mined and how far along it is. */
   private miningTarget: { x: number; y: number; z: number } | null = null;
   private miningProgress = 0;
+  /** Where the shovel last trod, so a sweep can fill in the blocks the crosshair skipped
+   *  over rather than leaving a dotted line behind. */
+  private paveFrom: { x: number; y: number; z: number } | null = null;
+  private paveTimer = 0;
+  /** Held until the world is ready, because a toast raised during construction would be
+   *  shown to a screen that is still saying "generating terrain". */
+  private sampleToast: string | null = null;
   private openContainerPos: { x: number; y: number; z: number } | null = null;
   private renderDistance: number;
   private keyHandler: ((event: KeyboardEvent) => void) | null = null;
@@ -230,7 +254,7 @@ export class Game {
     this.water = new WaterSimulator(this.world);
     this.riverFlow = new RiverFlow(this.world);
     this.villages = new VillageRegistry(options.seed, this.generator);
-    this.roads = new RoadNetwork(this.world, this.generator);
+    this.roads = new RoadNetwork(this.world);
     this.world.onBlockChange((x, y, z, previous, next) => {
       this.light.onBlockChanged(x, y, z, previous, next);
       this.water.onBlockChanged(x, y, z, previous, next);
@@ -292,6 +316,7 @@ export class Game {
     this.pool.setHandler((message) => this.onChunkReady(message));
 
     if (options.save) this.applySave(options.save);
+    else if (options.sample) this.buildSampleRoad();
     else this.placeAtSpawn();
 
     this.bindInput();
@@ -359,6 +384,10 @@ export class Game {
         // A loaded save already knows where the player stood; only a brand new world
         // needs to be dropped onto the freshly generated surface.
         if (!this.options.save) this.settlePlayerOnGround();
+        if (this.sampleToast) {
+          this.hud.toast(this.sampleToast);
+          this.sampleToast = null;
+        }
         // Pointer lock can only be requested from a real user gesture, so the player
         // clicks once to start looking around.
         this.hud.setClickPrompt(true);
@@ -686,6 +715,10 @@ export class Game {
           if (this.paused || this.player.isDead || this.uiOpen) break;
           this.chooseDepot();
           break;
+        case 'KeyR':
+          if (this.paused || this.player.isDead || this.uiOpen) break;
+          this.paveToHere();
+          break;
         case 'KeyG':
           if (this.paused || this.player.isDead) break;
           // Without this the same keypress types a "g" into the field that just took
@@ -827,11 +860,72 @@ export class Game {
       return;
     }
 
+    this.updatePaving(dt, hit);
+
     if (input.buttons[0] && hit) {
       this.updateMining(dt, hit);
     } else {
       this.resetMining();
     }
+  }
+
+  // --- paving ----------------------------------------------------------------
+
+  /** A shovel held down while the player walks.
+   *
+   *  One click, one block was the whole reason roads were allowed to be dashed: nobody
+   *  was ever going to click four hundred times. So the shovel sweeps — it treads the
+   *  cell under the crosshair and the eight around it, and it fills in behind a crosshair
+   *  that jumped, which happens every time the player turns their head. What comes out is
+   *  a road wide enough to see and continuous enough to carry. */
+  private updatePaving(dt: number, hit: RaycastHit | null): void {
+    const shovel = heldTool(this.player.inventory.held)?.tool?.kind === 'shovel';
+    if (!shovel || !this.options.input.buttons[2] || !hit || this.uiOpen) {
+      this.paveFrom = null;
+      return;
+    }
+    this.paveTimer -= dt;
+    if (this.paveTimer > 0) return;
+    this.paveTimer = PAVE_INTERVAL;
+
+    const from = this.paveFrom;
+    const span = from ? Math.max(Math.abs(hit.x - from.x), Math.abs(hit.z - from.z)) : 0;
+    if (from && span > 1 && span <= PAVE_BRIDGE) treadLine(this.paveTarget, from, hit, from.y);
+    else treadBrush(this.paveTarget, hit.x, hit.z, hit.y);
+    this.paveFrom = { x: hit.x, y: hit.y, z: hit.z };
+  }
+
+  /** The world as something to tread a path into. */
+  private get paveTarget(): PaveTarget {
+    return {
+      getBlock: (x, y, z) => this.world.getBlock(x, y, z),
+      setBlock: (x, y, z, id) => this.world.setBlock(x, y, z, id),
+      roadLevel: (x, z) => this.roads.columns.get(`${x},${z}`),
+    };
+  }
+
+  /** Runs a road from wherever the player is aiming back to where they stand.
+   *
+   *  The sweep paves what the crosshair can reach, which is five blocks. This is the
+   *  other half: point at something twenty blocks off, press `[R]`, and the ground in
+   *  between becomes road — cut into a rise and carried over a dip, so the result is a
+   *  road the index will walk rather than a line of blocks draped down a cliff. */
+  private paveToHere(): void {
+    const eye = { x: this.player.x, y: this.player.eyeY, z: this.player.z };
+    const hit = raycastVoxels(this.world, eye, this.player.lookVector(), {
+      maxDistance: ROAD_REACH,
+    });
+    if (!hit) {
+      this.hud.toast(`${ROAD_REACH} マス以内の地面に狙いをつけて [R]`);
+      return;
+    }
+    const laid = this.runRoad(
+      { x: hit.x, z: hit.z },
+      { x: Math.floor(this.player.x), z: Math.floor(this.player.z) },
+      Block.DIRT_PATH,
+      hit.y,
+    );
+    this.hud.toast(laid > 0 ? `道を ${laid} マスのばした` : '道をのばせる地面がない');
   }
 
   private updateMining(dt: number, hit: RaycastHit): void {
@@ -963,11 +1057,11 @@ export class Game {
     }
 
     // Paving a road with a shovel. Same gesture as tilling soil, and it is what makes a
-    // road between two villages something a player will actually finish.
+    // road between two villages something a player will actually finish. Holding the
+    // button down keeps it going: see `updatePaving`.
     if (def.tool?.kind === 'shovel') {
-      const target = this.world.getBlock(hit.x, hit.y, hit.z);
-      if ((target === Block.GRASS || target === Block.DIRT) && this.world.getBlock(hit.x, hit.y + 1, hit.z) === Block.AIR) {
-        this.world.setBlock(hit.x, hit.y, hit.z, Block.DIRT_PATH);
+      if (treadBrush(this.paveTarget, hit.x, hit.z, hit.y).laid > 0) {
+        this.paveFrom = { x: hit.x, y: hit.y, z: hit.z };
         return;
       }
     }
@@ -1541,7 +1635,8 @@ export class Game {
    *  villagers in. */
   private buildGrowth(village: VillageRecord, chunk: Chunk): void {
     const occupied = this.generator.villageBuildings(village.x, village.z);
-    const result = applyGrowth(this.world, this.options.seed, village, chunk, occupied);
+    const result = applyGrowth(this.world, this.options.seed, village, chunk, occupied, (x, z) =>
+      this.roads.columns.get(`${x},${z}`));
     for (const chest of result.chests) {
       if (this.world.getBlockEntity(chest.x, chest.y, chest.z)) continue;
       this.world.setBlockEntity(
@@ -1785,22 +1880,34 @@ export class Game {
     // Paving from the console is what lets the browser test check that a better road
     // really does move more goods; by hand it is a long afternoon with a shovel.
     const block = surface ? itemDef(surface)?.placesBlock ?? Block.DIRT_PATH : Block.DIRT_PATH;
-    const steps = Math.ceil(Math.hypot(to.x - from.x, to.z - from.z));
-    let laid = 0;
-    let y = from.baseY;
-    for (let i = 0; i <= steps; i++) {
-      const x = Math.round(from.x + ((to.x - from.x) * i) / steps);
-      const z = Math.round(from.z + ((to.z - from.z) * i) / steps);
-      // A road a player would actually build: it follows the ground but never steps more
-      // than a walker can climb, and it stays above the water rather than diving into it,
-      // which is what a bridge is.
-      const ground = this.groundHeightAt(x, z);
-      const wanted = Math.max(ground, SEA_LEVEL + 1);
-      y = Math.max(y - ROAD_GRADE, Math.min(y + ROAD_GRADE, wanted));
-      this.layDebugRoad(x, y, z, block);
-      laid++;
-    }
-    return laid;
+    // From one village's street to the other's, not centre to centre: the middle of a
+    // village is its well and its houses, and a road ploughed through them is neither
+    // what a player would build nor pleasant to arrive in.
+    const start = this.roads.streetPoint(from, to.x, to.z);
+    const end = this.roads.streetPoint(to, from.x, from.z);
+    return this.runRoad(start, end, block, start.y, end.y);
+  }
+
+  /** Lays an unbroken line of road columns from one point to the other. */
+  private runRoad(
+    from: { x: number; z: number },
+    to: { x: number; z: number },
+    block: BlockId,
+    startY: number,
+    endY?: number,
+  ): number {
+    return runRoad(
+      {
+        ground: (x, z) => this.groundHeightAt(x, z),
+        lay: (x, y, z) => this.layRoadColumn(x, y, z, block),
+      },
+      from,
+      to,
+      startY,
+      ROAD_GRADE,
+      SEA_LEVEL + 1,
+      endY,
+    );
   }
 
   private groundHeightAt(x: number, z: number): number {
@@ -1813,8 +1920,9 @@ export class Game {
 
   /** Writes one road column plus the headroom above it. Chunks nobody has visited get the
    *  edit recorded directly — which is what a shovel would have left behind anyway, and
-   *  what the road index reads. */
-  private layDebugRoad(x: number, y: number, z: number, block: BlockId = Block.DIRT_PATH): void {
+   *  what the road index reads, so a road can be run through country the player has never
+   *  stood in and still be there when they arrive. */
+  private layRoadColumn(x: number, y: number, z: number, block: BlockId = Block.DIRT_PATH): void {
     if (this.world.hasChunk(toChunkCoord(x), toChunkCoord(z))) {
       this.world.setBlock(x, y, z, block);
       // Headroom, and then whatever falls into it. Cutting under a dune drops the entire
@@ -1966,6 +2074,97 @@ export class Game {
     // the drop in the meantime costs nothing.
     this.settlePending = !this.settlePlayerOnGround();
     this.hud.setClickPrompt(!this.options.input.locked);
+  }
+
+  /** Starts the world with a finished road in it.
+   *
+   *  Everything about the transport layer is easier to believe once you have seen one:
+   *  four hundred blocks of dirt path running from one village's street to another's,
+   *  with porters already walking it. Reading "lay a road between two villages" and
+   *  standing on one are not the same size of idea, and the road is what makes the
+   *  difference between the two obvious.
+   *
+   *  It is written the way a player's would be — recorded edits, laid by `runRoad`,
+   *  indexed through the ordinary block-change hook — so nothing about it is special
+   *  except that nobody had to walk it. */
+  buildSampleRoad(): { from: string; to: string; blocks: number } | null {
+    const nearby = this.villages.ensureNear(this.player.x, this.player.z, 3);
+    if (nearby.length < 2) {
+      this.placeAtSpawn();
+      return null;
+    }
+    const fromPlayer = (v: VillageRecord): number =>
+      Math.hypot(v.x - this.player.x, v.z - this.player.z);
+    let from = nearby[0];
+    for (const village of nearby) if (fromPlayer(village) < fromPlayer(from)) from = village;
+    // The neighbour whose road would come out closest to the length worth showing: far
+    // enough to be a journey, near enough that a porter walks it inside a session, and
+    // over country rather than out to sea — a causeway is a fine thing to build but a
+    // poor thing to be handed, because it shows none of what a road crosses.
+    let to: VillageRecord | null = null;
+    let best = Infinity;
+    for (const village of nearby) {
+      if (village.id === from.id) continue;
+      const run = this.roadRun(from, village);
+      const score = Math.abs(run.blocks - SAMPLE_ROAD) + run.water * SAMPLE_ROAD;
+      if (score < best) {
+        best = score;
+        to = village;
+      }
+    }
+    if (!to) {
+      this.placeAtSpawn();
+      return null;
+    }
+
+    const start = this.roads.streetPoint(from, to.x, to.z);
+    const end = this.roads.streetPoint(to, from.x, from.z);
+    const blocks = this.runRoad(start, end, Block.DIRT_PATH, start.y, end.y);
+    this.villages.discover(from.id);
+    this.villages.discover(to.id);
+    this.transport.requestRoute(from.id, to.id);
+    this.transport.invalidate();
+    // Standing on the road, looking down it, is the whole point of the sample — so the
+    // player starts on the road itself rather than in the middle of the village, and far
+    // enough along it that they are not looking at the walls of a cutting.
+    const stand = this.roadViewpoint(start, end);
+    this.spawnPoint = { x: stand.x, z: stand.z };
+    this.player.teleportTo(stand.x + 0.5, stand.y + 1, stand.z + 0.5);
+    this.player.yaw = Math.atan2(-(end.x - start.x), -(end.z - start.z));
+    this.sampleToast = `見本: ${from.name}と${to.name}を結ぶ ${blocks} マスの道`;
+    return { from: from.name, to: to.name, blocks };
+  }
+
+  /** A place along a fresh road worth standing on: on the road, a little way from the
+   *  village, and out in the open rather than down in a cutting. */
+  private roadViewpoint(start: RoadPoint, end: RoadPoint): RoadPoint {
+    const steps = Math.max(Math.abs(end.x - start.x), Math.abs(end.z - start.z));
+    let fallback: RoadPoint | null = null;
+    for (let i = Math.min(10, steps); i <= steps; i++) {
+      const x = Math.round(start.x + ((end.x - start.x) * i) / steps);
+      const z = Math.round(start.z + ((end.z - start.z) * i) / steps);
+      const y = this.roads.columns.get(`${x},${z}`);
+      if (y === undefined) continue;
+      fallback ??= { x, y, z };
+      if (this.groundHeightAt(x, z) <= y) return { x, y, z };
+    }
+    return fallback ?? start;
+  }
+
+  /** What a road between two villages would come out as: how many columns, street to
+   *  street, counted the way `runRoad` walks it, and what fraction of them would be
+   *  bridge rather than road. */
+  private roadRun(from: VillageRecord, to: VillageRecord): { blocks: number; water: number } {
+    const start = this.roads.streetPoint(from, to.x, to.z);
+    const end = this.roads.streetPoint(to, from.x, from.z);
+    const steps = Math.max(Math.abs(end.x - start.x), Math.abs(end.z - start.z));
+    let wet = 0;
+    for (let i = 0; i <= steps; i++) {
+      const x = Math.round(start.x + ((end.x - start.x) * i) / steps);
+      const z = Math.round(start.z + ((end.z - start.z) * i) / steps);
+      if (this.groundHeightAt(x, z) <= SEA_LEVEL) wet++;
+    }
+    return { blocks: steps + 1, water: wet / (steps + 1) };
   }
 
   // --- spawn placement -------------------------------------------------------
@@ -2246,6 +2445,13 @@ export class Game {
        *  is the player's job, not the smoke test's. */
       buildRoad: (fromId?: string, toId?: string, surface?: string): number =>
         this.debugBuildRoad(fromId, toId, surface),
+      /** Builds the sample world's road here and now, and stands the player on it. */
+      sampleRoad: (): { from: string; to: string; blocks: number } | null =>
+        this.buildSampleRoad(),
+      /** Road columns the index holds inside a square, for checking that a sweep of the
+       *  shovel left an unbroken road rather than a dotted line. */
+      roadColumnsNear: (x: number, z: number, radius = 24): RoadPoint[] =>
+        this.roads.columnsIn(x - radius, z - radius, x + radius, z + radius),
       /** Runs the transport clock forward, the way setWeatherSeconds does for weather.
        *  Nothing is drawn while it runs, so it deliberately reports the player as far
        *  away: a visible porter is driven by its mob, which cannot walk inside a

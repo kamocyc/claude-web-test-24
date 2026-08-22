@@ -5,7 +5,7 @@ import { Input } from './ui/input';
 import { Menus } from './ui/menus';
 import { hasSave, readSave } from './game/save';
 import { loadSettings, saveSettings } from './game/settings';
-import { seedFromUrl } from './game/seeds';
+import { VERIFICATION_SEED, seedFromUrl } from './game/seeds';
 
 const canvas = document.createElement('canvas');
 canvas.id = 'viewport';
@@ -30,11 +30,11 @@ function quitToTitle(): void {
   menus.bindTitle(titleActions, hasSave());
 }
 
-function startGame(seed: number, save: ReturnType<typeof readSave>): void {
+function startGame(seed: number, save: ReturnType<typeof readSave>, sample = false): void {
   menus.showTitle(false);
   menus.showPause(false);
   menus.showDeath(false);
-  game = new Game({ canvas, input, menus, seed, save, settings, onQuit: quitToTitle });
+  game = new Game({ canvas, input, menus, seed, save, settings, sample, onQuit: quitToTitle });
   menus.setSeed(seed);
   menus.bindSettings(settings, (next) => {
     input.sensitivity = next.sensitivity;
@@ -65,6 +65,9 @@ const titleActions = {
       return;
     }
     startGame(save.seed, save);
+  },
+  onSampleWorld(): void {
+    startGame(VERIFICATION_SEED, null, true);
   },
 };
 
