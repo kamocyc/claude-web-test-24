@@ -2,9 +2,11 @@
  *
  *  The abstract clock is the truth: a shipment is a number between 0 and 1 that advances
  *  at a fixed rate, and it keeps advancing whether or not anybody is watching. The porter
- *  walking the road is the *view* of that number. When the player is close enough the mob
- *  drives the number (so a porter never teleports past you); when they walk away the mob
- *  is dropped and the number carries on by itself.
+ *  walking the road is the *view* of that number — it is walked towards where the shipment
+ *  has got to and put back on the road when it falls behind, and it is dropped entirely
+ *  once the player is too far away to see it. Nothing a mob does can hold a delivery up:
+ *  letting one drive the clock meant a porter caught on a doorway stopped the line for as
+ *  long as somebody stood watching it.
  *
  *  What the road is paved with sets both how fast that number moves and how much one trip
  *  carries, so a line the player comes back to and improves keeps paying more. And a
@@ -97,12 +99,34 @@ export interface SavedRoute {
   to: string;
 }
 
+/** How far a porter mob may lag behind its shipment before it is picked up and put back
+ *  on it. Big enough to hop a fence or go round a tree, small enough that a porter can
+ *  never be somewhere the road is not. */
+export const PORTER_LEASH = 7;
+
 /** What the game hands transport so it can show a porter. Kept narrow so the simulation
  *  itself has no idea mobs exist. */
 export interface PorterHost {
-  spawnPorter(point: RoadPoint, waypoints: RoadPoint[], startIndex: number): number | null;
+  spawnPorter(point: RoadPoint): number | null;
   porterPosition(mobId: number): { x: number; z: number } | null;
+  /** Walks the mob towards where its shipment has got to, at the route's speed, and puts
+   *  it back on the road if it has fallen more than `PORTER_LEASH` behind. */
+  movePorter(mobId: number, point: RoadPoint, speed: number): void;
   removePorter(mobId: number): void;
+}
+
+/** A shipment as somewhere on the map, rather than as a number. */
+export interface PorterView {
+  route: Route;
+  x: number;
+  y: number;
+  z: number;
+  dir: 1 | -1;
+  good: GoodId;
+  /** 0 on the walk home with nothing worth carrying. */
+  cargo: number;
+  /** Whether a mob is currently drawing this one. */
+  visible: boolean;
 }
 
 /** One delivery, as the game needs to report it. */
@@ -184,6 +208,30 @@ export class TransportNetwork {
     return this.routes.find(
       (r) => (r.from === from && r.to === to) || (r.from === to && r.to === from),
     );
+  }
+
+  /** Where every shipment on the network has got to, whether or not a mob is drawing it.
+   *  This is what the compass and the map point at: "your goods are here" is the answer
+   *  to "the road is joined up, so why can I not see anything happening?". */
+  porterViews(): PorterView[] {
+    const out: PorterView[] = [];
+    for (const route of this.routes) {
+      for (const porter of route.porters) {
+        const point = this.pointAt(route, porter.t);
+        if (!point) continue;
+        out.push({
+          route,
+          x: point.x,
+          y: point.y,
+          z: point.z,
+          dir: porter.dir,
+          good: porter.good,
+          cargo: porter.cargo,
+          visible: porter.mobId !== null,
+        });
+      }
+    }
+    return out;
   }
 
   /** Porters currently walking anywhere on the network. */
@@ -272,9 +320,11 @@ export class TransportNetwork {
     const step = (dt * this.speedOf(route)) / route.length;
     for (let i = route.porters.length - 1; i >= 0; i--) {
       const porter = route.porters[i];
+      // The clock is the truth, watched or not. Letting the mob drive it instead meant a
+      // porter snagged on a doorway stopped the whole line for as long as the player
+      // stood there — which is exactly when they were looking.
+      porter.t += step * porter.dir;
       this.syncMob(route, porter, playerX, playerZ);
-      // A visible porter walks itself; syncMob has already moved `t` to where it got to.
-      if (porter.mobId === null) porter.t += step * porter.dir;
 
       if (porter.dir === 1 && porter.t >= 1) {
         porter.t = 1;
@@ -350,41 +400,10 @@ export class TransportNetwork {
     return route.waypoints[route.waypoints.length - 1];
   }
 
-  /** The waypoint a porter at `t` is heading for. */
-  private indexAt(route: Route, t: number): number {
-    const target = Math.max(0, Math.min(1, t)) * route.length;
-    for (let i = 1; i < route.cumulative.length; i++) {
-      if (route.cumulative[i] >= target) return i;
-    }
-    return route.waypoints.length - 1;
-  }
-
-  /** Progress of a world position along the route.
-   *
-   *  This projects onto the segments rather than snapping to the nearest waypoint: the
-   *  waypoints are only the corners, so a porter walking a straight road would otherwise
-   *  read as 0 until it passed the midpoint and then jump to 1. */
-  private progressOf(route: Route, x: number, z: number): number {
-    if (route.length === 0) return 0;
-    let bestDistance = Infinity;
-    let bestAlong = 0;
-    for (let i = 1; i < route.waypoints.length; i++) {
-      const a = route.waypoints[i - 1];
-      const b = route.waypoints[i];
-      const dx = b.x - a.x;
-      const dz = b.z - a.z;
-      const span = dx * dx + dz * dz;
-      const f = span === 0 ? 0 : Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / span));
-      const distance = Math.hypot(a.x + dx * f - x, a.z + dz * f - z);
-      if (distance >= bestDistance) continue;
-      bestDistance = distance;
-      bestAlong = route.cumulative[i - 1] + (route.cumulative[i] - route.cumulative[i - 1]) * f;
-    }
-    return Math.max(0, Math.min(1, bestAlong / route.length));
-  }
-
-  /** Brings the visible porter into existence near the player, and retires it when the
-   *  mob manager has taken it away again. */
+  /** Shows the porter when the player is close enough to see it, and stops bothering
+   *  when they are not. The mob is a view of the shipment and never the other way round:
+   *  it is walked towards where the shipment has got to, and put back on the road if it
+   *  falls behind. */
   private syncMob(route: Route, porter: Porter, playerX: number, playerZ: number): void {
     if (!this.host) return;
     const here = this.pointAt(route, porter.t);
@@ -394,7 +413,7 @@ export class TransportNetwork {
     if (porter.mobId !== null) {
       const position = this.host.porterPosition(porter.mobId);
       if (!position) {
-        // Despawned by distance, or killed. Carry on abstractly from where it stood.
+        // Despawned by distance, or killed. The shipment carries on unseen.
         porter.mobId = null;
         return;
       }
@@ -403,22 +422,12 @@ export class TransportNetwork {
         porter.mobId = null;
         return;
       }
-      const seen = this.progressOf(route, position.x, position.z);
-      // Snap back if it has wandered off the road, so terrain can never strand a route.
-      if (Math.hypot(position.x - here.x, position.z - here.z) > 8) {
-        this.host.removePorter(porter.mobId);
-        porter.mobId = null;
-        return;
-      }
-      porter.t = porter.dir === 1 ? Math.max(porter.t, seen) : Math.min(porter.t, seen);
+      this.host.movePorter(porter.mobId, here, this.speedOf(route));
       return;
     }
 
     if (!near) return;
-    const startIndex = porter.dir === 1 ? this.indexAt(route, porter.t) : this.indexAt(route, porter.t) - 1;
-    const waypoints = porter.dir === 1 ? route.waypoints : [...route.waypoints].reverse();
-    const index = porter.dir === 1 ? startIndex : route.waypoints.length - 1 - Math.max(0, startIndex);
-    porter.mobId = this.host.spawnPorter(here, waypoints, Math.max(0, index));
+    porter.mobId = this.host.spawnPorter(here);
   }
 
   /** Only the pair matters. The road itself lives in the edits, so a route re-surveys

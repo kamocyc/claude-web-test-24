@@ -7,13 +7,15 @@ import {
 import { VERIFICATION_SEED_TEXT } from '../game/seeds';
 import { el, show } from './dom';
 
-type ToggleKey = 'compass' | 'minimap' | 'forecast' | 'routes' | 'coords' | 'autoTool' | 'autoStep';
+type ToggleKey =
+  | 'compass' | 'minimap' | 'forecast' | 'routes' | 'guide' | 'coords' | 'autoTool' | 'autoStep';
 
 const TOGGLE_LABELS: [ToggleKey, string][] = [
   ['compass', '方角コンパス'],
   ['minimap', 'ミニマップ'],
   ['forecast', '天候の予報'],
   ['routes', '目標と輸送路'],
+  ['guide', '道しるべ（道を光の線で表示）'],
   ['coords', '座標の表示'],
   ['autoTool', '道具の自動切り替え'],
   ['autoStep', '段差を自動で登る（3 段まで）'],

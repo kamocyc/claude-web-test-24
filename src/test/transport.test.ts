@@ -6,6 +6,7 @@ import {
   loadFor,
   payFor,
   portersFor,
+  type PorterHost,
   type TransportEvents,
 } from '../game/transport';
 import { RoadNetwork, MAX_LINK, type RoadTerrain, type RoadWorld } from '../game/roads';
@@ -47,14 +48,41 @@ class FakeWorld implements RoadWorld {
 const TERRAIN: RoadTerrain = { height: () => GROUND };
 const SOURCE: VillageSource = { villagesAround: () => [A, B] };
 
+/** A porter mob that never gets anywhere: it spawns and then stands exactly where it was
+ *  put, the way a real one does when the ground has trapped it. */
+class StuckHost implements PorterHost {
+  spawned = 0;
+  moved = 0;
+  removed = 0;
+  private readonly at = new Map<number, { x: number; z: number }>();
+
+  spawnPorter(point: { x: number; z: number }): number {
+    this.spawned++;
+    this.at.set(this.spawned, { x: point.x, z: point.z });
+    return this.spawned;
+  }
+  porterPosition(mobId: number): { x: number; z: number } | null {
+    return this.at.get(mobId) ?? null;
+  }
+  movePorter(): void {
+    this.moved++;
+  }
+  removePorter(mobId: number): void {
+    this.removed++;
+    this.at.delete(mobId);
+  }
+}
+
 interface BuildOptions {
   /** What the road is paved with, or null for no road at all. */
   surface?: BlockId | null;
   /** Blocks between one laid column and the next. 1 is a road somebody finished. */
   step?: number;
+  /** Somewhere to draw porters, when the test cares about the visible ones. */
+  host?: PorterHost;
 }
 
-function build({ surface = Block.DIRT_PATH, step = 1 }: BuildOptions = {}) {
+function build({ surface = Block.DIRT_PATH, step = 1, host }: BuildOptions = {}) {
   const world = new FakeWorld();
   if (surface !== null) for (let x = 50; x <= 190; x += step) world.lay(x, GROUND, 0, surface);
   const roads = new RoadNetwork(world, TERRAIN);
@@ -79,7 +107,7 @@ function build({ surface = Block.DIRT_PATH, step = 1 }: BuildOptions = {}) {
     onConnected: () => events.connected++,
     onDisconnected: () => events.disconnected++,
   };
-  const transport = new TransportNetwork(roads, registry, handlers);
+  const transport = new TransportNetwork(roads, registry, handlers, host ?? null);
   return { world, roads, registry, transport, events };
 }
 
@@ -192,6 +220,25 @@ describe('transport routes', () => {
         expect(porter.t).toBeLessThanOrEqual(1);
       }
     }
+  });
+
+  it('delivers on time with somebody watching a porter that cannot move', () => {
+    const stuck = new StuckHost();
+    const { transport, registry, events } = build({ host: stuck });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    registry.produce(600);
+    const route = transport.routes[0];
+
+    // The player is standing at the origin, so the porter is drawn and stays drawn. The
+    // mob is a view of the shipment: what it manages to walk is not what decides when
+    // the goods arrive, or a porter jammed against a doorway would stop the line for as
+    // long as anybody stood there.
+    for (let t = 0; t < route.length / PORTER_SPEED + 4; t += 0.5) transport.update(0.5, 0, 0);
+
+    expect(stuck.spawned).toBeGreaterThan(0);
+    expect(stuck.moved).toBeGreaterThan(0);
+    expect(events.arrivals.length).toBeGreaterThan(0);
   });
 
   it('sends the cargo home when the road is dug up mid-journey', () => {

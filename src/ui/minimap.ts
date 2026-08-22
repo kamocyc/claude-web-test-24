@@ -29,6 +29,7 @@ const MARKER_COLORS: Record<string, string> = {
   village: '#ffd479',
   gap: '#ff9b53',
   target: '#7cc4ff',
+  porter: '#8ef0b8',
 };
 
 /** Trodden dirt through to stone brick, as a colour. */
@@ -180,7 +181,16 @@ export class Minimap {
       ctx.strokeStyle = 'rgba(0,0,0,0.7)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.rect(at.px - 2, at.py - 2, 4, 4);
+      if (marker.kind === 'porter') {
+        // A diamond, so a shipment crawling along a road is not mistaken for a place.
+        ctx.moveTo(at.px, at.py - 2.5);
+        ctx.lineTo(at.px + 2.5, at.py);
+        ctx.lineTo(at.px, at.py + 2.5);
+        ctx.lineTo(at.px - 2.5, at.py);
+        ctx.closePath();
+      } else {
+        ctx.rect(at.px - 2, at.py - 2, 4, 4);
+      }
       ctx.fill();
       ctx.stroke();
     }

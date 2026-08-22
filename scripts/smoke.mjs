@@ -268,6 +268,35 @@ console.log('at village:', JSON.stringify(await debugText()));
 const villagers = await evaluate(() => window.voxelcraft.mobs().filter((m) => m.kind === 'villager').length);
 console.log('villagers nearby:', villagers);
 
+// Every house has to have a way in, and a doorway is only a doorway if somebody can walk
+// through it: two clear cells at the level the street outside is on.
+const doorways = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const here = window.voxelcraft.village();
+  const out = [];
+  for (const b of g.generator.villageBuildings(here.x, here.z)) {
+    const record = g.villages.get(here.id);
+    const stand = record.baseY + 1;
+    const x1 = b.x0 + b.w - 1;
+    const z1 = b.z0 + b.d - 1;
+    let walkable = 0;
+    let loaded = true;
+    for (let x = b.x0; x <= x1; x++) {
+      for (let z = b.z0; z <= z1; z++) {
+        if (x !== b.x0 && x !== x1 && z !== b.z0 && z !== z1) continue;
+        if (g.world.heightAt(x, z) < 0) loaded = false;
+        if (g.world.getBlock(x, stand, z) === 0 && g.world.getBlock(x, stand + 1, z) === 0) walkable++;
+      }
+    }
+    if (loaded) out.push({ at: `${b.x0},${b.z0}`, walkable });
+  }
+  return out;
+});
+console.log('house doorways:', JSON.stringify(doorways));
+if (doorways.some((house) => house.walkable === 0)) {
+  throw new Error('a village house has no way in');
+}
+
 // --- trading with a villager -------------------------------------------------
 const traded = await evaluate(() => {
   const g = window.voxelcraft.game;
@@ -387,6 +416,34 @@ console.log('route before any road:', JSON.stringify(unpaved));
 console.log('unfinished panel:', JSON.stringify(await page.locator('.route-row').innerText()));
 await shot('07w-route-gap');
 
+// ...and told it in the world, not only on a panel: a dashed amber line lies along the
+// stretch that is still missing, with a beacon standing at each end of it.
+const overlook = async () => {
+  await evaluate(() => {
+    const g = window.voxelcraft.game;
+    const q = window.voxelcraft.quest();
+    const a = g.villages.get(q.origin);
+    const b = g.villages.get(q.target);
+    const mx = (a.x + b.x) / 2;
+    const mz = (a.z + b.z) / 2;
+    const span = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+    g.player.flying = true;
+    g.player.teleportTo(
+      mx - ((b.x - a.x) / span) * 24,
+      g.world.heightAt(Math.round(mx), Math.round(mz)) + 14,
+      mz - ((b.z - a.z) / span) * 24,
+    );
+    g.player.yaw = Math.atan2(-(b.x - g.player.x), -(b.z - g.player.z));
+    g.player.pitch = -0.45;
+  });
+  await settled();
+  await frame();
+};
+await overlook();
+console.log('guide with a gap:', JSON.stringify(await evaluate(() => window.voxelcraft.guide())));
+await until(() => window.voxelcraft.guide().dashed > 0 && window.voxelcraft.guide().beams >= 2);
+await shot('07w2-guide-gap');
+
 // The hand-over and the road talk happen at the far village, through the same row. The
 // crate has to arrive in the player's pack for the button to be live, so this proves the
 // carry as well as the click.
@@ -472,6 +529,41 @@ console.log('road upgraded:', JSON.stringify({
 console.log('paved panel:', JSON.stringify(await page.locator('.route-row').first().innerText()));
 await shot('07x2-route-paved');
 
+// The line the player just paved, drawn on the ground they paved it over.
+await overlook();
+console.log('guide once joined:', JSON.stringify(await evaluate(() => window.voxelcraft.guide())));
+await until(() => {
+  const guide = window.voxelcraft.guide();
+  return guide.lines > 0 && guide.dashed === 0;
+});
+await shot('07x3-guide-linked');
+
+// Standing on the road while a shipment runs is the case that used to hang: a visible
+// porter drove the clock, so a mob caught on the ground stopped the line for exactly as
+// long as somebody was there to watch it not move.
+const beforeWatching = (await evaluate(QUEST_ROUTE)).delivered;
+await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const q = window.voxelcraft.quest();
+  const a = g.villages.get(q.origin);
+  const b = g.villages.get(q.target);
+  g.player.flying = false;
+  window.voxelcraft.teleport(Math.round((a.x + b.x) / 2), Math.round((a.z + b.z) / 2));
+});
+await settled();
+await page.waitForFunction(
+  `(${QUEST_ROUTE}?.delivered ?? 0) > ${beforeWatching}`,
+  null,
+  { timeout: 180000 },
+);
+console.log('delivered with the player watching:', JSON.stringify({
+  before: beforeWatching,
+  after: (await evaluate(QUEST_ROUTE)).delivered,
+  porterMobs: await evaluate(() => window.voxelcraft.porters()),
+  panel: await page.locator('.route-cargo').first().innerText().catch(() => null),
+}));
+await shot('07x4-watched-delivery');
+
 // The trade screen says what the village standing around the player is short of.
 await evaluate(() => {
   const g = window.voxelcraft.game;
@@ -543,7 +635,8 @@ if (spot) {
       away: +Math.hypot(mob.x - g.player.x, mob.z - g.player.z).toFixed(1),
       onRoad: window.voxelcraft.roadIndex().columns > 0
         && g.world.getBlock(Math.floor(mob.x), Math.floor(mob.y) - 1, Math.floor(mob.z)) !== 0,
-      waypoints: mob.route ? mob.route.length : 0,
+      /** How far the mob is from the shipment it is drawing. */
+      behind: mob.follow ? +Math.hypot(mob.x - mob.follow.x, mob.z - mob.follow.z).toFixed(1) : null,
     };
   });
   console.log('porter on the road:', JSON.stringify(porter));

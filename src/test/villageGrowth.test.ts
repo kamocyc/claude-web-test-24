@@ -18,7 +18,10 @@ function record(stage: number): VillageRecord {
   };
 }
 
-/** A world of solid grass at ground level, so growth has natural ground to build on. */
+/** A world of solid grass at ground level, so growth has natural ground to build on.
+ *  The top solid block is `BASE_Y`, which is what a village plateau is: `TerrainGenerator`
+ *  fills a column up to and including its height, so somebody standing on it stands at
+ *  `BASE_Y + 1`. */
 function grassWorld(): World {
   const world = new World(1);
   for (let cx = 5; cx <= 8; cx++) {
@@ -28,7 +31,7 @@ function grassWorld(): World {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         for (let lx = 0; lx < CHUNK_SIZE; lx++) {
           for (let y = 0; y < BASE_Y; y++) chunk.set(lx, y, lz, Block.DIRT);
-          chunk.set(lx, BASE_Y - 1, lz, Block.GRASS);
+          chunk.set(lx, BASE_Y, lz, Block.GRASS);
         }
       }
       chunk.generated = true;
@@ -36,6 +39,19 @@ function grassWorld(): World {
     }
   }
   return world;
+}
+
+/** Cells around the edge of a footprint: where a wall stands, and where a door goes. */
+function perimeter(f: { x0: number; z0: number; w: number; d: number }): [number, number][] {
+  const x1 = f.x0 + f.w - 1;
+  const z1 = f.z0 + f.d - 1;
+  const out: [number, number][] = [];
+  for (let x = f.x0; x <= x1; x++) {
+    for (let z = f.z0; z <= z1; z++) {
+      if (x === f.x0 || x === x1 || z === f.z0 || z === z1) out.push([x, z]);
+    }
+  }
+  return out;
 }
 
 function chunksOf(world: World) {
@@ -140,6 +156,58 @@ describe('growing past the first stage', () => {
         .placements.reduce((top, p) => Math.max(top, p.y), 0);
     expect(tallest(4)).toBeGreaterThan(tallest(1));
     expect(tallest(4)).toBeGreaterThanOrEqual(BASE_Y + 6);
+  });
+});
+
+describe('a house somebody can walk into', () => {
+  /** The floor level of every building: one clear cell above the ground outside, so the
+   *  doorway lines up with the street rather than opening below it. */
+  const FLOOR = BASE_Y + 1;
+
+  it('leaves a two block doorway in every grown house', () => {
+    clearGrowthCache();
+    const world = grassWorld();
+    const village = record(1);
+    for (const chunk of chunksOf(world)) applyGrowth(world, 1, village, chunk, []);
+
+    const plan = growthFor(1, village, 1, []);
+    expect(plan.footprints.length).toBeGreaterThan(0);
+    for (const house of plan.footprints) {
+      const door = perimeter(house).some(
+        ([x, z]) =>
+          world.getBlock(x, FLOOR, z) === Block.AIR && world.getBlock(x, FLOOR + 1, z) === Block.AIR,
+      );
+      expect(door, `house at ${house.x0},${house.z0} has no way in`).toBe(true);
+    }
+  });
+
+  it('glazes the windows it planned', () => {
+    clearGrowthCache();
+    const world = grassWorld();
+    const village = record(1);
+    for (const chunk of chunksOf(world)) applyGrowth(world, 1, village, chunk, []);
+
+    // Both of these arrive after the wall that stands in their cell, so both are the
+    // case the writer used to refuse.
+    const plan = growthFor(1, village, 1, []);
+    const glass = plan.placements.filter((p) => p.b === Block.GLASS);
+    expect(glass.length).toBeGreaterThan(0);
+    expect(glass.every((p) => world.getBlock(p.x, p.y, p.z) === Block.GLASS)).toBe(true);
+  });
+
+  it('stands its floor level with the ground outside', () => {
+    clearGrowthCache();
+    const world = grassWorld();
+    const village = record(1);
+    for (const chunk of chunksOf(world)) applyGrowth(world, 1, village, chunk, []);
+
+    const house = growthFor(1, village, 1, []).footprints[0];
+    // Two in from the corner: one in is where the house puts its torch.
+    const insideX = house.x0 + 2;
+    const insideZ = house.z0 + 2;
+    // Solid to stand on at the floor level, and clear above it.
+    expect(world.getBlock(insideX, BASE_Y, insideZ)).not.toBe(Block.AIR);
+    expect(world.getBlock(insideX, FLOOR, insideZ)).toBe(Block.AIR);
   });
 });
 

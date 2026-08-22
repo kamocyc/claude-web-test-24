@@ -4,6 +4,7 @@ import { mulberry32 } from '../core/rng';
 import { ChunkRenderer } from '../render/chunkRenderer';
 import { Effects } from '../render/effects';
 import { EntityRenderer } from '../render/entityRenderer';
+import { RouteGuide, type GuideBeam, type GuideLine, type GuidePoint, type GuideView } from '../render/routeGuide';
 import { createChunkMaterials, type ChunkMaterials } from '../render/materials';
 import { Sky } from '../render/sky';
 import { Rain } from '../render/rain';
@@ -65,7 +66,7 @@ import { tickFurnace } from './smelting';
 import { generateTrades, restockTrades, tradesFromJSON, tradesToJSON } from './trading';
 import { VILLAGE_RADIUS } from '../world/generation/village';
 import { RoadNetwork, type RoadPoint } from './roads';
-import { TransportNetwork, loadFor, type Arrival, type Route } from './transport';
+import { PORTER_LEASH, TransportNetwork, loadFor, type Arrival, type PorterView, type Route } from './transport';
 import {
   VillageRegistry,
   displayName,
@@ -104,6 +105,14 @@ const ATTACK_REACH = 3.6;
 const AUTOSAVE_SECONDS = 30;
 /** Half the span the minimap covers, so only nearby roads are handed to it. */
 const MINIMAP_REACH = 130;
+/** How far the road tiles of the in-world guide reach. Small on purpose: it is there to
+ *  answer "does the game count *this* as road", which is a question about the ground the
+ *  player is standing on. */
+const GUIDE_TILE_REACH = 40;
+/** Line colours, matching the minimap and the panel so the three read as one thing. */
+const GUIDE_ROAD = 0x5cff92;
+const GUIDE_GAP = 0xffa04d;
+const GUIDE_PORTER = 0x8ef0b8;
 /** Blocks of height a debug road may gain or lose per step, matching what a walker can
  *  manage on a paved slope. */
 const ROAD_GRADE = 2;
@@ -138,6 +147,9 @@ export class Game {
   private readonly materials: ChunkMaterials;
   private readonly chunkRenderer: ChunkRenderer;
   private readonly entityRenderer: EntityRenderer;
+  private readonly routeGuide = new RouteGuide();
+  /** Draped guide lines by route, so a road is only walked over again when it moves. */
+  private readonly guideLines = new Map<string, { key: string; points: GuidePoint[] }>();
   private readonly effects: Effects;
   private readonly sky: Sky;
   private readonly rain: Rain;
@@ -219,7 +231,7 @@ export class Game {
     this.effects = new Effects(this.atlas);
     this.sky = new Sky(this.scene, this.renderDistance * CHUNK_SIZE);
     this.rain = new Rain(this.scene);
-    this.scene.add(this.chunkRenderer.group, this.entityRenderer.group, this.effects.group);
+    this.scene.add(this.chunkRenderer.group, this.entityRenderer.group, this.effects.group, this.routeGuide.group);
 
     this.mobs = new MobManager(this.world, options.seed);
     this.drops = new DropManager(this.world);
@@ -233,11 +245,12 @@ export class Game {
         onStageUp: (id, stage) => this.onVillageGrew(id, stage),
       },
       {
-        spawnPorter: (point, waypoints, startIndex) => this.spawnPorter(point, waypoints, startIndex),
+        spawnPorter: (point) => this.spawnPorter(point),
         porterPosition: (id) => {
-          const mob = this.porterMobs.get(id);
-          return mob && !mob.isDead ? { x: mob.x, z: mob.z } : null;
+          const mob = this.livePorter(id);
+          return mob ? { x: mob.x, z: mob.z } : null;
         },
+        movePorter: (id, point, speed) => this.movePorter(id, point, speed),
         removePorter: (id) => this.removePorter(id),
       },
     );
@@ -439,6 +452,8 @@ export class Game {
   }
 
   private render(dt: number): void {
+    this.routeGuide.setVisible(this.options.settings.guide);
+    if (this.options.settings.guide) this.routeGuide.update(this.guideView(), dt);
     this.camera.position.set(this.player.x, this.player.eyeY, this.player.z);
     this.camera.rotation.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
     const wetness = this.forecast().wetness;
@@ -468,6 +483,11 @@ export class Game {
     // the thing to walk to is the stretch that needs fixing.
     const aim = objective?.marker ?? null;
     if (aim) markers.push({ kind: aim.kind === 'gap' ? 'gap' : 'target', x: aim.x, z: aim.z });
+    // Where the goods actually are. "The road is joined up but nothing is being carried"
+    // is nearly always "the porter is two hundred blocks away, behind you", so the
+    // shipments get markers of their own rather than only a count on the panel.
+    const shipments = this.transport.porterViews();
+    for (const porter of shipments) markers.push({ kind: 'porter', x: porter.x, z: porter.z });
     const forecast = this.forecast();
     return {
       world: this.world,
@@ -515,6 +535,8 @@ export class Game {
             length: route.length,
             missing: route.missing,
             porters: route.porters.length,
+            nearest: this.nearestPorter(shipments, route),
+            stock: this.villages.get(route.from)?.stock ?? 0,
             grade: route.grade,
             load: loadFor(route.quality),
             wanted: this.villages.get(route.to)?.needs.includes(route.good) ?? false,
@@ -1180,6 +1202,99 @@ export class Game {
     }
   }
 
+  /** The road network as light on the ground: what carries goods, what is still missing,
+   *  and where the goods have got to. Rebuilt every frame and cheap to compare — the
+   *  renderer only touches geometry when one of these three has actually changed. */
+  private guideView(): GuideView {
+    const lines: GuideLine[] = [];
+    const beams: GuideBeam[] = [];
+    const questRoute = this.questRoute();
+    for (const route of this.transport.routes) {
+      const id = `${route.from}|${route.to}`;
+      if (route.connected) {
+        if (route.waypoints.length >= 2) {
+          const key = `${id}|c|${this.roads.revision}|${route.waypoints.length}`;
+          lines.push({ key, points: this.guideLine(id, key, route.waypoints), colour: GUIDE_ROAD, dashed: false });
+        }
+        continue;
+      }
+      // Only the lines the player is actually working on. Every watched pair would put a
+      // dashed line across half the world.
+      if (route !== questRoute && !route.everConnected) continue;
+      if (!route.gapFrom || !route.gapTo) continue;
+      const key = `${id}|g|${route.gapFrom.x},${route.gapFrom.z}|${route.gapTo.x},${route.gapTo.z}`;
+      lines.push({
+        key,
+        points: this.guideLine(id, key, [route.gapFrom, route.gapTo]),
+        colour: GUIDE_GAP,
+        dashed: true,
+      });
+      // A beacon at each end, so the stretch to build can be found from a hilltop rather
+      // than only from the minimap.
+      beams.push({ ...route.gapFrom, colour: GUIDE_GAP, height: 14 });
+      beams.push({ ...route.gapTo, colour: GUIDE_GAP, height: 14 });
+    }
+    for (const porter of this.transport.porterViews()) {
+      beams.push({ x: porter.x, y: porter.y, z: porter.z, colour: GUIDE_PORTER, height: 6 });
+    }
+    const tiles = this.roads.columnsIn(
+      this.player.x - GUIDE_TILE_REACH,
+      this.player.z - GUIDE_TILE_REACH,
+      this.player.x + GUIDE_TILE_REACH,
+      this.player.z + GUIDE_TILE_REACH,
+    );
+    return {
+      lines,
+      tiles,
+      tilesKey: `${this.roads.revision}:${Math.round(this.player.x / 8)}:${Math.round(this.player.z / 8)}`,
+      beams,
+    };
+  }
+
+  /** A line laid over the ground rather than through it, cached until its shape changes.
+   *
+   *  A road's own corners already sit on the road, but the stretch a route is still
+   *  missing runs over open country — and drawn as one straight segment between its two
+   *  ends it spends most of its length underground, which is to say invisible exactly
+   *  where it matters. */
+  private guideLine(id: string, key: string, points: readonly RoadPoint[]): GuidePoint[] {
+    const cached = this.guideLines.get(id);
+    if (cached && cached.key === key) return cached.points;
+    const draped: GuidePoint[] = [];
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1];
+      const b = points[i];
+      draped.push({ x: a.x, z: a.z, y: a.y });
+      const steps = Math.round(Math.hypot(b.x - a.x, b.z - a.z));
+      for (let step = 1; step < steps; step++) {
+        const f = step / steps;
+        const x = Math.round(a.x + (b.x - a.x) * f);
+        const z = Math.round(a.z + (b.z - a.z) * f);
+        draped.push({ x, z, y: Math.max(this.groundHeightAt(x, z), Math.round(a.y + (b.y - a.y) * f)) });
+      }
+    }
+    draped.push({ ...points[points.length - 1] });
+    this.guideLines.set(id, { key, points: draped });
+    return draped;
+  }
+
+  /** The shipment on this line the player is closest to, as a distance and a heading. */
+  private nearestPorter(
+    shipments: readonly PorterView[],
+    route: Route,
+  ): { distance: number; bearing: number } | null {
+    let best: { distance: number; bearing: number } | null = null;
+    for (const porter of shipments) {
+      if (porter.route !== route) continue;
+      const dx = porter.x - this.player.x;
+      const dz = porter.z - this.player.z;
+      const distance = Math.hypot(dx, dz);
+      if (best && best.distance <= distance) continue;
+      best = { distance, bearing: (Math.atan2(dx, -dz) * 180) / Math.PI };
+    }
+    return best;
+  }
+
   /** What the milestones are allowed to look at. */
   private networkState(): NetworkState {
     return { villages: this.villages.discovered(), routes: this.transport.routes };
@@ -1390,14 +1505,47 @@ export class Game {
     };
   }
 
-  private spawnPorter(point: RoadPoint, waypoints: RoadPoint[], startIndex: number): number | null {
+  private spawnPorter(point: RoadPoint): number | null {
     if (!this.world.hasChunk(toChunkCoord(point.x), toChunkCoord(point.z))) return null;
     const mob = new Mob('porter', point.x + 0.5, point.y + 1, point.z + 0.5);
-    mob.route = waypoints.map((w) => ({ x: w.x + 0.5, z: w.z + 0.5 }));
-    mob.routeIndex = Math.min(startIndex, Math.max(0, mob.route.length - 1));
+    mob.follow = { x: mob.x, z: mob.z };
     this.mobs.add(mob);
     this.porterMobs.set(mob.id, mob);
     return mob.id;
+  }
+
+  /** Walks the porter after its shipment. The shipment is already at `point`; the mob is
+   *  only ever catching up with it, and is carried back onto the road if the ground has
+   *  beaten it. */
+  private movePorter(id: number, point: RoadPoint, speed: number): void {
+    const mob = this.livePorter(id);
+    if (!mob) return;
+    const x = point.x + 0.5;
+    const z = point.z + 0.5;
+    mob.follow = { x, z };
+    // A porter on a paved road has to walk as fast as the goods it is following, or it
+    // would spend the whole route being dragged along by the leash.
+    mob.speedScale = Math.max(1, (speed * 1.5) / mob.def.speed);
+    if (Math.hypot(mob.x - x, mob.z - z) <= PORTER_LEASH) return;
+    mob.x = x;
+    mob.y = point.y + 1;
+    mob.z = z;
+    mob.vx = 0;
+    mob.vy = 0;
+    mob.vz = 0;
+  }
+
+  /** The porter mob behind an id, or nothing when the mob manager has taken it away.
+   *  Without the second check a despawned porter would keep answering from wherever it
+   *  last stood. */
+  private livePorter(id: number): Mob | null {
+    const mob = this.porterMobs.get(id);
+    if (!mob) return null;
+    if (mob.isDead || !this.mobs.mobs.includes(mob)) {
+      this.porterMobs.delete(id);
+      return null;
+    }
+    return mob;
   }
 
   private removePorter(id: number): void {
@@ -1883,6 +2031,18 @@ export class Game {
             .filter((point): point is RoadPoint => point !== null)
             .map((point) => ({ x: Math.round(point.x), y: point.y, z: Math.round(point.z) })),
         ),
+      /** What the in-world guide is drawing right now: lines along working roads, dashed
+       *  ones across what is missing, beacons at both ends of a gap and over every
+       *  shipment, and a tile per indexed road column near the player. */
+      guide: () => {
+        const view = this.guideView();
+        return {
+          lines: view.lines.length,
+          dashed: view.lines.filter((line) => line.dashed).length,
+          tiles: view.tiles.length,
+          beams: view.beams.length,
+        };
+      },
       /** State of the road index, for working out why a road is not joining up. */
       roadIndex: () => ({ columns: this.roads.columns.size, revision: this.roads.revision }),
       /** Lays a road between the quest's two villages. Building 300 blocks of it by hand

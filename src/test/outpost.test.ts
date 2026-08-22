@@ -204,6 +204,31 @@ describe('building a hamlet', () => {
     expect(plan.footprints).toHaveLength(3);
     const path = plan.placements.filter((p) => p.b === Block.DIRT_PATH && p.z === site.z);
     expect(path.length).toBeGreaterThanOrEqual(10);
+    // Level with the pad it crosses, not a block proud of it: the doors either side open
+    // onto this, so a raised path would put both of them below their own street.
+    expect(path.every((p) => p.y === 63)).toBe(true);
+  });
+
+  it('leaves a doorway onto that path in both houses', () => {
+    const plan = planOutpost(1, site, 64, 'plains');
+    const finished = new Map<string, number>();
+    for (const p of plan.placements) finished.set(`${p.x},${p.y},${p.z}`, p.b);
+    const at = (x: number, y: number, z: number): number =>
+      finished.get(`${x},${y},${z}`) ?? Block.STONE;
+
+    // Somebody on the pad stands at 64, the floor level of both houses.
+    for (const house of plan.footprints.slice(0, 2)) {
+      const x1 = house.x0 + house.w - 1;
+      const z1 = house.z0 + house.d - 1;
+      let doors = 0;
+      for (let x = house.x0; x <= x1; x++) {
+        for (let z = house.z0; z <= z1; z++) {
+          if (x !== house.x0 && x !== x1 && z !== house.z0 && z !== z1) continue;
+          if (at(x, 64, z) === Block.AIR && at(x, 65, z) === Block.AIR) doors++;
+        }
+      }
+      expect(doors, `house at ${house.x0},${house.z0}`).toBeGreaterThan(0);
+    }
   });
 
   it('is deterministic', () => {

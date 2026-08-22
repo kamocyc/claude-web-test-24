@@ -169,7 +169,11 @@ export function planVillage(
   // --- buildings along the streets ------------------------------------------
   const buildings = layoutBuildings(rng, site);
   for (const b of buildings) {
-    buildHouse(put, plan, b, baseY, palette);
+    // `baseY` is the plateau's top solid block, and `buildHouse` wants the floor level:
+    // the first clear cell above it. Handing it the plateau instead sinks the house one
+    // block into the ground, which leaves the doorway a single block clear of the street
+    // — too low to walk through.
+    buildHouse(put, plan, b, baseY + 1, palette);
     plan.buildings.push({ x0: b.x0, z0: b.z0, w: b.w, d: b.d });
   }
 
@@ -333,6 +337,9 @@ function layoutBuildings(rng: Rng, site: VillageSite): Building[] {
 /** Only the two lists are needed, so village growth can hand in its own. */
 type HouseSink = Pick<VillagePlan, 'villagers' | 'chests'>;
 
+/** One house. `baseY` is the *floor level*: the first cell somebody standing inside would
+ *  occupy. The floor itself is laid one below that, so a house whose floor level matches
+ *  the ground outside is one the player can walk straight into. */
 function buildHouse(put: PutFn, plan: HouseSink, b: Building, baseY: number, palette: Palette): void {
   const { x0, z0, w, d } = b;
   const x1 = x0 + w - 1;
@@ -528,7 +535,10 @@ export function planOutpost(
   // A scrap of street between the two doors, laid the way a village lays its own. The
   // player is about to be taught to join places up with road; the hamlet may as well
   // start with the little it has.
-  for (let x = site.x - 4; x <= site.x + 6; x++) putRoad(put, x, baseY, site.z, palette.path);
+  // At `baseY - 1`, which is the pad's own surface: laying it at `baseY` would leave the
+  // path standing a block proud of the ground it runs across, and the doors either side
+  // of it a block below the thing they open onto.
+  for (let x = site.x - 4; x <= site.x + 6; x++) putRoad(put, x, baseY - 1, site.z, palette.path);
 
   const fx = site.x - 8;
   const fz = site.z + 6;
@@ -586,7 +596,8 @@ export function planGrowth(
         profession: PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)],
         hasChest: true,
       },
-      baseY,
+      // The floor level, not the plateau: see the same call in `planVillage`.
+      baseY + 1,
       palette,
     );
   }
@@ -597,7 +608,7 @@ export function planGrowth(
     if (!taken.some((b) => overlaps(plot, b))) {
       taken.push(plot);
       plan.footprints.push(plot);
-      buildMarket(put, sink, plot, baseY, palette, PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)]);
+      buildMarket(put, sink, plot, baseY + 1, palette, PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)]);
     }
   } else if (landmark === 'lamps') {
     buildLamps(put, site, baseY);
@@ -623,6 +634,7 @@ function buildMarket(
   put: PutFn,
   sink: HouseSink,
   plot: Footprint,
+  /** Floor level, as for `buildHouse`. */
   baseY: number,
   palette: Palette,
   profession: Profession,

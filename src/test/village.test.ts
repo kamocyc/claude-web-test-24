@@ -86,6 +86,44 @@ describe('village terrain integration', () => {
   });
 });
 
+describe('village houses can be walked into', () => {
+  const site = { cellX: 0, cellZ: 0, x: 100, z: 200 };
+  const baseY = 60;
+  const plan = planVillage(999, site, baseY, 'plains');
+
+  /** The village as the generator leaves it: the last block written to each cell. */
+  const finished = new Map<string, number>();
+  for (const p of [...plan.byChunk.values()].flat()) finished.set(`${p.x},${p.y},${p.z}`, p.b);
+  const at = (x: number, y: number, z: number): number =>
+    finished.get(`${x},${y},${z}`) ?? Block.STONE;
+
+  it('opens every door onto the level the street is on', () => {
+    // The plateau's top solid block is `baseY`, so anybody outside stands at `baseY + 1`
+    // and needs those two cells clear to walk through a wall.
+    const stand = baseY + 1;
+    expect(plan.buildings.length).toBeGreaterThan(0);
+    for (const b of plan.buildings) {
+      const x1 = b.x0 + b.w - 1;
+      const z1 = b.z0 + b.d - 1;
+      let doors = 0;
+      for (let x = b.x0; x <= x1; x++) {
+        for (let z = b.z0; z <= z1; z++) {
+          if (x !== b.x0 && x !== x1 && z !== b.z0 && z !== z1) continue;
+          if (at(x, stand, z) === Block.AIR && at(x, stand + 1, z) === Block.AIR) doors++;
+        }
+      }
+      expect(doors, `house at ${b.x0},${b.z0}`).toBeGreaterThan(0);
+    }
+  });
+
+  it('lays its floor on the same level as the ground outside', () => {
+    const b = plan.buildings[0];
+    // Solid underfoot at the plateau top, clear where somebody stands.
+    expect(at(b.x0 + 2, baseY, b.z0 + 2)).not.toBe(Block.AIR);
+    expect(at(b.x0 + 2, baseY + 1, b.z0 + 2)).toBe(Block.AIR);
+  });
+});
+
 /** The pinned seed test guards terrain; this guards the village layout itself. Village
  *  growth adds buildings from a separate random stream, so stage 0 must keep emitting
  *  exactly the blocks it always has. Any change to the order or count of `rng()` calls
@@ -93,9 +131,12 @@ describe('village terrain integration', () => {
 describe('village layout is pinned', () => {
   const site = { cellX: 0, cellZ: 0, x: 100, z: 200 };
   const expected: Record<VillageVariant, { count: number; hash: number }> = {
-    plains: { count: 4685, hash: 753737959 },
-    desert: { count: 4685, hash: -1449032277 },
-    snowy: { count: 4685, hash: 1344703105 },
+    // Re-pinned once, when the houses were lifted a block so their floors sit level with
+    // the street instead of one below it. The block *count* is unchanged, which is what
+    // says it was a shift and not a reshuffle of the random stream.
+    plains: { count: 4685, hash: -1560636876 },
+    desert: { count: 4685, hash: 531560184 },
+    snowy: { count: 4685, hash: -969671730 },
   };
 
   for (const variant of ['plains', 'desert', 'snowy'] as VillageVariant[]) {

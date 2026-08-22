@@ -37,6 +37,26 @@ const NATURAL: ReadonlySet<BlockId> = new Set<BlockId>([
 ]);
 
 const cache = new Map<string, GrowthPlan>();
+/** Placements collapsed to one per cell, keyed by the plan they came from. */
+const finalised = new WeakMap<GrowthPlan, Placement[]>();
+
+/** The last block a plan asks for in each cell.
+ *
+ *  A plan is written the way a builder works: raise the walls, then knock the doorway and
+ *  the windows out of them. That is fine for terrain generation, which overwrites without
+ *  asking, but growth may only build over soil and air — so the doorway's `AIR` arrived to
+ *  find a wall in the way and was refused, and every grown house was a sealed box with a
+ *  villager inside it. Collapsing the plan first means each cell is written once, with the
+ *  block the builder actually finished with. */
+function finalPlacements(plan: GrowthPlan): Placement[] {
+  const cached = finalised.get(plan);
+  if (cached) return cached;
+  const byCell = new Map<string, Placement>();
+  for (const p of plan.placements) byCell.set(`${p.x},${p.y},${p.z}`, p);
+  const out = [...byCell.values()];
+  finalised.set(plan, out);
+  return out;
+}
 
 /** Deterministic and cached: the same village at the same stage always grows the same
  *  buildings, however many times it is asked. */
@@ -123,7 +143,7 @@ export function applyGrowth(
     plans.push(growthFor(seed, village, stage, occupied));
   }
   for (const plan of plans) {
-    for (const p of plan.placements) {
+    for (const p of finalPlacements(plan)) {
       if (!inChunk(chunk, p)) continue;
       if (place(world, p)) result.changed++;
     }

@@ -59,11 +59,17 @@ export class Mob implements Damageable {
   private jumpCooldown = 0;
   /** Seconds of burning left; hostile mobs catch fire in daylight. */
   burning = 0;
-  /** Route a porter is walking, in world coordinates, and how far along it is. There is
-   *  no pathfinder here: the points come from the surveyed road, and the swept move with
-   *  its one block auto-hop does the rest. */
-  route: { x: number; z: number }[] | null = null;
-  routeIndex = 0;
+  /** A point this mob walks towards for as long as it is set, in world coordinates.
+   *
+   *  This is how a porter follows its shipment: the transport network moves the point
+   *  along the surveyed road at the route's own speed and the mob walks after it. There
+   *  is no pathfinder — the swept move with its one block auto-hop does the rest — and
+   *  crucially the mob is not what carries the goods, so a porter caught on a fence
+   *  costs the player a sight of it and nothing else. */
+  follow: { x: number; z: number } | null = null;
+  /** Multiplier on this mob's walking speed. A porter on a paved road walks faster than
+   *  one on a dirt track, because the shipment it is following does. */
+  speedScale = 1;
   /** Villager data. */
   profession: string | null = null;
   trades: Trade[] = [];
@@ -93,6 +99,11 @@ export class Mob implements Damageable {
 
   get isDead(): boolean {
     return this.health <= 0;
+  }
+
+  /** How fast this mob walks right now. */
+  get speed(): number {
+    return this.def.speed * this.speedScale;
   }
 
   box(): EntityBox {
@@ -157,10 +168,10 @@ export class Mob implements Damageable {
     if (this.state === 'flee' && this.stateTimer <= 0) this.state = 'wander';
 
     if (this.state === 'chase') {
-      this.steerTowards(player.x, player.z, this.def.speed, dt);
+      this.steerTowards(player.x, player.z, this.speed, dt);
       if (this.def.ranged) {
         // Keep a comfortable shooting distance.
-        if (distance < 5) this.steerTowards(player.x, player.z, -this.def.speed, dt);
+        if (distance < 5) this.steerTowards(player.x, player.z, -this.speed, dt);
         if (distance < this.def.attackRange && this.attackTimer <= 0) {
           this.attackTimer = this.def.attackCooldown;
           ctx.shoot(this, this.def.attackDamage);
@@ -173,7 +184,7 @@ export class Mob implements Damageable {
     }
 
     if (this.state === 'flee') {
-      this.steerTowards(player.x, player.z, -this.def.speed * 1.4, dt);
+      this.steerTowards(player.x, player.z, -this.speed * 1.4, dt);
       return;
     }
 
@@ -191,23 +202,23 @@ export class Mob implements Damageable {
         this.wanderZ = Math.sin(angle);
       }
     }
-    if (this.kind === 'porter' && this.route) {
-      const waypoint = this.route[this.routeIndex];
-      if (waypoint) {
-        if (Math.hypot(this.x - waypoint.x, this.z - waypoint.z) < 1.4) this.routeIndex++;
-        else this.steerTowards(waypoint.x, waypoint.z, this.def.speed, dt);
+    if (this.follow) {
+      // Close enough is close enough: walking into the exact cell would have the mob
+      // jitter around the point it is chasing.
+      if (Math.hypot(this.x - this.follow.x, this.z - this.follow.z) > 0.8) {
+        this.steerTowards(this.follow.x, this.follow.z, this.speed, dt);
       }
       return;
     }
     if (this.kind === 'villager') {
       const fromHome = Math.hypot(this.x - this.homeX, this.z - this.homeZ);
       if (fromHome > 22) {
-        this.steerTowards(this.homeX, this.homeZ, this.def.speed, dt);
+        this.steerTowards(this.homeX, this.homeZ, this.speed, dt);
         return;
       }
     }
     if (this.state === 'wander') {
-      this.accelerate(this.wanderX, this.wanderZ, this.def.speed * 0.6, dt);
+      this.accelerate(this.wanderX, this.wanderZ, this.speed * 0.6, dt);
     }
   }
 
@@ -256,7 +267,7 @@ export class Mob implements Damageable {
     }
     if (this.vy < -50) this.vy = -50;
 
-    const maxSpeed = this.def.speed * (this.state === 'flee' ? 1.4 : 1);
+    const maxSpeed = this.speed * (this.state === 'flee' ? 1.4 : 1);
     const speed = Math.hypot(this.vx, this.vz);
     if (speed > maxSpeed) {
       this.vx = (this.vx / speed) * maxSpeed;
