@@ -7,7 +7,8 @@ export type MobKind =
   | 'chicken'
   | 'sheep'
   | 'villager'
-  | 'porter';
+  | 'porter'
+  | 'cart';
 
 export interface MobDrop {
   id: string;
@@ -101,7 +102,19 @@ const DEFS: Record<MobKind, MobDef> = {
     attackCooldown: 0, sightRange: 12, burnsInDaylight: false, ranged: false,
     drops: [],
   },
+  // Wider than a walker, which is the whole idea: a cart only runs where the road is
+  // three columns across, and it should not fit anywhere a porter would have squeezed.
+  cart: {
+    kind: 'cart', label: '荷車', hostile: false, maxHealth: 20,
+    width: 1.4, height: 1.95, speed: 1.9, attackDamage: 0, attackRange: 0,
+    attackCooldown: 0, sightRange: 12, burnsInDaylight: false, ranged: false,
+    drops: [],
+  },
 };
+
+/** Mobs the transport network owns and drives along a route. They never spawn by
+ *  themselves, they never wander, and they never run away from anything. */
+export const HAULING_KINDS: readonly MobKind[] = ['porter', 'cart'];
 
 export function mobDef(kind: MobKind): MobDef {
   return DEFS[kind];

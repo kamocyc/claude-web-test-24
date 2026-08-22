@@ -69,3 +69,59 @@ describe('mobs in water', () => {
     expect(cow.y).toBeGreaterThan(22.5);
   });
 });
+
+
+/** A stone floor with a single block step at x <= stepX, which is what a road is allowed
+ *  to have and what a porter has to be able to walk up. */
+function ledge(stepX: number, height: number): World {
+  const world = stoneFloor();
+  for (let z = -20; z < 20; z++) {
+    for (let x = -30; x <= stepX; x++) {
+      for (let y = 21; y <= 20 + height; y++) world.setBlock(x, y, z, Block.STONE);
+    }
+  }
+  return world;
+}
+
+describe('a porter following its shipment', () => {
+  it('walks up a single block step without having to jump for it', () => {
+    // The road index allows exactly one block between two columns, so this is the step a
+    // porter meets constantly. It used to have no way over it but a ballistic hop that
+    // clears 1.11 blocks on a 0.4s cooldown, and every corner it failed on became the
+    // shipment running away from it.
+    const world = ledge(-6, 1);
+    const ctx = context(world);
+    const porter = new Mob('porter', -2.5, 21, 0.5);
+    porter.follow = { x: -12.5, z: 0.5 };
+    let airborne = 0;
+    for (let i = 0; i < 400; i++) {
+      porter.update(1 / 60, ctx);
+      if (porter.y > 22.4) airborne++;
+    }
+    expect(porter.x).toBeLessThan(-8);
+    expect(porter.y).toBeGreaterThan(21.5);
+    // It stepped up rather than launching itself over.
+    expect(airborne).toBe(0);
+  });
+
+  it('keeps walking when it is hit', () => {
+    // Fleeing is checked before `follow` is, so one punch used to send a porter running
+    // for five seconds — long enough to lose its shipment and be dragged after it.
+    const world = stoneFloor();
+    const ctx = context(world);
+    const porter = new Mob('porter', 0.5, 21, 0.5);
+    porter.follow = { x: -10.5, z: 0.5 };
+    porter.onHurt();
+    expect(porter.state).not.toBe('flee');
+    for (let i = 0; i < 600; i++) porter.update(1 / 60, ctx);
+    expect(porter.x).toBeLessThan(-9);
+  });
+
+  it('still lets an animal run away', () => {
+    const world = stoneFloor();
+    const cow = new Mob('cow', 0.5, 21, 0.5);
+    cow.onHurt();
+    expect(cow.state).toBe('flee');
+    expect(world.getBlock(0, 20, 0)).toBe(Block.STONE);
+  });
+});

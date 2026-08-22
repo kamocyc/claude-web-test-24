@@ -19,9 +19,15 @@ export interface MinimapOverlay {
   roads: { x: number; z: number; b?: number }[];
   /** The stretch of road that is still missing, if the player is building one. */
   gap: { from: { x: number; z: number }; to: { x: number; z: number } } | null;
+  /** Road that is laid and does not count. Drawn on top of the road it is part of, so a
+   *  line with a red bead on it reads as exactly what it is: nearly a road. */
+  faults: { x: number; z: number }[];
 }
 
-const EMPTY_OVERLAY: MinimapOverlay = { markers: [], roads: [], gap: null };
+const EMPTY_OVERLAY: MinimapOverlay = { markers: [], roads: [], gap: null, faults: [] };
+
+/** Road the index refuses, matching the beacon colour used in the world itself. */
+const FAULT_COLOUR = '#ff5a5a';
 
 const MARKER_COLORS: Record<string, string> = {
   spawn: '#8fd0ff',
@@ -128,6 +134,7 @@ export class Minimap {
 
     this.ctx.putImageData(this.image, 0, 0);
     this.drawRoads(overlay);
+    this.drawFaults(overlay);
     this.drawMarkers(overlay);
     this.drawPlayer(yaw);
   }
@@ -170,6 +177,18 @@ export class Minimap {
     ctx.lineTo(b.px, b.py);
     ctx.stroke();
     ctx.restore();
+  }
+
+  /** Where the road is laid and the index will not have it. */
+  private drawFaults(overlay: MinimapOverlay): void {
+    if (overlay.faults.length === 0) return;
+    const ctx = this.ctx;
+    ctx.fillStyle = FAULT_COLOUR;
+    for (const fault of overlay.faults) {
+      const at = this.project(fault.x, fault.z);
+      if (!at) continue;
+      ctx.fillRect(at.px - 1, at.py - 1, 2.5, 2.5);
+    }
   }
 
   private drawMarkers(overlay: MinimapOverlay): void {

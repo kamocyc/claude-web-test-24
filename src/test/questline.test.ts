@@ -34,8 +34,10 @@ function route(connected: boolean, missing = 0, quality = 1): Route {
     from: ID_A, to: ID_B, good: 'wheat', surveyed: true, connected,
     everConnected: connected, waypoints: [], cumulative: [], length: 100, missing,
     quality, grade: 'x',
+    climb: 0, direct: 100, detour: 1, vehicle: 'porter', cartPinch: null, doorGap: 0,
     gapFrom: missing > 0 ? { x: 60, z: 0, y: 60 } : null,
     gapTo: missing > 0 ? { x: 200, z: 0, y: 60 } : null,
+    nearMiss: null,
     fromDoor: null, toDoor: null,
     porters: [], delivered: 0, trips: 0,
   };

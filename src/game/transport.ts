@@ -17,6 +17,11 @@
 import { roadGrade, toWaypoints, type RoadNetwork, type RoadPoint, type SurveyResult } from './roads';
 import type { GoodId, VillageId, VillageRegistry } from './villages';
 
+/** What is doing the hauling. A cart only runs where the road is three columns wide the
+ *  whole way, which is the one thing widening a road buys — and the reason widening one
+ *  is worth an afternoon. */
+export type Vehicle = 'porter' | 'cart';
+
 /** Blocks per second on a plain dirt path. Road quality multiplies it. */
 export const PORTER_SPEED = 3.2;
 /** Goods one trip carries on a dirt path. Better pavement means a cart, not a sack. */
@@ -37,6 +42,15 @@ export const RESURVEY_INTERVAL = 2;
  *  network should fund the shopping, not end it. A well paved line pays a few emeralds a
  *  trip, so an afternoon of hauling buys a villager's table rather than all of them. */
 export const PAY_DISTANCE = 800;
+/** What a cart multiplies a trip by. Speed is left alone deliberately: pavement is what
+ *  makes a road fast and width is what makes it carry, so the two jobs stay legible. */
+export const CART_LOAD = 3;
+/** Detour past which the panel starts saying so. Under it a road is merely following the
+ *  ground; over it, it is going somewhere else first. */
+export const DETOUR_NOTICE = 1.15;
+/** Blocks between a depot's door and the nearest road worth telling the player about.
+ *  The walk to the door counts towards every trip, so an unpaved one is a real cost. */
+export const DOOR_GAP_NOTICE = 8;
 
 /** Goods one trip carries on a road of the given quality. */
 export function loadFor(quality: number): number {
@@ -49,9 +63,14 @@ export function portersFor(length: number): number {
 }
 
 /** The player's cut of a delivery: paid by the load, the distance, and by whether the
- *  goods were actually wanted where they went. */
-export function payFor(length: number, count: number, needed: boolean): number {
-  return Math.max(1, Math.round((count * length * (needed ? 1.5 : 1)) / PAY_DISTANCE));
+ *  goods were actually wanted where they went.
+ *
+ *  `direct` is the straight line between the two depots, not the length of the road. It
+ *  used to be the road, which paid *more* for a road that wandered — the freight was
+ *  worth what the hauling cost rather than what it was worth to the villages. Now a
+ *  detour is what it should be: the same fare, a longer trip, fewer of them. */
+export function payFor(direct: number, count: number, needed: boolean): number {
+  return Math.max(1, Math.round((count * direct * (needed ? 1.5 : 1)) / PAY_DISTANCE));
 }
 
 export interface Porter {
@@ -89,10 +108,25 @@ export interface Route {
   /** Weighted speed factor of the pavement, and what to call it. */
   quality: number;
   grade: string;
+  /** Blocks of up and down along the whole road. Climb is charged as time, so this is
+   *  why an otherwise well paved line reports itself slow. */
+  climb: number;
+  /** Straight line between the two depots. The fare is paid on this. */
+  direct: number;
+  /** `length / direct`. One means the road goes straight there. */
+  detour: number;
+  /** What hauls this route, and where the road is too narrow for a cart when it is not. */
+  vehicle: Vehicle;
+  cartPinch: RoadPoint | null;
+  /** The longest stretch at either end between a depot's door and the road proper. */
+  doorGap: number;
   /** Straight-line distance still to be paved, when not connected. */
   missing: number;
   gapFrom: RoadPoint | null;
   gapTo: RoadPoint | null;
+  /** A column standing beside what it should join and only too high or too low for it.
+   *  The one break a distance cannot describe. */
+  nearMiss: RoadPoint | null;
   porters: Porter[];
   /** Running totals, for the ledger. */
   delivered: number;
@@ -104,10 +138,16 @@ export interface SavedRoute {
   to: string;
 }
 
-/** How far a porter mob may lag behind its shipment before it is picked up and put back
- *  on it. Big enough to hop a fence or go round a tree, small enough that a porter can
- *  never be somewhere the road is not. */
+/** How far a porter mob may lag behind its shipment before it starts hurrying. Big enough
+ *  to hop a fence or go round a tree; past it the mob runs, up to `CATCH_UP` times its
+ *  usual pace, rather than being picked up and put down. */
 export const PORTER_LEASH = 7;
+/** Fastest a mob will run to catch its shipment up. */
+export const CATCH_UP = 3;
+/** How far behind is too far to recover. At this distance the mob is dropped and the next
+ *  frame draws a new one where the goods actually are — twenty-four blocks apart, nobody
+ *  is watching both ends, so nothing is seen to move that should not. */
+export const PORTER_LOST = 24;
 
 /** Where a village loads and unloads. The game answers this from its building registry;
  *  transport only needs the point, so it never learns what a building is. */
@@ -118,7 +158,7 @@ export interface DepotSource {
 /** What the game hands transport so it can show a porter. Kept narrow so the simulation
  *  itself has no idea mobs exist. */
 export interface PorterHost {
-  spawnPorter(point: RoadPoint): number | null;
+  spawnPorter(point: RoadPoint, vehicle: Vehicle): number | null;
   porterPosition(mobId: number): { x: number; z: number } | null;
   /** Walks the mob towards where its shipment has got to, at the route's speed, and puts
    *  it back on the road if it has fallen more than `PORTER_LEASH` behind. */
@@ -136,6 +176,7 @@ export interface PorterView {
   good: GoodId;
   /** 0 on the walk home with nothing worth carrying. */
   cargo: number;
+  vehicle: Vehicle;
   /** Whether a mob is currently drawing this one. */
   visible: boolean;
 }
@@ -203,9 +244,16 @@ export class TransportNetwork {
       length: 0,
       quality: 1,
       grade: roadGrade(1),
+      climb: 0,
+      direct: 0,
+      detour: 1,
+      vehicle: 'porter',
+      cartPinch: null,
+      doorGap: 0,
       missing: 0,
       gapFrom: null,
       gapTo: null,
+      nearMiss: null,
       porters: [],
       delivered: 0,
       trips: 0,
@@ -249,6 +297,7 @@ export class TransportNetwork {
           dir: porter.dir,
           good: porter.good,
           cargo: porter.cargo,
+          vehicle: route.vehicle,
           visible: porter.mobId !== null,
         });
       }
@@ -300,17 +349,47 @@ export class TransportNetwork {
       route.fromDoor = this.depots?.doorOf(route.from) ?? null;
       route.toDoor = this.depots?.doorOf(route.to) ?? null;
       const walked = toWaypoints(result.waypoints);
-      if (route.fromDoor) walked.unshift(route.fromDoor);
-      if (route.toDoor) walked.push(route.toDoor);
+      // The survey walks street to street. Where the index knows a way from the doorway
+      // onto that road, walk it: a spur somebody laid to their own depot is road, and
+      // cutting the corner across it is how a porter ends up inside a wall.
+      const head = result.waypoints[1];
+      const tail = result.waypoints[result.waypoints.length - 2];
+      let doorGap = 0;
+      if (route.fromDoor) {
+        doorGap = Math.max(doorGap, this.joinDoor(route.fromDoor, head, walked, 'head'));
+      }
+      if (route.toDoor) {
+        doorGap = Math.max(doorGap, this.joinDoor(route.toDoor, tail, walked, 'tail'));
+      }
+      route.doorGap = doorGap;
       route.waypoints = walked;
       const measured = measure(route.waypoints);
       route.cumulative = measured.cumulative;
       route.length = Math.max(1, measured.length);
       route.quality = result.quality;
       route.grade = roadGrade(result.quality);
+      route.climb = result.climb;
+      const ends = route.fromDoor && route.toDoor
+        ? Math.hypot(route.toDoor.x - route.fromDoor.x, route.toDoor.z - route.fromDoor.z)
+        : result.direct;
+      route.direct = Math.max(1, ends);
+      route.detour = route.length / route.direct;
+      const vehicle: Vehicle = result.cart.ok ? 'cart' : 'porter';
+      if (vehicle !== route.vehicle) {
+        // The mobs are the wrong shape now. Drop them; the next frame draws the right
+        // ones where the shipments actually are, and no cargo moves.
+        for (const porter of route.porters) {
+          if (porter.mobId === null) continue;
+          this.host?.removePorter(porter.mobId);
+          porter.mobId = null;
+        }
+        route.vehicle = vehicle;
+      }
+      route.cartPinch = result.cart.ok ? null : result.cart.pinch;
       route.missing = 0;
       route.gapFrom = null;
       route.gapTo = null;
+      route.nearMiss = null;
       if (!was) this.events.onConnected?.(route);
       return true;
     }
@@ -318,6 +397,9 @@ export class TransportNetwork {
     route.missing = result.missing;
     route.gapFrom = result.frontierFrom;
     route.gapTo = result.frontierTo;
+    route.nearMiss = result.nearMiss;
+    route.cartPinch = null;
+    route.vehicle = 'porter';
     if (was) {
       // The road was broken while goods were on it. Send them home rather than losing
       // them; a road being dug up should cost time, not cargo.
@@ -333,13 +415,34 @@ export class TransportNetwork {
     return true;
   }
 
+  /** Puts a depot's doorway on the front or the back of the walk, following the index
+   *  from the door onto the road where there is a way, and drawing the straight line only
+   *  where there is not. Returns how far that unpaved last leg is, which is what the panel
+   *  reports: the walk to the door counts towards every trip, so paving it is work that
+   *  pays. */
+  private joinDoor(
+    door: RoadPoint,
+    onto: RoadPoint | undefined,
+    walked: RoadPoint[],
+    end: 'head' | 'tail',
+  ): number {
+    const spur = onto ? this.roads.pathBetween(door, onto, 32) : null;
+    const link = spur ? toWaypoints(spur) : [];
+    const parts = end === 'head' ? [door, ...link] : [...link.reverse(), door];
+    if (end === 'head') walked.unshift(...parts);
+    else walked.push(...parts);
+    const first = link.length > 0 ? link[end === 'head' ? 0 : link.length - 1] : onto;
+    if (!first) return 0;
+    return Math.hypot(first.x - door.x, first.z - door.z);
+  }
+
   /** Speed in blocks per second, and the load one trip carries. */
   speedOf(route: Route): number {
     return PORTER_SPEED * route.quality;
   }
 
   loadOf(route: Route): number {
-    return loadFor(route.quality);
+    return loadFor(route.quality) * (route.vehicle === 'cart' ? CART_LOAD : 1);
   }
 
   private advance(route: Route, dt: number, playerX: number, playerZ: number): void {
@@ -393,7 +496,7 @@ export class TransportNetwork {
       good: porter.good,
       count: porter.cargo,
       needed: result.needed,
-      pay: payFor(route.length, porter.cargo, result.needed),
+      pay: payFor(route.direct, porter.cargo, result.needed),
     });
     if (result.stage !== null) this.events.onStageUp?.(to, result.stage);
     porter.cargo = 0;
@@ -457,7 +560,7 @@ export class TransportNetwork {
     }
 
     if (!near) return;
-    porter.mobId = this.host.spawnPorter(here);
+    porter.mobId = this.host.spawnPorter(here, route.vehicle);
   }
 
   /** Only the pair matters. The road itself lives in the edits, so a route re-surveys

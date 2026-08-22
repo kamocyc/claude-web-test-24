@@ -96,6 +96,28 @@ const MODELS: Record<MobKind, ModelPart[]> = {
     { size: [0.52, 0.52, 0.34], offset: [0, 1.32, 0.3], color: 0x8a6a3a, role: 'body' },
     { size: [0.56, 0.1, 0.05], offset: [0, 1.32, 0.48], color: 0x5f4826, role: 'body' },
   ],
+  // The same porter with a two wheeled cart behind them. It has to read as "this road is
+  // wide enough for that" from the side of the road, so the cart is deliberately as broad
+  // as the collision box and the wheels stand proud of it.
+  cart: [
+    { size: [0.5, 0.5, 0.5], offset: [0, 1.66, 0], color: 0xc9a882, role: 'head' },
+    { size: [0.12, 0.16, 0.16], offset: [0, 1.6, -0.31], color: 0xb08d68, role: 'head' },
+    { size: [0.56, 0.75, 0.3], offset: [0, 1.03, 0], color: 0x3f5a74, role: 'body' },
+    { size: [0.5, 0.35, 0.34], offset: [0, 1.2, 0], color: 0x54748f, role: 'body' },
+    { size: [0.16, 0.5, 0.16], offset: [-0.35, 1.1, 0], color: 0xc9a882, role: 'armLeft' },
+    { size: [0.16, 0.5, 0.16], offset: [0.35, 1.1, 0], color: 0xc9a882, role: 'armRight' },
+    { size: [0.2, 0.7, 0.2], offset: [-0.14, 0.35, 0], color: 0x33465c, role: 'legFrontLeft' },
+    { size: [0.2, 0.7, 0.2], offset: [0.14, 0.35, 0], color: 0x33465c, role: 'legFrontRight' },
+    // shafts from the porter's hands back to the bed
+    { size: [0.06, 0.06, 0.7], offset: [-0.3, 1.05, 0.45], color: 0x6b5330, role: 'body' },
+    { size: [0.06, 0.06, 0.7], offset: [0.3, 1.05, 0.45], color: 0x6b5330, role: 'body' },
+    // the bed, its load, and the wheels
+    { size: [1.2, 0.34, 0.8], offset: [0, 0.75, 0.95], color: 0x8a6a3a, role: 'body' },
+    { size: [1.24, 0.08, 0.84], offset: [0, 0.94, 0.95], color: 0x5f4826, role: 'body' },
+    { size: [0.86, 0.3, 0.56], offset: [0, 1.06, 0.95], color: 0xb99a5e, role: 'body' },
+    { size: [0.14, 0.66, 0.66], offset: [-0.65, 0.62, 0.95], color: 0x4a3423, role: 'body' },
+    { size: [0.14, 0.66, 0.66], offset: [0.65, 0.62, 0.95], color: 0x4a3423, role: 'body' },
+  ],
 };
 
 export function modelFor(kind: MobKind): ModelPart[] {

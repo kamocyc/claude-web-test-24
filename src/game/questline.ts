@@ -31,6 +31,21 @@ export type QuestStep =
  *  delivery is what tips the village over and the point lands. */
 export const HAUL_COUNT = STAGE_POINTS[0] - 2;
 
+/** The tutorial written out, in order, without a world to read it against.
+ *
+ *  `objective()` says what to do *now* and needs the registry to do it. This says what
+ *  the whole thing is, which is what somebody opening the manual is asking — and keeping
+ *  the two in one file is what stops them drifting apart. */
+export const QUEST_STEPS: readonly { step: QuestStep; label: string; detail: string }[] = [
+  { step: 'find_village', label: '村を見つける', detail: 'コンパスの ⌗ を目指して歩く。台地に踏み込むと村名・生産品・欲しがっている物が分かる' },
+  { step: 'accept_haul', label: '運搬を引き受ける', detail: '村人に話しかけると、取引画面の一番上に頼み事が出る。積み荷はその場で持たせてくれる' },
+  { step: 'deliver_by_hand', label: '人力で運ぶ', detail: `${HAUL_COUNT} 個を担いで分村まで歩き、向こうの村人に納める。分村も地図に載る` },
+  { step: 'learn_roads', label: '道の話を聞く', detail: 'もう一度話しかけると「道さえあれば我々が自分で運ぶ」と言う' },
+  { step: 'build_road', label: '道でつなぐ', detail: 'シャベルを持って右クリックを押したまま歩く。1 マスも空けずにつながると路線になる' },
+  { step: 'watch_porter', label: '荷運びを見送る', detail: '在庫が 1 便ぶんたまると荷運びが出発する。近くにいれば実際に道を歩く姿が見える' },
+  { step: 'done', label: 'あとは網を広げる', detail: '以降は下の目標が順に出る。村を見つけ、道でつなぎ、舗装し、広げる' },
+];
+
 export interface QuestObjective {
   step: QuestStep;
   title: string;

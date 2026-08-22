@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { PAVABLE, runRoad, treadBrush, treadColumn, treadLine, type PaveTarget } from '../game/paving';
+import { CLEARABLE, PAVABLE, runRoad, treadBrush, treadColumn, treadLine, type PaveTarget } from '../game/paving';
+import { HEADROOM } from '../game/roads';
 import { Block, type BlockId } from '../world/blocks';
 
 const GROUND = 60;
@@ -59,6 +60,14 @@ function unbroken(path: readonly { x: number; z: number; y: number }[]): boolean
   return true;
 }
 
+/** The world as `runRoad` sees it: a heightmap to follow and somewhere to write. */
+function runner(world: FakeWorld) {
+  return {
+    ground: (x: number, z: number): number => world.surface(x, z),
+    lay: (x: number, y: number, z: number): void => world.setBlock(x, y, z, Block.DIRT_PATH),
+  };
+}
+
 describe('treading a path', () => {
   it('treads the ground the shovel is pointed at', () => {
     const world = new FakeWorld();
@@ -108,10 +117,19 @@ describe('treading a path', () => {
     expect(treadColumn(world, 0, 0, GROUND)).toBeNull();
   });
 
-  it('finds the surface a couple of blocks off from where it was told to look', () => {
+  it('finds the surface one block off from where it was told to look', () => {
+    const world = new FakeWorld();
+    world.setHeight(0, 0, GROUND - 1);
+    expect(treadColumn(world, 0, 0, GROUND)).toBe(GROUND - 1);
+  });
+
+  it('will not reach across a step the road index would refuse', () => {
+    // Two blocks down is a drop a porter cannot climb back up, so laying a column there
+    // would make a road that reads as continuous and walks as a dead end. Better to lay
+    // nothing and let the player see the fault.
     const world = new FakeWorld();
     world.setHeight(0, 0, GROUND - 2);
-    expect(treadColumn(world, 0, 0, GROUND)).toBe(GROUND - 2);
+    expect(treadColumn(world, 0, 0, GROUND)).toBeNull();
   });
 });
 
@@ -125,9 +143,9 @@ describe('the shovel sweep', () => {
   it('reports the level it settled on, so the next cell knows where to look', () => {
     const world = new FakeWorld();
     for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
-      world.setHeight(dx, dz, GROUND + 2);
+      world.setHeight(dx, dz, GROUND + 1);
     }
-    expect(treadBrush(world, 0, 0, GROUND).level).toBe(GROUND + 2);
+    expect(treadBrush(world, 0, 0, GROUND).level).toBe(GROUND + 1);
   });
 
   it('fills in behind a crosshair that jumped', () => {
@@ -153,13 +171,6 @@ describe('the shovel sweep', () => {
 });
 
 describe('running a road', () => {
-  function runner(world: FakeWorld) {
-    return {
-      ground: (x: number, z: number): number => world.surface(x, z),
-      lay: (x: number, y: number, z: number): void => world.setBlock(x, y, z, Block.DIRT_PATH),
-    };
-  }
-
   it('lays a column at every step, and every column touches the next', () => {
     const world = new FakeWorld();
     const laid = runRoad(runner(world), { x: 0, z: 0 }, { x: 40, z: 17 }, GROUND, 2, 47);
@@ -203,5 +214,52 @@ describe('running a road', () => {
   it('lays a single column when both ends are the same place', () => {
     const world = new FakeWorld();
     expect(runRoad(runner(world), { x: 3, z: 3 }, { x: 3, z: 3 }, GROUND, 2, 47)).toBe(1);
+  });
+});
+
+
+describe('making room overhead', () => {
+  it('cuts a branch back rather than laying road nobody fits under', () => {
+    const world = new FakeWorld();
+    world.put(0, GROUND + 2, 0, Block.OAK_LEAVES);
+    expect(CLEARABLE.has(Block.OAK_LEAVES)).toBe(true);
+    expect(treadColumn(world, 0, 0, GROUND)).toBe(GROUND);
+    for (let h = 1; h <= HEADROOM; h++) {
+      expect(world.getBlock(0, GROUND + h, 0), `headroom at +${h}`).toBe(Block.AIR);
+    }
+  });
+
+  it('leaves a stone awning alone, and the road under it unlaid', () => {
+    // Somebody built that. Treading under it would leave a line of path blocks the index
+    // throws away, which is the fault the player is meant to be shown rather than given.
+    const world = new FakeWorld();
+    world.put(0, GROUND + 2, 0, Block.STONE_BRICKS);
+    expect(treadColumn(world, 0, 0, GROUND)).toBeNull();
+    expect(world.getBlock(0, GROUND + 2, 0)).toBe(Block.STONE_BRICKS);
+    expect(world.getBlock(0, GROUND, 0)).toBe(Block.GRASS);
+  });
+});
+
+describe('running a road wide enough for a cart', () => {
+  it('lays the same level either side of the line', () => {
+    const world = new FakeWorld();
+    const laid = runRoad(runner(world), { x: 0, z: 0 }, { x: 20, z: 0 }, GROUND, 1, 0, undefined, 3);
+    expect(laid).toBe(21 * 3);
+    for (let x = 0; x <= 20; x++) {
+      for (let z = -1; z <= 1; z++) {
+        expect(world.roadLevel(x, z), `nothing at ${x},${z}`).toBe(GROUND);
+      }
+    }
+  });
+
+  it('carries the width round a diagonal', () => {
+    const world = new FakeWorld();
+    runRoad(runner(world), { x: 0, z: 0 }, { x: 20, z: 20 }, GROUND, 1, 0, undefined, 3);
+    // Across a north-east line, the two sides are north-west and south-east of it.
+    for (let i = 1; i < 20; i++) {
+      expect(world.roadLevel(i, i), `middle at ${i}`).toBe(GROUND);
+      expect(world.roadLevel(i - 1, i + 1), `left at ${i}`).toBe(GROUND);
+      expect(world.roadLevel(i + 1, i - 1), `right at ${i}`).toBe(GROUND);
+    }
   });
 });

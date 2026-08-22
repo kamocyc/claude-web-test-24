@@ -603,6 +603,58 @@ await evaluate((c) => window.voxelcraft.game.world.setBlock(c.x, c.y, c.z, c.was
 await page.waitForFunction(`${QUEST_ROUTE}?.connected === true`, null, { timeout: 30000 });
 console.log('and put back:', JSON.stringify(await evaluate(QUEST_ROUTE)));
 
+// --- the road has to be walkable, not merely continuous ----------------------
+// Two blocks of rise and a branch at head height are both roads the index used to call
+// connected and a porter could not use — which is what "the porter teleports" was. Both
+// have to break the route, and both have to say where.
+
+/** Puts a block where the test wants one, waits for the route to fall apart, and reports
+ *  what the game says about it. */
+const breakAt = async (place) => {
+  const at = await evaluate(place, bite);
+  await page.waitForFunction(`${QUEST_ROUTE}?.connected === false`, null, { timeout: 30000 });
+  return {
+    at,
+    faults: await evaluate((c) => window.voxelcraft.roadFaults(24)
+      .filter((f) => Math.hypot(f.x - c.x, f.z - c.z) < 24), bite),
+    note: await page.locator('.route-note').first().innerText().catch(() => null),
+  };
+};
+
+const stepped = await breakAt((c) => {
+  const g = window.voxelcraft.game;
+  // Lift one column two blocks clear of its neighbours: a riser a walker cannot climb.
+  g.world.setBlock(c.x, c.y, c.z, 0);
+  g.world.setBlock(c.x, c.y + 2, c.z, c.was);
+  return { x: c.x, y: c.y + 2, z: c.z };
+});
+console.log('a two block step:', JSON.stringify(stepped));
+if (!stepped.faults.some((f) => f.kind === 'step')) {
+  throw new Error(`a two block riser was not reported as a step: ${JSON.stringify(stepped)}`);
+}
+await evaluate((c) => {
+  const g = window.voxelcraft.game;
+  g.world.setBlock(c.x, c.y + 2, c.z, 0);
+  g.world.setBlock(c.x, c.y, c.z, c.was);
+}, bite);
+await page.waitForFunction(`${QUEST_ROUTE}?.connected === true`, null, { timeout: 30000 });
+
+const overhead = await breakAt((c) => {
+  const g = window.voxelcraft.game;
+  // Whatever the road is bedded on, put a slab of it where a walker's head goes.
+  const solid = g.world.getBlock(c.x, c.y - 1, c.z) || c.was;
+  g.world.setBlock(c.x, c.y + 2, c.z, solid);
+  return { x: c.x, y: c.y + 2, z: c.z, block: solid };
+});
+console.log('a branch at head height:', JSON.stringify(overhead));
+if (!overhead.faults.some((f) => f.kind === 'headroom')) {
+  throw new Error(`a blocked head height was not reported: ${JSON.stringify(overhead)}`);
+}
+await shot('07x5-road-fault');
+await evaluate((c) => window.voxelcraft.game.world.setBlock(c.x, c.y + 2, c.z, 0), bite);
+await page.waitForFunction(`${QUEST_ROUTE}?.connected === true`, null, { timeout: 30000 });
+console.log('cleared again:', JSON.stringify(await evaluate(QUEST_ROUTE)));
+
 // --- laying road by hand -----------------------------------------------------
 // Which is the other half of the bargain: if a road may not skip, then laying one must
 // not be four hundred clicks. A shovel held down while the player walks paves the ground
@@ -628,7 +680,7 @@ const runAround = async (x, z, radius = 40) =>
           for (let dx = -1; dx <= 1; dx++) {
             const key = `${here.x + dx},${here.z + dz}`;
             const next = at.get(key);
-            if (!next || seen.has(key) || Math.abs(next.y - here.y) > 2) continue;
+            if (!next || seen.has(key) || Math.abs(next.y - here.y) > 1) continue;
             seen.add(key);
             queue.push(next);
           }
@@ -736,6 +788,75 @@ if (ranged.biggest < beforeRanged.biggest + 6) {
 }
 await shot('07y2-ranged-road');
 
+// --- widening a road until a cart fits ---------------------------------------
+// Pavement is what makes a road fast; width is what makes it carry. Three columns across
+// the whole way and the porters become a cart with three times the load — and one pinch
+// anywhere puts them back on foot, which is the thing the panel has to be able to point
+// at.
+const onFoot = await evaluate(QUEST_ROUTE);
+console.log('before widening:', JSON.stringify({
+  vehicle: onFoot.vehicle, load: onFoot.load, pinch: onFoot.cartPinch,
+}));
+if (onFoot.vehicle !== 'porter') throw new Error('a single track road already runs a cart');
+console.log('widened:', await evaluate(() => window.voxelcraft.widenRoad()));
+await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'cart'`, null, { timeout: 60000 });
+const byCart = await evaluate(QUEST_ROUTE);
+console.log('after widening:', JSON.stringify({
+  vehicle: byCart.vehicle, load: byCart.load, climb: byCart.climb, detour: byCart.detour,
+}));
+if (byCart.load !== onFoot.load * 3) {
+  throw new Error(`a cart should carry three times the load: ${onFoot.load} -> ${byCart.load}`);
+}
+console.log('linked panel with a cart:', JSON.stringify(
+  await page.locator('.route-row').first().innerText().catch(() => null)));
+
+// One column of the width, taken out of the middle, and the carts stop.
+const pinched = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const q = window.voxelcraft.quest();
+  const a = g.villages.get(q.origin);
+  const b = g.villages.get(q.target);
+  const mx = Math.round((a.x + b.x) / 2);
+  const mz = Math.round((a.z + b.z) / 2);
+  const near = window.voxelcraft.roadColumnsNear(mx, mz, 10);
+  const at = new Map(near.map((c) => [`${c.x},${c.z}`, c]));
+  const look = (x, z) => at.get(`${x},${z}`);
+  const axes = [[1, 0], [0, 1], [1, 1], [1, -1]];
+  near.sort((p, r) => Math.hypot(p.x - mx, p.z - mz) - Math.hypot(r.x - mx, r.z - mz));
+  for (const c of near) {
+    for (const [dx, dz] of axes) {
+      // The line has to survive: keep the columns along the road, take the two across it.
+      if (!look(c.x + dx, c.z + dz) || !look(c.x - dx, c.z - dz)) continue;
+      const sides = [look(c.x - dz, c.z + dx), look(c.x + dz, c.z - dx)];
+      if (!sides[0] || !sides[1]) continue;
+      const taken = sides.map((s) => ({
+        x: s.x, y: s.y, z: s.z, was: g.world.getBlock(s.x, s.y, s.z),
+      }));
+      for (const t of taken) g.world.setBlock(t.x, t.y, t.z, 0);
+      return { middle: { x: c.x, z: c.z }, taken };
+    }
+  }
+  return null;
+});
+if (!pinched) console.log('one waist in the road: NO THREE WIDE SPOT FOUND');
+if (pinched) {
+  await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'porter'`, null, { timeout: 60000 });
+  const narrowed = await evaluate(QUEST_ROUTE);
+  console.log('one waist in the road:', JSON.stringify({
+    took: pinched.taken.length,
+    vehicle: narrowed.vehicle,
+    connected: narrowed.connected,
+    pinch: narrowed.cartPinch,
+    note: await page.locator('.route-note.narrow').first().innerText().catch(() => null),
+  }));
+  if (!narrowed.connected) throw new Error('a narrow road should still carry a porter');
+  await evaluate((list) => {
+    for (const c of list) window.voxelcraft.game.world.setBlock(c.x, c.y, c.z, c.was);
+  }, pinched.taken);
+  await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'cart'`, null, { timeout: 60000 });
+  console.log('widened back:', await evaluate(() => window.voxelcraft.routes()[0].vehicle));
+}
+
 
 // A route runs between two doorways, not two map pins: the shipment leaves the building
 // the player picked and arrives at the other village's.
@@ -807,6 +928,28 @@ console.log('ledger:', JSON.stringify((await page.locator('.ledger').innerText()
 await shot('07x4-ledger');
 await closeScreen();
 
+// The manual: what the tutorial is, what the goals are, and every rule the road index
+// applies — assembled from the systems rather than typed out beside them.
+await page.keyboard.press('KeyH');
+const openedByKey = await page.locator('.help').waitFor({ timeout: 8000 }).then(() => true, () => false);
+if (!openedByKey) throw new Error('H did not open the manual');
+const manual = await page.locator('.help').innerText();
+console.log('help screen:', JSON.stringify({
+  headings: await page.locator('.help-heading').allInnerTexts(),
+  steps: await page.locator('.help-step').count(),
+  currentGoal: await page.locator('.help-step.current .help-step-label').first().innerText()
+    .catch(() => null),
+}));
+for (const needed of ['チュートリアル', '荷車', '頭上', '運賃']) {
+  if (!manual.includes(needed)) throw new Error(`the manual does not mention ${needed}`);
+}
+const goals = await evaluate(() => window.voxelcraft.milestones().all.length);
+if (await page.locator('.help-step').count() < goals) {
+  throw new Error('the manual does not list every goal');
+}
+await shot('07x5-help');
+await closeScreen();
+
 // Run the goods through until the far village earns a building. The player is paid for
 // the haulage, which is the only income the network itself produces.
 const purseBefore = await evaluate(() => window.voxelcraft.player.inventory.count('emerald'));
@@ -874,6 +1017,33 @@ if (spot) {
     };
   });
   console.log('porter on the road:', JSON.stringify(porter));
+
+  // Nothing that walks may ever be seen to jump. The shipment is the truth and the mob
+  // follows it, and when the road was allowed a two block riser the mob could not climb,
+  // it was picked up and put back down in front of the player. Sample the mob a few
+  // times a second and watch for a step no walk could produce.
+  const track = [];
+  for (let i = 0; i < 80; i++) {
+    const at = await evaluate(() => {
+      const mob = window.voxelcraft.mobs().find((m) => m.kind === 'porter' || m.kind === 'cart');
+      return mob ? { id: mob.id, x: +mob.x.toFixed(2), y: +mob.y.toFixed(2), z: +mob.z.toFixed(2) } : null;
+    });
+    if (at) track.push(at);
+    await page.waitForTimeout(100);
+  }
+  let worst = 0;
+  for (let i = 1; i < track.length; i++) {
+    // Only within one mob's life: a porter finishing its trip and the next one setting
+    // out is two walkers, not one that moved.
+    if (track[i].id !== track[i - 1].id) continue;
+    worst = Math.max(worst, Math.hypot(track[i].x - track[i - 1].x, track[i].z - track[i - 1].z));
+  }
+  console.log('porter never jumps:', JSON.stringify({
+    samples: track.length, biggestStep: +worst.toFixed(2),
+  }));
+  if (track.length > 20 && worst > 3) {
+    throw new Error(`a porter moved ${worst.toFixed(1)} blocks between two frames`);
+  }
   await shot('07z-porter');
 }
 console.log('porters walking:', await evaluate(() => window.voxelcraft.porters()));
@@ -896,8 +1066,13 @@ await page.waitForFunction(
   null,
   { timeout: 60000 },
 );
-console.log('sample route:', JSON.stringify(await evaluate(() =>
-  window.voxelcraft.routes().filter((r) => r.length > 250))));
+const sampleRoutes = await evaluate(() => window.voxelcraft.routes().filter((r) => r.length > 250));
+console.log('sample route:', JSON.stringify(sampleRoutes));
+// The sample road is laid three columns across, so somebody opening 見本ワールド sees a
+// cart on it rather than being told about one.
+if (!sampleRoutes.some((r) => r.vehicle === 'cart')) {
+  throw new Error(`the sample road is too narrow for a cart: ${JSON.stringify(sampleRoutes)}`);
+}
 await evaluate(() => {
   window.voxelcraft.game.player.pitch = -0.12;
 });

@@ -15,9 +15,10 @@ import type { Atlas } from '../render/textures';
 import { Container, renderSlot } from './containers';
 import { RecipePanel } from './recipePanel';
 import { refreshLedger, type LedgerView } from './ledger';
+import { refreshHelp, type HelpView } from './help';
 import { clear, el } from './dom';
 
-export type ScreenKind = 'inventory' | 'crafting' | 'furnace' | 'chest' | 'trade' | 'ledger';
+export type ScreenKind = 'inventory' | 'crafting' | 'furnace' | 'chest' | 'trade' | 'ledger' | 'help';
 
 /** One tutorial step, rendered above a villager's offers. */
 export interface QuestRow {
@@ -221,6 +222,34 @@ export class ScreenManager {
         if (next === signature) return;
         signature = next;
         refreshLedger(host, data);
+      },
+    });
+  }
+
+  /** The manual. Most of it never changes, but the tutorial step and the goals do, so it
+   *  is re-read on the same throttle as the ledger rather than frozen at open. */
+  openHelp(view: () => HelpView): void {
+    const container = new Container({
+      title: '遊びかた',
+      atlas: this.atlas,
+      playerInventory: this.player.inventory,
+    });
+    const host = el('div', 'help-host');
+    container.addSection(host);
+    let checked = 0;
+    let signature = '';
+    this.mount({
+      kind: 'help',
+      container,
+      refresh: () => {
+        const now = performance.now();
+        if (now - checked < 400) return;
+        checked = now;
+        const data = view();
+        const next = JSON.stringify(data);
+        if (next === signature) return;
+        signature = next;
+        refreshHelp(host, data);
       },
     });
   }

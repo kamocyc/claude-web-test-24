@@ -1,4 +1,6 @@
 import { gapText, type QuestObjective } from '../game/questline';
+import { faultSummary, type RoadFault } from '../game/roads';
+import { DETOUR_NOTICE, DOOR_GAP_NOTICE } from '../game/transport';
 import { clear, el, show } from './dom';
 
 export interface RouteView {
@@ -27,6 +29,19 @@ export interface RouteView {
   load: number;
   /** True when the far end has asked for what this route carries. */
   wanted: boolean;
+  /** What hauls it, and — when a cart cannot — how far away the place to widen is. */
+  vehicle: 'porter' | 'cart';
+  cartPinch: { distance: number; bearing: number } | null;
+  /** Blocks of up and down, and how much longer the road is than the straight line. */
+  climb: number;
+  detour: number;
+  /** The walk between a depot's door and the road proper, at whichever end is worse. */
+  doorGap: number;
+  /** Road the player laid near the break that the index will not have. */
+  faults: RoadFault[];
+  /** True when the road ends beside what it should join and only at the wrong height —
+   *  the one break "あと 0m" cannot describe. */
+  nearMiss: boolean;
 }
 
 export interface RoutePanelView {
@@ -46,8 +61,9 @@ function heading(bearing: number): string {
 
 /** The objective, and whether each route is actually joined up.
  *
- *  A road is allowed to be dashed, so "is it connected?" stops being obvious from looking
- *  at it — which is exactly why it is spelled out here, along with how much is left. */
+ *  Four hundred blocks of road with one column missing looks exactly like four hundred
+ *  blocks of road, so "is it connected?" is never obvious from standing on it. This says
+ *  so, and — when it is not — says what is in the way rather than only how far. */
 export class RoutePanel {
   readonly root = el('div', 'route-panel');
   private readonly questBox = el('div', 'route-quest');
@@ -87,7 +103,9 @@ export class RoutePanel {
       .map((r) => [
         r.from, r.to, r.surveyed, r.connected, Math.round(r.length),
         Math.round(r.missing), r.porters, r.grade, r.load, r.wanted, r.stock,
-        r.fromDepot, r.toDepot,
+        r.fromDepot, r.toDepot, r.vehicle, r.climb, Math.round(r.detour * 20),
+        Math.round(r.doorGap), r.nearMiss, r.faults.length,
+        r.cartPinch ? Math.round(r.cartPinch.distance) : '',
         r.nearest ? `${Math.round(r.nearest.distance)},${Math.round(r.nearest.bearing / 45)}` : '',
       ].join(':'))
       .join('|');
@@ -103,9 +121,13 @@ export class RoutePanel {
       let status: string;
       if (!route.surveyed) status = '調べています...';
       else if (route.connected) {
-        status = `接続済み ${Math.round(route.length)}m / ${route.grade} / 荷 ${route.load}`;
+        const cart = route.vehicle === 'cart' ? ' / 荷車' : '';
+        status = `接続済み ${Math.round(route.length)}m / ${route.grade}${cart} / 荷 ${route.load}`;
       } else status = `未接続 / ${gapText(route.missing)}`;
       row.appendChild(el('div', 'route-status', status));
+      for (const note of notes(route)) {
+        row.appendChild(el('div', `route-note ${note.tone}`, note.text));
+      }
       // A connected road that is carrying nothing looks broken and is not. Say which of
       // the two it is, and where to look to see it happening.
       if (route.connected) {
@@ -119,4 +141,36 @@ export class RoutePanel {
       this.list.appendChild(row);
     }
   }
+}
+
+interface Note {
+  text: string;
+  tone: 'fault' | 'narrow' | 'cost';
+}
+
+/** Everything about a route that is not "how long is it": what is stopping it, what is
+ *  slowing it down, and what it would take to run a cart. A road is never merely broken —
+ *  it is broken somewhere, for a reason the player can walk to. */
+function notes(route: RouteView): Note[] {
+  const out: Note[] = [];
+  if (!route.connected) {
+    if (route.nearMiss) out.push({ text: '道の高さが合っていない — 段差 2 マス以上', tone: 'fault' });
+    const faults = faultSummary(route.faults);
+    if (faults) out.push({ text: `敷いたのに数えられていない: ${faults}`, tone: 'fault' });
+    return out;
+  }
+  if (route.vehicle !== 'cart') {
+    const where = route.cartPinch
+      ? `（${heading(route.cartPinch.bearing)}へ ${Math.round(route.cartPinch.distance)}m）`
+      : '';
+    out.push({ text: `荷車: 幅が足りない${where}`, tone: 'narrow' });
+  }
+  if (route.detour > DETOUR_NOTICE) {
+    out.push({ text: `遠回り ×${route.detour.toFixed(2)} — 運賃は直線距離ぶん`, tone: 'cost' });
+  }
+  if (route.climb > 0) out.push({ text: `登り ${route.climb} 段`, tone: 'cost' });
+  if (route.doorGap > DOOR_GAP_NOTICE) {
+    out.push({ text: `集荷所の戸口から道まで ${Math.round(route.doorGap)}m`, tone: 'cost' });
+  }
+  return out;
 }

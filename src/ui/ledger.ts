@@ -42,6 +42,12 @@ export interface LedgerRoute {
   load: number;
   porters: number;
   delivered: number;
+  /** 荷運び or 荷車 — what the width of the road buys. */
+  vehicle: string;
+  /** Blocks of up and down, and the road divided by the straight line. Both are charged:
+   *  climb as time, detour as a fare that does not grow with it. */
+  climb: number;
+  detour: number;
 }
 
 export interface LedgerView {
@@ -109,7 +115,9 @@ export function buildLedger(view: LedgerView): HTMLElement {
 
   root.appendChild(el('div', 'ledger-heading', '輸送路'));
   const routes = el('div', 'ledger-table');
-  routes.appendChild(row('ledger-row head', ['区間', '品', '状態', '路面', '一度に運ぶ量', '荷運び', '運んだ量']));
+  routes.appendChild(
+    row('ledger-row head', ['区間', '品', '状態', '路面', '運ぶ手段', '一度に運ぶ量', '勾配・遠回り', '荷運び', '運んだ量']),
+  );
   if (view.routes.length === 0) {
     routes.appendChild(el('div', 'ledger-empty', '2 つの村を歩ける道でつなぐと、ここに輸送路が並ぶ。'));
   }
@@ -122,7 +130,9 @@ export function buildLedger(view: LedgerView): HTMLElement {
         route.good,
         route.connected ? `接続済み ${Math.round(route.length)}m` : `未接続 ${route.gap}`,
         route.connected ? route.grade : '—',
+        route.connected ? route.vehicle : '—',
         route.connected ? `${route.load}` : '—',
+        route.connected ? `登り ${route.climb} / ×${route.detour.toFixed(2)}` : '—',
         `${route.porters}`,
         `${route.delivered}`,
       ]),
@@ -134,7 +144,8 @@ export function buildLedger(view: LedgerView): HTMLElement {
     el(
       'div',
       'ledger-note',
-      '道を良い材質で舗装すると荷運びが速くなり、一度に運ぶ量も増える。' +
+      '舗装は速さ、幅は運ぶ手段を決める — 全区間が幅 3 マスなら荷車が走り、一度に 3 倍運ぶ。' +
+        '登りは時間を食い、遠回りしても運賃は増えない（運賃は直線距離ぶん）。' +
         '荷は村の「集荷所」の戸口から出て戸口へ入る — 建物を見て F キーで変えられる。',
     ),
   );

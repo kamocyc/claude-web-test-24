@@ -44,6 +44,7 @@ function startGame(seed: number, save: ReturnType<typeof readSave>, sample = fal
   });
   menus.bindPause({
     onResume: () => game?.togglePause(),
+    onHelp: () => game?.openHelp(),
     onSave: () => game?.save(),
     onQuit: () => {
       game?.save(false);

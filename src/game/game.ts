@@ -65,9 +65,26 @@ import type { Settings } from './settings';
 import { tickFurnace } from './smelting';
 import { generateTrades, restockTrades, tradesFromJSON, tradesToJSON } from './trading';
 import { VILLAGE_RADIUS, type HouseRecord } from '../world/generation/village';
-import { RoadNetwork, type RoadPoint } from './roads';
+import {
+  HEADROOM,
+  MAX_STEP,
+  ROAD_SPEED,
+  RoadNetwork,
+  faultText,
+  type RoadFault,
+  type RoadPoint,
+} from './roads';
 import { runRoad, treadBrush, treadLine, type PaveTarget } from './paving';
-import { PORTER_LEASH, TransportNetwork, loadFor, type Arrival, type PorterView, type Route } from './transport';
+import {
+  CATCH_UP,
+  PORTER_LEASH,
+  PORTER_LOST,
+  TransportNetwork,
+  type Arrival,
+  type PorterView,
+  type Route,
+  type Vehicle,
+} from './transport';
 import {
   VillageRegistry,
   displayName,
@@ -79,6 +96,7 @@ import {
   type VillageRecord,
 } from './villages';
 import type { LedgerView } from '../ui/ledger';
+import { helpView, type HelpView } from '../ui/help';
 import { applyGrowth, growthChunks, growthFor, growthVillagers, outpostBuildings } from './villageGrowth';
 import {
   buildingAt,
@@ -126,11 +144,16 @@ const GUIDE_TILE_REACH = 40;
 const GUIDE_ROAD = 0x5cff92;
 const GUIDE_GAP = 0xffa04d;
 const GUIDE_PORTER = 0x8ef0b8;
+/** Road the index refuses, and road too narrow for a cart. Both are "you built this and
+ *  it does not count", which is the one thing the world itself has to say out loud. */
+const GUIDE_FAULT = 0xff5a5a;
+const GUIDE_NARROW = 0xffc457;
 /** The doorway a route loads and unloads at. */
 const GUIDE_DEPOT = 0xffd479;
-/** Blocks of height a laid road may gain or lose per step, matching what a walker can
- *  manage on a paved slope — and what the road index will step between. */
-const ROAD_GRADE = 2;
+/** Blocks of height a laid road may gain or lose per step. It is the index's own step,
+ *  not a number of its own: a builder that could out-climb the rule would lay roads that
+ *  look finished and do not join. */
+const ROAD_GRADE = MAX_STEP;
 /** How far ahead `[R]` will run a road back to the player's feet. A road is continuous
  *  now, so this is the one place the player says "and the twenty blocks in between". */
 const ROAD_REACH = 20;
@@ -143,6 +166,14 @@ const PAVE_INTERVAL = 0.06;
 /** How far behind a jumped cursor the sweep will fill in. A crosshair skips several
  *  blocks whenever the player turns, and a road with a hole in it is two roads. */
 const PAVE_BRIDGE = 12;
+/** Width of the road the sample world is built with. Three columns is what a cart needs,
+ *  and a sample road nobody can run a cart down teaches the wrong half of the lesson. */
+const SAMPLE_WIDTH = 3;
+/** Seconds between two complaints about a road that will not take. Often enough to catch
+ *  the branch the player is standing under, rarely enough to stay out of the way. */
+const FAULT_TOAST_INTERVAL = 4;
+/** How far around the player the world looks for faults to draw. */
+const FAULT_REACH = 40;
 
 /** Chunk meshes rebuilt per frame; higher values load faster but stutter more. */
 const MESH_BUDGET = 3;
@@ -219,6 +250,7 @@ export class Game {
    *  over rather than leaving a dotted line behind. */
   private paveFrom: { x: number; y: number; z: number } | null = null;
   private paveTimer = 0;
+  private faultToastTimer = 0;
   /** Held until the world is ready, because a toast raised during construction would be
    *  shown to a screen that is still saying "generating terrain". */
   private sampleToast: string | null = null;
@@ -288,7 +320,7 @@ export class Game {
         onStageUp: (id, stage) => this.onVillageGrew(id, stage),
       },
       {
-        spawnPorter: (point) => this.spawnPorter(point),
+        spawnPorter: (point, vehicle) => this.spawnPorter(point, vehicle),
         porterPosition: (id) => {
           const mob = this.livePorter(id);
           return mob ? { x: mob.x, z: mob.z } : null;
@@ -561,6 +593,7 @@ export class Game {
           questRoute?.gapFrom && questRoute.gapTo
             ? { from: questRoute.gapFrom, to: questRoute.gapTo }
             : null,
+        faults: this.roadFaults(MINIMAP_REACH),
       },
       routes: {
         quest: objective,
@@ -590,8 +623,17 @@ export class Game {
             nearest: this.nearestPorter(shipments, route),
             stock: this.villages.get(route.from)?.stock ?? 0,
             grade: route.grade,
-            load: loadFor(route.quality),
+            load: this.transport.loadOf(route),
             wanted: this.villages.get(route.to)?.needs.includes(route.good) ?? false,
+            vehicle: route.vehicle,
+            cartPinch: route.cartPinch ? this.bearingTo(route.cartPinch) : null,
+            climb: route.climb,
+            detour: route.detour,
+            doorGap: route.doorGap,
+            // Only the faults near the break the player is being pointed at. Everything
+            // the index refuses everywhere would be a list, and a list is not a place.
+            faults: route.gapFrom ? this.roads.faults(route.gapFrom.x, route.gapFrom.z, 12) : [],
+            nearMiss: route.nearMiss !== null,
           })),
       },
       forecast: {
@@ -701,6 +743,10 @@ export class Game {
           if (this.warpDialog.isOpen) this.closeWarpDialog();
           else if (this.screens.isOpen) this.closeScreen();
           else this.openScreen(() => this.screens.openInventory());
+          break;
+        case 'KeyH':
+          if (this.player.isDead) break;
+          this.openHelp();
           break;
         case 'F3':
           event.preventDefault();
@@ -893,6 +939,22 @@ export class Game {
     if (from && span > 1 && span <= PAVE_BRIDGE) treadLine(this.paveTarget, from, hit, from.y);
     else treadBrush(this.paveTarget, hit.x, hit.z, hit.y);
     this.paveFrom = { x: hit.x, y: hit.y, z: hit.z };
+    this.reportPavingFaults(PAVE_INTERVAL, hit.x, hit.z);
+  }
+
+  /** Says why the road that was just laid does not count, where it does not.
+   *
+   *  The panel and the lights on the ground are for finding a fault later; this is for
+   *  not making one. A player sweeping under a tree lays a perfectly good looking line of
+   *  path blocks that the index throws away, and without a word at the moment it happens
+   *  they find out four hundred blocks later, from a route that will not join. */
+  private reportPavingFaults(dt: number, x: number, z: number): void {
+    this.faultToastTimer -= dt;
+    if (this.faultToastTimer > 0) return;
+    const faults = this.roads.faults(x, z, 3);
+    if (faults.length === 0) return;
+    this.faultToastTimer = FAULT_TOAST_INTERVAL;
+    this.hud.toast(faultText(faults[0]));
   }
 
   /** The world as something to tread a path into. */
@@ -926,6 +988,8 @@ export class Game {
       hit.y,
     );
     this.hud.toast(laid > 0 ? `道を ${laid} マスのばした` : '道をのばせる地面がない');
+    this.faultToastTimer = 0;
+    this.reportPavingFaults(0, hit.x, hit.z);
   }
 
   private updateMining(dt: number, hit: RaycastHit): void {
@@ -1455,6 +1519,19 @@ export class Game {
     for (const porter of this.transport.porterViews()) {
       beams.push({ x: porter.x, y: porter.y, z: porter.z, colour: GUIDE_PORTER, height: 6 });
     }
+    // Road somebody laid that the index will not have. The quietest thing on the screen
+    // and the one most worth looking at: "you already did this work, and it does not
+    // count" is invisible from every other angle.
+    const faults = this.roadFaults();
+    for (const fault of faults) {
+      beams.push({ x: fault.x, y: fault.y, z: fault.z, colour: GUIDE_FAULT, height: 8 });
+    }
+    // Where a road stops being wide enough to pull a cart down.
+    for (const route of this.transport.routes) {
+      if (!route.connected || !route.cartPinch) continue;
+      if (route !== questRoute && !this.nearPlayer(route.cartPinch, FAULT_REACH * 2)) continue;
+      beams.push({ ...route.cartPinch, colour: GUIDE_NARROW, height: 10 });
+    }
     const tiles = this.roads.columnsIn(
       this.player.x - GUIDE_TILE_REACH,
       this.player.z - GUIDE_TILE_REACH,
@@ -1467,6 +1544,23 @@ export class Game {
       tilesKey: `${this.roads.revision}:${Math.round(this.player.x / 8)}:${Math.round(this.player.z / 8)}`,
       beams,
     };
+  }
+
+  /** How far off and which way something is, in the terms the panel speaks. */
+  private bearingTo(point: { x: number; z: number }): { distance: number; bearing: number } {
+    return {
+      distance: Math.hypot(point.x - this.player.x, point.z - this.player.z),
+      bearing: (Math.atan2(point.x - this.player.x, -(point.z - this.player.z)) * 180) / Math.PI,
+    };
+  }
+
+  /** Places near the player where road blocks are laid and the index refuses them. */
+  private roadFaults(radius = FAULT_REACH): RoadFault[] {
+    return this.roads.faults(Math.floor(this.player.x), Math.floor(this.player.z), radius);
+  }
+
+  private nearPlayer(point: { x: number; z: number }, within: number): boolean {
+    return Math.hypot(point.x - this.player.x, point.z - this.player.z) <= within;
   }
 
   /** A line laid over the ground rather than through it, cached until its shape changes.
@@ -1723,6 +1817,29 @@ export class Game {
     return `${made}。求めている物: ${wants}`;
   }
 
+  /** Opens (or closes) the manual. Reachable from the pause menu as well as from `H`,
+   *  because the moment somebody wants to know how any of this works is usually the
+   *  moment they have already stopped playing to look for a menu. */
+  openHelp(): void {
+    if (this.screens.kind === 'help') {
+      this.closeScreen();
+      return;
+    }
+    if (this.paused) this.togglePause();
+    this.openScreen(() => this.screens.openHelp(() => this.helpView()));
+  }
+
+  /** The live half of the manual: where the tutorial has got to, and which goals are in.
+   *  Everything else on that page is read straight out of the systems it describes. */
+  private helpView(): HelpView {
+    const objective = this.questline.objective(this.villages, this.focusRoute(), this.networkState());
+    return helpView({
+      step: this.questline.step,
+      milestone: this.questline.milestone,
+      objective: objective ? { title: objective.title, detail: objective.detail } : null,
+    });
+  }
+
   /** Everything the ledger shows, gathered on demand. */
   private ledgerView(): LedgerView {
     const objective = this.questline.objective(this.villages, this.focusRoute(), this.networkState());
@@ -1761,16 +1878,19 @@ export class Game {
         missing: route.missing,
         gap: gapText(route.missing),
         grade: route.grade,
-        load: loadFor(route.quality),
+        load: this.transport.loadOf(route),
         porters: route.porters.length,
         delivered: route.delivered,
+        vehicle: route.vehicle === 'cart' ? '荷車' : '荷運び',
+        climb: route.climb,
+        detour: route.detour,
       })),
     };
   }
 
-  private spawnPorter(point: RoadPoint): number | null {
+  private spawnPorter(point: RoadPoint, vehicle: Vehicle): number | null {
     if (!this.world.hasChunk(toChunkCoord(point.x), toChunkCoord(point.z))) return null;
-    const mob = new Mob('porter', point.x + 0.5, point.y + 1, point.z + 0.5);
+    const mob = new Mob(vehicle === 'cart' ? 'cart' : 'porter', point.x + 0.5, point.y + 1, point.z + 0.5);
     mob.follow = { x: mob.x, z: mob.z };
     this.mobs.add(mob);
     this.porterMobs.set(mob.id, mob);
@@ -1778,24 +1898,31 @@ export class Game {
   }
 
   /** Walks the porter after its shipment. The shipment is already at `point`; the mob is
-   *  only ever catching up with it, and is carried back onto the road if the ground has
-   *  beaten it. */
+   *  only ever catching up with it.
+   *
+   *  It used to be picked up and put down the moment it fell a leash behind, which is the
+   *  one thing a walking creature must never look like it does — and it happened
+   *  constantly, because the index called a two block riser a road and the porter's jump
+   *  clears 1.11 blocks. The rule is fixed; this is the belt and braces. A porter that
+   *  has fallen behind *runs*, up to `CATCH_UP` times its pace, and only past
+   *  `PORTER_LOST` is it given up on — and then it is dropped rather than moved, so the
+   *  next frame draws a fresh one where the goods are, twenty-four blocks away, where
+   *  nobody was watching. */
   private movePorter(id: number, point: RoadPoint, speed: number): void {
     const mob = this.livePorter(id);
     if (!mob) return;
     const x = point.x + 0.5;
     const z = point.z + 0.5;
     mob.follow = { x, z };
+    const lag = Math.hypot(mob.x - x, mob.z - z);
     // A porter on a paved road has to walk as fast as the goods it is following, or it
-    // would spend the whole route being dragged along by the leash.
-    mob.speedScale = Math.max(1, (speed * 1.5) / mob.def.speed);
-    if (Math.hypot(mob.x - x, mob.z - z) <= PORTER_LEASH) return;
-    mob.x = x;
-    mob.y = point.y + 1;
-    mob.z = z;
-    mob.vx = 0;
-    mob.vy = 0;
-    mob.vz = 0;
+    // would spend the whole route being dragged along; past that it hurries, in
+    // proportion to how far behind it has got.
+    const keepUp = Math.max(1, (speed * 1.5) / mob.def.speed);
+    const hurry = 1 + (CATCH_UP - 1) * Math.min(1, lag / PORTER_LEASH);
+    mob.speedScale = keepUp * hurry;
+    if (lag <= PORTER_LOST) return;
+    this.removePorter(id);
   }
 
   /** The porter mob behind an id, or nothing when the mob manager has taken it away.
@@ -1873,7 +2000,7 @@ export class Game {
   /** Lays a dirt path from one village's street to the other's, following the ground.
    *  Debug only: it writes recorded edits exactly as a player's shovel would, so the road
    *  index picks it up through the ordinary block-change hook. */
-  private debugBuildRoad(fromId?: string, toId?: string, surface?: string): number {
+  private debugBuildRoad(fromId?: string, toId?: string, surface?: string, width = 1): number {
     const from = this.villages.get(fromId ?? this.questline.originId ?? '');
     const to = this.villages.get(toId ?? this.questline.targetId ?? '');
     if (!from || !to) return 0;
@@ -1885,7 +2012,7 @@ export class Game {
     // what a player would build nor pleasant to arrive in.
     const start = this.roads.streetPoint(from, to.x, to.z);
     const end = this.roads.streetPoint(to, from.x, from.z);
-    return this.runRoad(start, end, block, start.y, end.y);
+    return this.runRoad(start, end, block, start.y, end.y, width);
   }
 
   /** Lays an unbroken line of road columns from one point to the other. */
@@ -1895,6 +2022,7 @@ export class Game {
     block: BlockId,
     startY: number,
     endY?: number,
+    width = 1,
   ): number {
     return runRoad(
       {
@@ -1907,6 +2035,7 @@ export class Game {
       ROAD_GRADE,
       SEA_LEVEL + 1,
       endY,
+      width,
     );
   }
 
@@ -1923,14 +2052,15 @@ export class Game {
    *  what the road index reads, so a road can be run through country the player has never
    *  stood in and still be there when they arrive. */
   private layRoadColumn(x: number, y: number, z: number, block: BlockId = Block.DIRT_PATH): void {
+    const surface = this.betterOf(x, y, z, block);
     if (this.world.hasChunk(toChunkCoord(x), toChunkCoord(z))) {
-      this.world.setBlock(x, y, z, block);
+      this.world.setBlock(x, y, z, surface);
       // Headroom, and then whatever falls into it. Cutting under a dune drops the entire
       // sand column onto the fresh road one block at a time, and a road with something
       // sitting on it is not a road — the index drops it and the route reads as broken.
       for (let guard = 0; guard < 40; guard++) {
         let cleared = false;
-        for (let h = 1; h <= 2; h++) {
+        for (let h = 1; h <= HEADROOM; h++) {
           if (this.world.getBlock(x, y + h, z) === Block.AIR) continue;
           this.world.setBlock(x, y + h, z, Block.AIR);
           cleared = true;
@@ -1945,11 +2075,22 @@ export class Game {
       edits = new Map();
       this.world.edits.set(key, edits);
     }
-    edits.set(blockIndex(toLocalCoord(x), y, toLocalCoord(z)), block);
-    for (let h = 1; h <= 2; h++) {
+    edits.set(blockIndex(toLocalCoord(x), y, toLocalCoord(z)), surface);
+    for (let h = 1; h <= HEADROOM; h++) {
       edits.set(blockIndex(toLocalCoord(x), y + h, toLocalCoord(z)), Block.AIR);
     }
-    this.roads.onBlockChanged(x, y, z, Block.GRASS, block);
+    this.roads.onBlockChanged(x, y, z, Block.GRASS, surface);
+  }
+
+  /** What to actually lay at a column: never something worse than what is already there.
+   *  Widening a paved road would otherwise scrape it back to dirt, and the shovel's own
+   *  sweep has always known better than to do that. */
+  private betterOf(x: number, y: number, z: number, block: BlockId): BlockId {
+    const here = `${x},${z}`;
+    if (this.roads.columns.get(here) !== y) return block;
+    const existing = this.roads.surfaces.get(here);
+    if (existing === undefined) return block;
+    return (ROAD_SPEED.get(existing) ?? 0) > (ROAD_SPEED.get(block) ?? 0) ? existing : block;
   }
 
   // --- screens and pausing ---------------------------------------------------
@@ -2119,7 +2260,11 @@ export class Game {
 
     const start = this.roads.streetPoint(from, to.x, to.z);
     const end = this.roads.streetPoint(to, from.x, from.z);
-    const blocks = this.runRoad(start, end, Block.DIRT_PATH, start.y, end.y);
+    // `runRoad` counts columns and the band is three of them per step, so the road's
+    // length is what it laid divided by its width.
+    const blocks = Math.round(
+      this.runRoad(start, end, Block.DIRT_PATH, start.y, end.y, SAMPLE_WIDTH) / SAMPLE_WIDTH,
+    );
     this.villages.discover(from.id);
     this.villages.discover(to.id);
     this.transport.requestRoute(from.id, to.id);
@@ -2131,7 +2276,7 @@ export class Game {
     this.spawnPoint = { x: stand.x, z: stand.z };
     this.player.teleportTo(stand.x + 0.5, stand.y + 1, stand.z + 0.5);
     this.player.yaw = Math.atan2(-(end.x - start.x), -(end.z - start.z));
-    this.sampleToast = `見本: ${from.name}と${to.name}を結ぶ ${blocks} マスの道`;
+    this.sampleToast = `見本: ${from.name}と${to.name}を結ぶ ${blocks} マスの道（幅 ${SAMPLE_WIDTH}・荷車が通れる）`;
     return { from: from.name, to: to.name, blocks };
   }
 
@@ -2376,8 +2521,12 @@ export class Game {
           from: route.from, to: route.to, good: route.good,
           connected: route.connected, length: route.length, missing: route.missing,
           porters: route.porters.length, quality: Math.round(route.quality * 100) / 100,
-          grade: route.grade, load: loadFor(route.quality), delivered: route.delivered,
+          grade: route.grade, load: this.transport.loadOf(route), delivered: route.delivered,
           wanted: this.villages.get(route.to)?.needs.includes(route.good) ?? false,
+          vehicle: route.vehicle, climb: route.climb,
+          detour: Math.round(route.detour * 100) / 100,
+          direct: Math.round(route.direct), doorGap: Math.round(route.doorGap),
+          cartPinch: route.cartPinch, nearMiss: route.nearMiss,
         })),
       /** Everything the L screen shows, without opening it. */
       ledger: (): LedgerView => this.ledgerView(),
@@ -2388,7 +2537,8 @@ export class Game {
         current: this.questline.currentMilestone()?.title ?? null,
         all: MILESTONES.map((m) => m.title),
       }),
-      porters: () => this.mobs.mobs.filter((mob) => mob.kind === 'porter').length,
+      porters: () =>
+        this.mobs.mobs.filter((mob) => mob.kind === 'porter' || mob.kind === 'cart').length,
       /** Where every shipment currently is, whether or not anybody can see it. Standing
        *  at one of these is what makes a porter appear. */
       porterSpots: () =>
@@ -2441,6 +2591,13 @@ export class Game {
       },
       /** State of the road index, for working out why a road is not joining up. */
       roadIndex: () => ({ columns: this.roads.columns.size, revision: this.roads.revision }),
+      /** Road the player laid that the index will not have, and why. */
+      roadFaults: (radius = FAULT_REACH): RoadFault[] => this.roadFaults(radius),
+      /** Widens the quest route's road to what a cart needs, the way walking its length
+       *  again with a shovel would. Three columns for four hundred blocks is the player's
+       *  afternoon, not the browser test's. */
+      widenRoad: (fromId?: string, toId?: string): number =>
+        this.debugBuildRoad(fromId, toId, undefined, 3),
       /** Lays a road between the quest's two villages. Building 300 blocks of it by hand
        *  is the player's job, not the smoke test's. */
       buildRoad: (fromId?: string, toId?: string, surface?: string): number =>
@@ -2465,12 +2622,13 @@ export class Game {
         }
       },
       /** Opens a container screen without having to place and click the block. */
-      openScreen: (kind: 'inventory' | 'crafting' | 'furnace' | 'chest' | 'ledger'): void => {
+      openScreen: (kind: 'inventory' | 'crafting' | 'furnace' | 'chest' | 'ledger' | 'help'): void => {
         this.openScreen(() => {
           if (kind === 'crafting') this.screens.openCraftingTable();
           else if (kind === 'furnace') this.screens.openFurnace(createFurnace());
           else if (kind === 'chest') this.screens.openChest(createChest().slots);
           else if (kind === 'ledger') this.screens.openLedger(() => this.ledgerView());
+          else if (kind === 'help') this.screens.openHelp(() => this.helpView());
           else this.screens.openInventory();
         });
       },

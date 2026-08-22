@@ -56,7 +56,7 @@ const RAW: Record<VillageVariant, readonly GoodId[]> = {
 
 /** One-step conversions. A workshop village sits on one of these and needs its input
  *  hauled in — which is what turns a pair of roads into a supply chain. */
-const CRAFTS: readonly { input: GoodId; output: GoodId }[] = [
+export const CRAFTS: readonly { input: GoodId; output: GoodId }[] = [
   { input: 'wheat', output: 'bread' },
   { input: 'sand', output: 'glass' },
   { input: 'sand', output: 'sandstone' },

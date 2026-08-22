@@ -222,9 +222,14 @@ export class Mob implements Damageable {
     }
   }
 
-  /** Reacts to being hit: passive mobs run away, hostile ones lock on. */
+  /** Reacts to being hit: passive mobs run away, hostile ones lock on.
+   *
+   *  A mob following a route is neither. Fleeing is checked before `follow` is, so one
+   *  punch used to send a porter running for five seconds — long enough to fall off the
+   *  road and be dragged back onto it, which read as the porter teleporting. Somebody
+   *  carrying a crate somewhere keeps walking. */
   onHurt(): void {
-    if (!this.def.hostile) {
+    if (!this.def.hostile && !this.follow) {
       this.state = 'flee';
       this.stateTimer = 5;
     }
@@ -288,9 +293,13 @@ export class Mob implements Damageable {
     if (result.collidedY) this.vy = 0;
 
     const blocked = result.collidedX || result.collidedZ;
-    // Swimming into the bank climbs out of the water. Without this an animal that
-    // wanders into a river bobs against the shore forever.
-    if (blocked && inWater) {
+    let stepped = false;
+    // Swimming into the bank climbs out of the water, and a mob following a route walks
+    // up a kerb the same way. Without the second case the only way over a one block step
+    // was the ballistic hop below, which needs the whole 0.4s cooldown to clear 1.11
+    // blocks and fails outright on a corner — so a porter met the one thing a road is
+    // allowed to have and stopped dead against it.
+    if (blocked && (inWater || this.follow)) {
       const from: EntityBox = {
         x: beforeX,
         y: beforeY,
@@ -306,10 +315,13 @@ export class Mob implements Damageable {
         this.z = from.z;
         this.onGround = true;
         this.vy = Math.max(this.vy, 0);
+        stepped = true;
       }
     }
-    // Hop over single block obstacles instead of getting stuck on them.
-    if (blocked && this.onGround && this.jumpCooldown <= 0) {
+    // Hop over single block obstacles instead of getting stuck on them — but only when
+    // walking up them did not work. Doing both means a porter that has just stepped
+    // neatly onto a kerb launches itself off it as well.
+    if (blocked && !stepped && this.onGround && this.jumpCooldown <= 0) {
       this.vy = JUMP_SPEED;
       this.jumpCooldown = 0.4;
     }

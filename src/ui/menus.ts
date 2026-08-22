@@ -5,6 +5,7 @@ import {
   type Settings,
 } from '../game/settings';
 import { VERIFICATION_SEED_TEXT } from '../game/seeds';
+import { KEYS } from './help';
 import { el, show } from './dom';
 
 type ToggleKey =
@@ -42,6 +43,7 @@ export class Menus {
   private readonly verifyButton = el('button', 'menu-button subtle', '検証用ワールド');
   private newButton!: HTMLButtonElement;
   private resumeButton!: HTMLButtonElement;
+  private helpButton!: HTMLButtonElement;
   private saveButton!: HTMLButtonElement;
   private quitButton!: HTMLButtonElement;
   private respawnButton!: HTMLButtonElement;
@@ -71,14 +73,13 @@ export class Menus {
     this.seedInput.placeholder = 'シード値（空欄でランダム）';
     this.seedInput.type = 'text';
     const newButton = el('button', 'menu-button primary', '新しいワールド');
+    // Built from the same list the 遊びかた screen prints, so a new key is added once.
     const help = el('div', 'controls');
-    help.innerHTML = [
-      '<b>WASD</b> 移動 / <b>Space</b> ジャンプ / <b>Shift</b> 忍び足 / <b>Ctrl</b> ダッシュ',
-      '<b>左クリック</b> 採掘・攻撃 / <b>右クリック</b> 設置・使用・交易',
-      '<b>1-9</b> ホットバー / <b>E</b> 持ち物 / <b>L</b> 交易台帳 / <b>Esc</b> ポーズ',
-      '<b>シャベルを持って右クリック長押し</b> 歩きながら道を敷く / <b>R</b> 見ている所から足もとまで道',
-      '<b>F</b> 見ている建物を集荷所に / <b>F3</b> デバッグ表示 / <b>G</b> 座標へワープ',
-    ].join('<br>');
+    for (const binding of KEYS) {
+      const line = el('div');
+      line.append(el('b', undefined, binding.key), ` ${binding.what}`);
+      help.appendChild(line);
+    }
     this.verifyButton.title = '毎回まったく同じ地形で始まる、確認用の固定シード';
     this.sampleButton.title = '村と村を結ぶ 400 マスほどの道が、はじめから敷いてある世界';
     this.title.append(
@@ -97,6 +98,7 @@ export class Menus {
   private buildPause(): void {
     const heading = el('h1', 'menu-title', 'ポーズ');
     this.resumeButton = el('button', 'menu-button primary', 'ゲームに戻る');
+    this.helpButton = el('button', 'menu-button subtle', '遊びかた（H）');
     this.saveButton = el('button', 'menu-button', 'セーブ');
     this.quitButton = el('button', 'menu-button', 'タイトルへ戻る');
 
@@ -139,7 +141,10 @@ export class Menus {
       this.toggles.set(key, input);
       settings.appendChild(toggleRow(label, input));
     }
-    this.pause.append(heading, this.resumeButton, this.seedLabel, settings, this.saveButton, this.quitButton);
+    this.pause.append(
+      heading, this.resumeButton, this.helpButton, this.seedLabel, settings,
+      this.saveButton, this.quitButton,
+    );
   }
 
   /** Wires the sliders to the live settings object. */
@@ -211,8 +216,14 @@ export class Menus {
     };
   }
 
-  bindPause(actions: { onResume(): void; onSave(): void; onQuit(): void }): void {
+  bindPause(actions: {
+    onResume(): void;
+    onHelp(): void;
+    onSave(): void;
+    onQuit(): void;
+  }): void {
     this.resumeButton.onclick = () => actions.onResume();
+    this.helpButton.onclick = () => actions.onHelp();
     this.saveButton.onclick = () => actions.onSave();
     this.quitButton.onclick = () => actions.onQuit();
   }

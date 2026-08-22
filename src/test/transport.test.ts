@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BASE_LOAD,
+  CART_LOAD,
   PORTER_SPEED,
   TransportNetwork,
   loadFor,
@@ -77,13 +78,20 @@ interface BuildOptions {
   surface?: BlockId | null;
   /** Somewhere to draw porters, when the test cares about the visible ones. */
   host?: PorterHost;
+  /** Columns across. Three is what a cart needs. */
+  width?: number;
 }
 
 /** The villages' streets end at x=30 and x=210, and a road connects by touching one, so
  *  an unbroken run from 31 to 209 is the finished road. */
-function build({ surface = Block.DIRT_PATH, host }: BuildOptions = {}) {
+function build({ surface = Block.DIRT_PATH, host, width = 1 }: BuildOptions = {}) {
   const world = new FakeWorld();
-  if (surface !== null) for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 0, surface);
+  const span = Math.floor((width - 1) / 2);
+  if (surface !== null) {
+    for (let x = 31; x <= 209; x++) {
+      for (let z = -span; z <= span; z++) world.lay(x, GROUND, z, surface);
+    }
+  }
   const roads = new RoadNetwork(world);
   roads.seedFromEdits();
   const registry = new VillageRegistry(SEED, SOURCE);
@@ -407,5 +415,90 @@ describe('transport routes', () => {
     const { transport } = build();
     transport.loadJSON(undefined);
     expect(transport.routes).toHaveLength(0);
+  });
+});
+
+
+describe('a cart on a wide road', () => {
+  it('runs where the road is three columns across', () => {
+    const { transport } = build({ width: 3 });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    expect(transport.routes[0].vehicle).toBe('cart');
+  });
+
+  it('walks where it is not', () => {
+    const { transport } = build({ width: 1 });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    expect(transport.routes[0].vehicle).toBe('porter');
+    expect(transport.routes[0].cartPinch).not.toBeNull();
+  });
+
+  it('carries three times as much', () => {
+    const wide = build({ width: 3 });
+    wide.transport.requestRoute(ID_A, ID_B);
+    run(wide.transport, 3);
+    const narrow = build({ width: 1 });
+    narrow.transport.requestRoute(ID_A, ID_B);
+    run(narrow.transport, 3);
+    expect(wide.transport.loadOf(wide.transport.routes[0])).toBe(
+      narrow.transport.loadOf(narrow.transport.routes[0]) * CART_LOAD,
+    );
+  });
+
+  it('goes back to walking when one block of the width is dug up, without losing cargo', () => {
+    const { world, roads, transport, registry, events } = build({ width: 3 });
+    transport.requestRoute(ID_A, ID_B);
+    registry.produce(600);
+    run(transport, 30);
+    expect(transport.routes[0].vehicle).toBe('cart');
+    expect(transport.routes[0].porters.length).toBeGreaterThan(0);
+    const carrying = transport.routes[0].porters.reduce((sum, p) => sum + p.cargo, 0);
+    expect(carrying).toBeGreaterThan(0);
+
+    // Both sides, so the road really is one column across here rather than merely
+    // dented — a cart squeezes past a single missing block on the diagonal.
+    for (const z of [-1, 1]) {
+      world.lay(120, GROUND, z, Block.AIR);
+      roads.onBlockChanged(120, GROUND, z, Block.DIRT_PATH, Block.AIR);
+    }
+    run(transport, 3);
+    // A narrowed road is still a road: the line demotes rather than breaking, so nothing
+    // that was already on it is thrown away.
+    expect(transport.routes[0].vehicle).toBe('porter');
+    expect(transport.routes[0].connected).toBe(true);
+    expect(events.disconnected).toBe(0);
+    expect(transport.routes[0].porters.reduce((sum, p) => sum + p.cargo, 0)).toBe(carrying);
+    expect(registry.get(ID_A)).toBeDefined();
+  });
+});
+
+describe('what a detour is worth', () => {
+  it('pays for where the goods went, not how far round the road took them', () => {
+    // The fare is the straight line between the depots. It used to be the length of the
+    // road, which paid *more* for a road that wandered.
+    expect(payFor(400, 4, false)).toBe(payFor(400, 4, false));
+    const straight = build();
+    straight.transport.requestRoute(ID_A, ID_B);
+    run(straight.transport, 3);
+    const direct = straight.transport.routes[0].direct;
+
+    const winding = build({ surface: null });
+    // Out to z=60 and back: a road half again as long between the same two villages.
+    for (let z = 0; z <= 60; z++) winding.world.lay(31, GROUND, z, Block.DIRT_PATH);
+    for (let x = 31; x <= 209; x++) winding.world.lay(x, GROUND, 60, Block.DIRT_PATH);
+    for (let z = 0; z <= 60; z++) winding.world.lay(209, GROUND, z, Block.DIRT_PATH);
+    winding.roads.seedFromEdits();
+    winding.transport.requestRoute(ID_A, ID_B);
+    run(winding.transport, 3);
+
+    const route = winding.transport.routes[0];
+    expect(route.connected).toBe(true);
+    expect(route.length).toBeGreaterThan(straight.transport.routes[0].length);
+    expect(route.detour).toBeGreaterThan(1.2);
+    // Same villages, same fare — the extra length is time, and time only.
+    expect(route.direct).toBeCloseTo(direct, 5);
+    expect(payFor(route.direct, 4, true)).toBe(payFor(direct, 4, true));
   });
 });

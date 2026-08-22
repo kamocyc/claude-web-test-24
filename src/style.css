@@ -1032,6 +1032,24 @@ body.screen-open #viewport {
   color: rgba(255, 255, 255, 0.55);
 }
 
+/* Why a road does not join, or does not pay. Matches the beacon colours in the world. */
+.route-note {
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.route-note.fault {
+  color: #ff8f7c;
+}
+
+.route-note.narrow {
+  color: #ffc457;
+}
+
+.route-note.cost {
+  color: rgba(255, 255, 255, 0.6);
+}
+
 /* ---------- the tutorial row above a villager's offers ---------- */
 .trade-row.quest-row {
   border: 1px solid rgba(124, 196, 255, 0.55);
@@ -1247,4 +1265,125 @@ body.screen-open #viewport {
   padding: 6px;
   font-size: 12px;
   color: #9a927c;
+}
+
+/* ---------- 遊びかた（H） ---------- */
+
+.help-host {
+  max-height: 64vh;
+  overflow-y: auto;
+  min-width: 620px;
+  max-width: 720px;
+}
+
+.help-goal {
+  margin-bottom: 12px;
+  padding: 6px 10px;
+  border-left: 3px solid #7fc47f;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.help-goal-title {
+  font-size: 14px;
+  color: #e8e2cf;
+}
+
+.help-goal-detail {
+  font-size: 12px;
+  color: #b9b39f;
+}
+
+.help-heading {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  color: #c8b06a;
+  border-bottom: 1px solid rgba(200, 176, 106, 0.35);
+  padding-bottom: 3px;
+}
+
+.help-note {
+  margin: 3px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #cfc9b6;
+}
+
+.help-steps {
+  margin: 6px 0;
+}
+
+.help-step {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.help-mark {
+  width: 14px;
+  flex: 0 0 14px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.help-step.done .help-mark {
+  color: #8ef0b8;
+}
+
+.help-step.current .help-mark {
+  color: #ffd479;
+}
+
+.help-step.done .help-step-label {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.help-step.current .help-step-label {
+  color: #ffd479;
+}
+
+.help-step-label {
+  color: #e8e2cf;
+}
+
+.help-step-detail {
+  color: #9d977f;
+  font-size: 11px;
+}
+
+.help-table {
+  margin: 6px 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.help-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: #cfc9b6;
+}
+
+.help-row:nth-child(even) {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.help-row.head {
+  color: #c8b06a;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+/* Wider tables lay themselves out from the header's own cell count. */
+.help-row:has(> .help-cell:nth-child(3)) {
+  grid-template-columns: 2fr 1fr 1fr;
+}
+
+.help-row:has(> .help-cell:nth-child(4)) {
+  grid-template-columns: 2fr 1fr 1fr 1.4fr;
+}
+
+.help-cell {
+  font-variant-numeric: tabular-nums;
 }

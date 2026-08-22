@@ -10,7 +10,7 @@
  *  a two-method interface, which is what lets a road be tested without a renderer. */
 
 import { Block, blockDef, type BlockId } from '../world/blocks';
-import { ROAD_BLOCKS } from './roads';
+import { HEADROOM, MAX_STEP, ROAD_BLOCKS } from './roads';
 
 /** Ground a shovel treads into a path. Gravel is in the list because a natural bank of
  *  it is not a road until somebody records it as one; bare stone is not, because a road
@@ -23,10 +23,21 @@ export const PAVABLE: ReadonlySet<BlockId> = new Set<BlockId>([
   Block.GRAVEL,
 ]);
 
+/** Solid blocks a road builder is allowed to clear out of the way overhead. A branch over
+ *  a path is exactly the thing the headroom rule now rejects, and cutting it back is road
+ *  building rather than vandalism — so the sweep does it rather than quietly laying a
+ *  column the index will refuse. Stone, walls and anything somebody built are not here. */
+export const CLEARABLE: ReadonlySet<BlockId> = new Set<BlockId>([
+  Block.OAK_LEAVES,
+  Block.BIRCH_LEAVES,
+  Block.SPRUCE_LEAVES,
+]);
+
 /** How far above and below the last known level a column is looked for. Matches the step
  *  the road index will walk between two columns, so a sweep can only ever lay road the
- *  index will accept as continuous. */
-export const TREAD_REACH = 2;
+ *  index will accept as continuous. Walking off a two block drop lays nothing now, which
+ *  is honest: that is a cutting to dig, and `runRoad` is the tool that digs it. */
+export const TREAD_REACH = MAX_STEP;
 
 export interface PaveTarget {
   getBlock(x: number, y: number, z: number): BlockId;
@@ -35,13 +46,22 @@ export interface PaveTarget {
   roadLevel(x: number, z: number): number | undefined;
 }
 
-/** Makes room over a road column. A tuft of grass is brushed aside; anything solid or wet
- *  means this was not the surface after all. */
+/** Makes `HEADROOM` cells of room over a road column. A tuft of grass is brushed aside and
+ *  an overhanging branch is cut back; water, or anything else solid, means this was not the
+ *  surface after all and the column is left alone.
+ *
+ *  Clearing the whole height matters more than it looks: the index wants two cells clear,
+ *  so a sweep that only tidied the first one would lay a line of blocks under a canopy and
+ *  report nothing, and the player would be left with a road that is visibly there and
+ *  officially absent. */
 function clearAbove(target: PaveTarget, x: number, y: number, z: number): boolean {
-  const above = target.getBlock(x, y + 1, z);
-  if (above === Block.AIR) return true;
-  if (above === Block.WATER || blockDef(above).solid) return false;
-  target.setBlock(x, y + 1, z, Block.AIR);
+  for (let h = 1; h <= HEADROOM; h++) {
+    const above = target.getBlock(x, y + h, z);
+    if (above === Block.AIR) continue;
+    if (above === Block.WATER) return false;
+    if (blockDef(above).solid && !CLEARABLE.has(above)) return false;
+    target.setBlock(x, y + h, z, Block.AIR);
+  }
   return true;
 }
 
@@ -133,7 +153,15 @@ export interface RoadRunner {
  *  the plateau by the time it runs out of road, and three blocks is a road that connects
  *  to nothing. So each end is clamped to whatever still leaves room to get there — the
  *  way a road builder starts the descent early rather than discovering the problem at the
- *  gate. In between, the ground decides. */
+ *  gate. In between, the ground decides.
+ *
+ *  `width` lays the same level either side of the line, across the direction of *this
+ *  step* rather than of the road as a whole. That distinction is the whole of it: a road
+ *  running north-east rounds to a mixture of diagonal and straight steps, and a band laid
+ *  square to the average of those is narrow at every one that differs — which is a road
+ *  that looks three wide, is three wide, and fails the rule that asks whether it is.
+ *  Laying the band flat rather than following the ground under each side is deliberate
+ *  too: a road wide enough to pull a cart down is a road somebody levelled. */
 export function runRoad(
   runner: RoadRunner,
   from: { x: number; z: number },
@@ -142,13 +170,35 @@ export function runRoad(
   grade: number,
   floor: number,
   endY?: number,
+  width = 1,
 ): number {
   const steps = Math.max(Math.abs(to.x - from.x), Math.abs(to.z - from.z));
+  const span = Math.floor((Math.max(1, width) - 1) / 2);
+  const at = (i: number): { x: number; z: number } =>
+    steps === 0
+      ? { x: from.x, z: from.z }
+      : {
+          x: Math.round(from.x + ((to.x - from.x) * i) / steps),
+          z: Math.round(from.z + ((to.z - from.z) * i) / steps),
+        };
   let y = startY;
   let laid = 0;
   for (let i = 0; i <= steps; i++) {
-    const x = steps === 0 ? from.x : Math.round(from.x + ((to.x - from.x) * i) / steps);
-    const z = steps === 0 ? from.z : Math.round(from.z + ((to.z - from.z) * i) / steps);
+    const { x, z } = at(i);
+    // The way this step is going: towards the next column, or away from the last one at
+    // the far end. Rounding can repeat a column, so keep looking until it moves.
+    let heading = { x: 0, z: 0 };
+    for (let j = i + 1; j <= steps && heading.x === 0 && heading.z === 0; j++) {
+      const ahead = at(j);
+      heading = { x: Math.sign(ahead.x - x), z: Math.sign(ahead.z - z) };
+    }
+    for (let j = i - 1; j >= 0 && heading.x === 0 && heading.z === 0; j--) {
+      const behind = at(j);
+      heading = { x: Math.sign(x - behind.x), z: Math.sign(z - behind.z) };
+    }
+    if (heading.x === 0 && heading.z === 0) heading = { x: 1, z: 0 };
+    const acrossX = -heading.z;
+    const acrossZ = heading.x;
     let wanted = Math.max(runner.ground(x, z), floor);
     const rise = grade * i;
     wanted = Math.min(startY + rise, Math.max(startY - rise, wanted));
@@ -157,8 +207,10 @@ export function runRoad(
       wanted = Math.min(endY + reach, Math.max(endY - reach, wanted));
     }
     y = Math.max(y - grade, Math.min(y + grade, wanted));
-    runner.lay(x, y, z);
-    laid++;
+    for (let side = -span; side <= span; side++) {
+      runner.lay(x + acrossX * side, y, z + acrossZ * side);
+      laid++;
+    }
   }
   return laid;
 }
