@@ -490,16 +490,32 @@ describe('a road wide enough for a cart', () => {
     expect(band(1).wideAcross(100, 0, 1, 0)).toBe(false);
   });
 
-  it('lets a cart round a single missing block on the diagonal', () => {
-    // A dent in one side is not a narrow road: the columns across the diagonal are still
-    // there, and a cart that could not get past one chipped block would make widening a
-    // road a job nobody could ever finish.
+  it('stops at a single missing block, rather than squeezing past it on the diagonal', () => {
+    // One column out of one side is a hole in the road, and a hole in the road is where
+    // the cart stops. Testing only the column a step lands on used to let a cart come at
+    // the hole diagonally and find two other columns either side of that heading — so the
+    // road was three wide everywhere except the one place the cart went through.
     const world = new FakeWorld();
     for (let x = 31; x <= 209; x++) {
       for (let z = -1; z <= 1; z++) {
         if (x === 120 && z === 1) continue;
         world.lay(x, GROUND, z, Block.DIRT_PATH);
       }
+    }
+    const roads = new RoadNetwork(world);
+    roads.seedFromEdits();
+    const result = roads.survey(A, B);
+    if (!result.connected) throw new Error('a road with a dent still carries a porter');
+    expect(result.cart.ok).toBe(false);
+    if (result.cart.ok) return;
+    expect(result.cart.pinch?.x).toBeGreaterThan(110);
+    expect(result.cart.pinch?.x).toBeLessThan(121);
+  });
+
+  it('and fills the hole back in', () => {
+    const world = new FakeWorld();
+    for (let x = 31; x <= 209; x++) {
+      for (let z = -1; z <= 1; z++) world.lay(x, GROUND, z, Block.DIRT_PATH);
     }
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();

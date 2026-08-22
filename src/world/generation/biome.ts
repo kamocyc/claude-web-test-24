@@ -72,7 +72,7 @@ def({
   id: Biome.DESERT, name: 'desert', label: '砂漠',
   surface: Block.SAND, filler: Block.SAND, fillerDepth: 5, underFiller: Block.SANDSTONE,
   treeDensity: 0, treeLog: Block.OAK_LOG, treeLeaves: Block.OAK_LEAVES,
-  grassDensity: 0, flowerDensity: 0, cactusDensity: 0.06, sugarCaneDensity: 0, allowsVillage: true,
+  grassDensity: 0, flowerDensity: 0, cactusDensity: 0.02, sugarCaneDensity: 0, allowsVillage: true,
 });
 def({
   id: Biome.MOUNTAINS, name: 'mountains', label: '山岳',

@@ -160,6 +160,12 @@ export interface RoadRunner {
  *  running north-east rounds to a mixture of diagonal and straight steps, and a band laid
  *  square to the average of those is narrow at every one that differs — which is a road
  *  that looks three wide, is three wide, and fails the rule that asks whether it is.
+ *
+ *  Each column gets the band for the way in *and* the way out, which matters wherever the
+ *  two differ — a corner. The rule asks whether a cart has room both as it arrives and as
+ *  it leaves, so a corner given only one of the two is a corner it cannot turn. Widening
+ *  the corner is also what a road builder does.
+ *
  *  Laying the band flat rather than following the ground under each side is deliberate
  *  too: a road wide enough to pull a cart down is a road somebody levelled. */
 export function runRoad(
@@ -183,22 +189,28 @@ export function runRoad(
         };
   let y = startY;
   let laid = 0;
+  /** The way out of column `i`, and the way into it. Rounding can repeat a column, so
+   *  both keep looking until the column actually moves. */
+  const headings = (i: number, x: number, z: number): { x: number; z: number }[] => {
+    const out: { x: number; z: number }[] = [];
+    for (let j = i + 1; j <= steps; j++) {
+      const ahead = at(j);
+      const d = { x: Math.sign(ahead.x - x), z: Math.sign(ahead.z - z) };
+      if (d.x === 0 && d.z === 0) continue;
+      out.push(d);
+      break;
+    }
+    for (let j = i - 1; j >= 0; j--) {
+      const behind = at(j);
+      const d = { x: Math.sign(x - behind.x), z: Math.sign(z - behind.z) };
+      if (d.x === 0 && d.z === 0) continue;
+      if (!out.some((o) => o.x === d.x && o.z === d.z)) out.push(d);
+      break;
+    }
+    return out.length > 0 ? out : [{ x: 1, z: 0 }];
+  };
   for (let i = 0; i <= steps; i++) {
     const { x, z } = at(i);
-    // The way this step is going: towards the next column, or away from the last one at
-    // the far end. Rounding can repeat a column, so keep looking until it moves.
-    let heading = { x: 0, z: 0 };
-    for (let j = i + 1; j <= steps && heading.x === 0 && heading.z === 0; j++) {
-      const ahead = at(j);
-      heading = { x: Math.sign(ahead.x - x), z: Math.sign(ahead.z - z) };
-    }
-    for (let j = i - 1; j >= 0 && heading.x === 0 && heading.z === 0; j--) {
-      const behind = at(j);
-      heading = { x: Math.sign(x - behind.x), z: Math.sign(z - behind.z) };
-    }
-    if (heading.x === 0 && heading.z === 0) heading = { x: 1, z: 0 };
-    const acrossX = -heading.z;
-    const acrossZ = heading.x;
     let wanted = Math.max(runner.ground(x, z), floor);
     const rise = grade * i;
     wanted = Math.min(startY + rise, Math.max(startY - rise, wanted));
@@ -207,9 +219,16 @@ export function runRoad(
       wanted = Math.min(endY + reach, Math.max(endY - reach, wanted));
     }
     y = Math.max(y - grade, Math.min(y + grade, wanted));
-    for (let side = -span; side <= span; side++) {
-      runner.lay(x + acrossX * side, y, z + acrossZ * side);
-      laid++;
+    const done = new Set<string>();
+    for (const heading of headings(i, x, z)) {
+      for (let side = -span; side <= span; side++) {
+        const cx = x - heading.z * side;
+        const cz = z + heading.x * side;
+        if (done.has(`${cx},${cz}`)) continue;
+        done.add(`${cx},${cz}`);
+        runner.lay(cx, y, cz);
+        laid++;
+      }
     }
   }
   return laid;

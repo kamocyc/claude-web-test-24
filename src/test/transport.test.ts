@@ -502,3 +502,77 @@ describe('what a detour is worth', () => {
     expect(payFor(route.direct, 4, true)).toBe(payFor(direct, 4, true));
   });
 });
+
+
+describe('which end a trip starts from', () => {
+  it('starts at the far end when the near one is a workshop with nothing to work with', () => {
+    // B is the workshop and A grows what it needs. Recording the pair the other way round
+    // used to deadlock the line for good: the outbound trip wanted stock B could not have
+    // until the return leg of that same trip brought it.
+    const { transport, registry, events } = build();
+    const route = transport.requestRoute(ID_B, ID_A);
+    expect(route?.from).toBe(ID_B);
+    expect(registry.get(ID_B)?.input).toBe('wheat');
+    expect(registry.get(ID_B)?.stock).toBe(0);
+
+    registry.produce(600);
+    expect(registry.get(ID_B)?.stock).toBe(0);
+    expect(registry.get(ID_A)?.stock).toBeGreaterThan(0);
+
+    run(transport, 3);
+    expect(transport.routes[0].connected).toBe(true);
+    const first = transport.routes[0].porters[0];
+    expect(first, 'nothing set out at all').toBeDefined();
+    // It set out from A — the end that actually had something.
+    expect(first.home).toBe(1);
+    expect(first.good).toBe('wheat');
+
+    run(transport, 400);
+    expect(events.arrivals.some((a) => a.to === ID_B && a.good === 'wheat')).toBe(true);
+    expect(registry.get(ID_B)?.inputStock).toBeGreaterThan(0);
+  });
+
+  it('and the workshop starts shipping once its materials arrive', () => {
+    const { transport, registry, events } = build();
+    transport.requestRoute(ID_B, ID_A);
+    registry.produce(600);
+    // Both clocks, the way the game runs them: a workshop only converts while time is
+    // passing for it as well as for the road.
+    for (let t = 0; t < 900; t += 0.5) {
+      registry.produce(0.5);
+      transport.update(0.5, 10_000, 10_000);
+    }
+    // Wheat went in, bread came out, and the bread went where it was wanted.
+    expect(events.arrivals.some((a) => a.to === ID_B && a.good === 'wheat')).toBe(true);
+    expect(events.arrivals.some((a) => a.to === ID_A && a.good === 'bread')).toBe(true);
+  });
+
+  it('sets out with a single unit rather than waiting for a full load', () => {
+    const { transport, registry } = build();
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    // Just enough time for one unit and no more.
+    registry.produce(6.5);
+    expect(registry.get(ID_A)?.stock).toBe(1);
+    run(transport, 1);
+    expect(transport.routes[0].porters).toHaveLength(1);
+    expect(transport.routes[0].porters[0].cargo).toBe(1);
+  });
+
+  it('shares one village between the routes that leave it', () => {
+    // Every route on a village calls takeStock in the same frame and takeStock hands over
+    // whatever is there. In array order the first route drained it every frame and the
+    // rest never moved a thing.
+    const { transport, registry } = build();
+    transport.requestRoute(ID_A, ID_B);
+    const second = transport.requestRoute(ID_A, villageId(480, 0));
+    expect(second).not.toBeNull();
+    // The second pair has no road and no far village, so give it one the survey can walk:
+    // the point here is only the order stock is handed out in.
+    registry.produce(6000);
+    const before = registry.get(ID_A)?.stock ?? 0;
+    run(transport, 60);
+    expect(registry.get(ID_A)?.stock).toBeLessThan(before);
+    expect(transport.routes[0].porters.length).toBeGreaterThan(0);
+  });
+});

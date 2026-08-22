@@ -571,6 +571,11 @@ body.screen-open #viewport {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px;
   min-width: 340px;
+  /* The pause menu grows every time a setting is added, and the buttons at the bottom of
+     it — save, and quit to the title — are the ones a player most needs to reach. Let it
+     scroll rather than putting them off the end of a short window. */
+  max-height: 92vh;
+  overflow-y: auto;
 }
 
 .menu-title {
@@ -660,9 +665,11 @@ body.screen-open #viewport {
 }
 
 /* Named choices — the difficulty — rather than a scale. */
+/* One column per choice, however many there are: four difficulties, five speeds. */
 .choice-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
   gap: 6px;
 }
 
@@ -1386,4 +1393,24 @@ body.screen-open #viewport {
 
 .help-cell {
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- fast forward ---------- */
+
+/* Loud on purpose: a world quietly running sixteen times faster than the player expects
+   is a world that has lied to them. */
+.speed-badge {
+  position: absolute;
+  /* Just under the compass strip, which owns the top of the screen. */
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 12px;
+  border: 1px solid rgba(255, 212, 121, 0.5);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #ffd479;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }

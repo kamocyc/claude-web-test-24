@@ -20,10 +20,12 @@ export interface RouteView {
   /** Where the nearest shipment on this line is, relative to the player. Null when the
    *  line is running nothing. */
   nearest: { distance: number; bearing: number } | null;
-  /** What the origin has piled up, and what it takes to fill one trip. A connected road
-   *  with nothing on it is nearly always this: the answer to "it is joined up, so why is
-   *  nobody carrying anything?" is usually "there is not a load ready yet". */
+  /** What the two ends have piled up between them, and why there is none when there is
+   *  none. A connected road with nothing on it is nearly always this: the answer to "it
+   *  is joined up, so why is nobody carrying anything?" is about stock, and saying which
+   *  kind of nothing it is turns a mystery into a job. */
   stock: number;
+  idle: RouteIdle | null;
   /** What the pavement is called, and what one trip carries on it. */
   grade: string;
   load: number;
@@ -42,6 +44,14 @@ export interface RouteView {
   /** True when the road ends beside what it should join and only at the wrong height —
    *  the one break "あと 0m" cannot describe. */
   nearMiss: boolean;
+}
+
+/** Why a joined route has nothing on it. */
+export interface RouteIdle {
+  kind: 'stock' | 'starved' | 'undiscovered';
+  /** The village it is about, and — for a starved workshop — what it is waiting for. */
+  village: string;
+  wants: string | null;
 }
 
 export interface RoutePanelView {
@@ -104,6 +114,7 @@ export class RoutePanel {
         r.from, r.to, r.surveyed, r.connected, Math.round(r.length),
         Math.round(r.missing), r.porters, r.grade, r.load, r.wanted, r.stock,
         r.fromDepot, r.toDepot, r.vehicle, r.climb, Math.round(r.detour * 20),
+        r.idle ? `${r.idle.kind}${r.idle.village}${r.idle.wants ?? ''}` : '',
         Math.round(r.doorGap), r.nearMiss, r.faults.length,
         r.cartPinch ? Math.round(r.cartPinch.distance) : '',
         r.nearest ? `${Math.round(r.nearest.distance)},${Math.round(r.nearest.bearing / 45)}` : '',
@@ -135,12 +146,27 @@ export class RoutePanel {
           route.fromDepot && route.toDepot ? `${route.fromDepot} → ${route.toDepot} · ` : '';
         const cargo = route.nearest
           ? `${between}荷運び ${route.porters} · ${heading(route.nearest.bearing)}へ ${Math.round(route.nearest.distance)}m`
-          : `${between}出荷待ち 在庫 ${route.stock}/${route.load}`;
+          : `${between}${idleText(route)}`;
         row.appendChild(el('div', `route-cargo ${route.nearest ? 'moving' : 'waiting'}`, cargo));
       }
       this.list.appendChild(row);
     }
   }
+}
+
+/** Why nothing is on the road, in the terms the player can do something about.
+ *
+ *  This used to read 「出荷待ち 在庫 0/6」, which was a lie twice over: a trip leaves with a
+ *  single unit, so six was never a threshold, and a starved workshop shows the same 0
+ *  forever without ever saying that a delivery is what would start it. */
+function idleText(route: RouteView): string {
+  const idle = route.idle;
+  if (!idle) return `在庫 ${route.stock} · まもなく出発`;
+  if (idle.kind === 'starved') {
+    return `${idle.village}に材料が無い — ${idle.wants ?? '原料'}が届けば動き出す`;
+  }
+  if (idle.kind === 'undiscovered') return `${idle.village}にまだ入っていないので生産していない`;
+  return `出荷待ち — 在庫 0（1 個たまれば出発する）`;
 }
 
 interface Note {

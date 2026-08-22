@@ -17,11 +17,18 @@ import {
   ROAD_SPEED,
   roadGrade,
 } from '../game/roads';
-import { CART_LOAD, loadFor } from '../game/transport';
+import {
+  BLOCKS_PER_PORTER,
+  CART_LOAD,
+  MAX_PORTERS,
+  loadFor,
+} from '../game/transport';
 import {
   CRAFTS,
   MAX_STAGE,
+  MAX_STOCK,
   NEEDED_POINTS,
+  PRODUCE_SECONDS,
   RANKS,
   STAGE_POINTS,
   kindLabel,
@@ -45,6 +52,7 @@ export const KEYS: readonly { key: string; what: string }[] = [
   { key: 'E', what: '持ち物' },
   { key: 'L', what: '交易台帳' },
   { key: 'H', what: 'この画面' },
+  { key: '[ ]', what: 'ゲーム速度を下げる／上げる（世界の時計だけ、×1〜×16）' },
   { key: 'G', what: '座標へワープ' },
   { key: 'F3', what: 'デバッグ表示' },
   { key: 'Esc', what: 'ポーズ' },
@@ -188,6 +196,18 @@ export function helpView(state: HelpState): HelpView {
         `荷車は一度に ${CART_LOAD} 倍運ぶ。速さは変わらない — 速さは舗装、量は幅。`,
         '村の通りは最初から幅 3 なので、広げるのは村と村の間だけ。掃き敷きは 3×3 なので、できた道の上をもう一度歩けば広がる。',
         '1 か所でも狭いと荷車は出ない。その場所には琥珀色の光の柱が立ち、パネルが方角と距離を言う。',
+      ],
+    },
+    {
+      heading: '荷が出る条件（動かないときはここ）',
+      notes: [
+        `生産するのは発見済みの村だけ。1 個あたり ${PRODUCE_SECONDS} 秒 ÷（1 + 0.35 × 発展度）、在庫の上限は ${MAX_STOCK} 個。`,
+        '工房の村は原料が届くまで 1 個も作らない。 何も作れない間は時間も溜め込まないので、原料が着いてから数え始める。',
+        '在庫が 1 個でもあれば荷は出発する。 満載は待たない（満載なら一度に運ぶ量まで積むだけ）。',
+        '荷は在庫のあるほうの村から出る。 工房どうしをつないでも、相手が原料を持っていれば向こうから荷運びが来る。',
+        `1 本の路線に出る荷運びは ${BLOCKS_PER_PORTER} ブロックごとに 1 人、最大 ${MAX_PORTERS} 人。前の 1 人が 15% 進むまで次は出ない。`,
+        '同じ村から出ている路線は在庫を分け合う。 取る順番は毎回ずれるので、片方だけが永久に空になることはない。',
+        'つながっているのに何も動かないときは、左のパネルがどれに当たっているかを言う。',
       ],
     },
     {

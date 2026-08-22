@@ -252,6 +252,19 @@ describe('running a road wide enough for a cart', () => {
     }
   });
 
+  it('widens the corner where the road turns', () => {
+    // A corner has a way in and a way out, and the rule asks for room in both, so both
+    // bands go down. A road that never turns is exactly three columns per step; one that
+    // does is wider than that, and only at the corners.
+    const world = new FakeWorld();
+    const straight = runRoad(runner(world), { x: 0, z: 0 }, { x: 20, z: 0 }, GROUND, 1, 0, undefined, 3);
+    expect(straight).toBe(21 * 3);
+
+    const turning = new FakeWorld();
+    const laid = runRoad(runner(turning), { x: 0, z: 0 }, { x: 20, z: 6 }, GROUND, 1, 0, undefined, 3);
+    expect(laid).toBeGreaterThan(21 * 3);
+  });
+
   it('carries the width round a diagonal', () => {
     const world = new FakeWorld();
     runRoad(runner(world), { x: 0, z: 0 }, { x: 20, z: 20 }, GROUND, 1, 0, undefined, 3);

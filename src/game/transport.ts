@@ -77,6 +77,10 @@ export interface Porter {
   /** 0 at the origin, 1 at the destination. */
   t: number;
   dir: 1 | -1;
+  /** Which end this one set out from, and so which end it walks back to and finishes at.
+   *  A route is a line between two villages rather than a one way pipe: whichever end has
+   *  goods is the end a trip starts from. */
+  home: 0 | 1;
   good: GoodId;
   cargo: number;
   mobId: number | null;
@@ -213,6 +217,8 @@ export class TransportNetwork {
   readonly routes: Route[] = [];
   private surveyTimer = 0;
   private surveyedRevision = -1;
+  /** Where the round robin over routes starts this update. */
+  private dispatchCursor = 0;
 
   constructor(
     private readonly roads: RoadNetwork,
@@ -328,7 +334,15 @@ export class TransportNetwork {
         if (complete) this.surveyedRevision = this.roads.revision;
       }
     }
-    for (const route of this.routes) this.advance(route, dt, playerX, playerZ);
+    // Round robin rather than array order. Every route sharing a village calls
+    // `takeStock` on it in the same frame and `takeStock` hands over whatever is there,
+    // so a fixed order let whichever route happened to be first drain that village every
+    // single frame and starve the rest of them for good.
+    for (let i = 0; i < this.routes.length; i++) {
+      const route = this.routes[(i + this.dispatchCursor) % this.routes.length];
+      this.advance(route, dt, playerX, playerZ);
+    }
+    if (this.routes.length > 0) this.dispatchCursor = (this.dispatchCursor + 1) % this.routes.length;
   }
 
   /** Re-walks a route's road. Returns false when its villages are not known yet. */
@@ -459,29 +473,65 @@ export class TransportNetwork {
       porter.t += step * porter.dir;
       this.syncMob(route, porter, playerX, playerZ);
 
-      if (porter.dir === 1 && porter.t >= 1) {
-        porter.t = 1;
-        this.arrive(route, porter, route.to);
-        this.loadReturn(route, porter);
-        porter.dir = -1;
-      } else if (porter.dir === -1 && porter.t <= 0) {
-        porter.t = 0;
-        this.arrive(route, porter, route.from);
+      const at = porter.t >= 1 ? 1 : porter.t <= 0 ? 0 : null;
+      if (at === null) continue;
+      porter.t = at;
+      this.arrive(route, porter, this.villageAt(route, at));
+      if (at === porter.home) {
+        // Back where it started, with nothing left to carry.
         if (porter.mobId !== null) this.host?.removePorter(porter.mobId);
         route.porters.splice(i, 1);
+        continue;
       }
+      this.loadReturn(route, porter, at);
+      porter.dir = porter.home === 0 ? -1 : 1;
     }
   }
 
-  /** Sends the next porter out, if the line has room for one and there is anything to
-   *  put on it. */
+  private villageAt(route: Route, end: 0 | 1): VillageId {
+    return end === 0 ? route.from : route.to;
+  }
+
+  /** Sends the next trip out, from whichever end actually has something to send.
+   *
+   *  Taking only from `route.from` deadlocked a third of the network. Which village a
+   *  pair records as `from` is decided by the order the seed grid emits them, and about a
+   *  third of villages are workshops that make nothing until their input arrives — so a
+   *  route whose `from` was a workshop and whose `to` made exactly what it needed could
+   *  never start: the outbound trip wanted stock the workshop could not have until the
+   *  return leg of that same trip delivered it. A road is a line between two villages,
+   *  not a pipe with a direction, and now it behaves like one. */
   private dispatch(route: Route): void {
     if (route.porters.length >= portersFor(route.length)) return;
-    // Keep them strung out along the road instead of leaving in a bunch.
-    if (route.porters.some((p) => p.dir === 1 && p.t < PORTER_SPACING)) return;
-    const loaded = this.registry.takeStock(route.from, this.loadOf(route));
-    if (loaded <= 0) return;
-    route.porters.push({ t: 0, dir: 1, good: route.good, cargo: loaded, mobId: null });
+    // Keep them strung out along the road instead of leaving in a bunch, whichever end
+    // they set out from.
+    if (route.porters.some((p) => Math.abs(p.t - p.home) < PORTER_SPACING)) return;
+    for (const end of this.legsOf(route)) {
+      const cargo = this.registry.takeStock(this.villageAt(route, end), this.loadOf(route));
+      if (cargo <= 0) continue;
+      const good = this.registry.get(this.villageAt(route, end))?.produces ?? route.good;
+      route.porters.push({
+        t: end,
+        home: end,
+        dir: end === 0 ? 1 : -1,
+        good,
+        cargo,
+        mobId: null,
+      });
+      return;
+    }
+  }
+
+  /** The two ends, the one worth loading first. A village whose goods the far end is
+   *  actually asking for goes before one whose goods it merely tolerates; `from` breaks
+   *  the tie, so a plain pair behaves exactly as it always did. */
+  private legsOf(route: Route): (0 | 1)[] {
+    const from = this.registry.get(route.from);
+    const to = this.registry.get(route.to);
+    const outWanted = from && to ? to.needs.includes(from.produces) : false;
+    const backWanted = from && to ? from.needs.includes(to.produces) : false;
+    if (backWanted && !outWanted) return [1, 0];
+    return [0, 1];
   }
 
   /** Hands over whatever this porter is carrying. */
@@ -502,15 +552,15 @@ export class TransportNetwork {
     porter.cargo = 0;
   }
 
-  /** Loads the trip home. A porter only carries back what the origin actually wants,
-   *  which is what makes a complementary pair of villages worth joining. */
-  private loadReturn(route: Route, porter: Porter): void {
-    const from = this.registry.get(route.from);
-    const to = this.registry.get(route.to);
-    if (!from || !to || !from.needs.includes(to.produces)) return;
-    const loaded = this.registry.takeStock(route.to, this.loadOf(route));
+  /** Loads the trip home from the far end `at`. A porter only carries back what its own
+   *  village actually wants, which is what makes a complementary pair worth joining. */
+  private loadReturn(route: Route, porter: Porter, at: 0 | 1): void {
+    const here = this.registry.get(this.villageAt(route, at));
+    const home = this.registry.get(this.villageAt(route, porter.home));
+    if (!here || !home || !home.needs.includes(here.produces)) return;
+    const loaded = this.registry.takeStock(here.id, this.loadOf(route));
     if (loaded <= 0) return;
-    porter.good = to.produces;
+    porter.good = here.produces;
     porter.cargo = loaded;
   }
 

@@ -158,6 +158,19 @@ await until(() => {
 await page.keyboard.press('F3');
 await until(() => (document.querySelector('.debug')?.textContent ?? '').length > 0);
 await shot('02-spawn');
+// A new world hands the player the two blocks everything else is built out of.
+console.log('starting kit:', JSON.stringify(await evaluate(() => ({
+  planks: window.voxelcraft.player.inventory.count('oak_planks'),
+  dirt: window.voxelcraft.player.inventory.count('dirt'),
+}))));
+const kit = await evaluate(() => ({
+  planks: window.voxelcraft.player.inventory.count('oak_planks'),
+  dirt: window.voxelcraft.player.inventory.count('dirt'),
+}));
+if (kit.planks !== 32 || kit.dirt !== 32) {
+  throw new Error(`a new world should start with 32 of each: ${JSON.stringify(kit)}`);
+}
+
 console.log('spawn:', JSON.stringify(await debugText()));
 console.log('verification seed:', await evaluate(() => window.voxelcraft.game.world.seed));
 
@@ -829,10 +842,11 @@ const pinched = await evaluate(() => {
       if (!look(c.x + dx, c.z + dz) || !look(c.x - dx, c.z - dz)) continue;
       const sides = [look(c.x - dz, c.z + dx), look(c.x + dz, c.z - dx)];
       if (!sides[0] || !sides[1]) continue;
-      const taken = sides.map((s) => ({
-        x: s.x, y: s.y, z: s.z, was: g.world.getBlock(s.x, s.y, s.z),
-      }));
-      for (const t of taken) g.world.setBlock(t.x, t.y, t.z, 0);
+      // One column, off one side. A cart used to come at a hole diagonally and squeeze
+      // past two other columns; a hole in the road is where the cart stops.
+      const hole = sides[0];
+      const taken = [{ x: hole.x, y: hole.y, z: hole.z, was: g.world.getBlock(hole.x, hole.y, hole.z) }];
+      g.world.setBlock(hole.x, hole.y, hole.z, 0);
       return { middle: { x: c.x, z: c.z }, taken };
     }
   }
@@ -842,7 +856,7 @@ if (!pinched) console.log('one waist in the road: NO THREE WIDE SPOT FOUND');
 if (pinched) {
   await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'porter'`, null, { timeout: 60000 });
   const narrowed = await evaluate(QUEST_ROUTE);
-  console.log('one waist in the road:', JSON.stringify({
+  console.log('one block out of one side:', JSON.stringify({
     took: pinched.taken.length,
     vehicle: narrowed.vehicle,
     connected: narrowed.connected,
@@ -1050,6 +1064,42 @@ console.log('porters walking:', await evaluate(() => window.voxelcraft.porters()
 console.log('quest at the end:', JSON.stringify(await evaluate(() => window.voxelcraft.quest())));
 console.log('routes at the end:', JSON.stringify(await evaluate(() => window.voxelcraft.routes())));
 await closeScreen();
+
+// --- fast forward ------------------------------------------------------------
+// The world's clock, not the player's. Sixteen ordinary steps a frame rather than one
+// enormous one, so nothing that assumes a fixed step is handed a number it has never
+// seen. What it buys is the thing the logistics layer is actually made of: time.
+const clockAt = () => evaluate(() => ({
+  minutes: window.voxelcraft.game.weatherSeconds,
+  delivered: window.voxelcraft.routes().reduce((sum, r) => sum + r.delivered, 0),
+}));
+await evaluate(() => window.voxelcraft.setSpeed(1));
+const slowStart = await clockAt();
+await page.waitForTimeout(3000);
+const slowEnd = await clockAt();
+console.log('game speed x16:', JSON.stringify(await evaluate(() => window.voxelcraft.setSpeed(16))));
+const fastStart = await clockAt();
+await page.waitForTimeout(3000);
+const fastEnd = await clockAt();
+const badge = await page.locator('.speed-badge').innerText().catch(() => null);
+const rate = {
+  slow: +(slowEnd.minutes - slowStart.minutes).toFixed(1),
+  fast: +(fastEnd.minutes - fastStart.minutes).toFixed(1),
+  badge,
+  reported: await evaluate(() => window.voxelcraft.speed()),
+};
+console.log('world clock over three seconds:', JSON.stringify(rate));
+if (rate.fast <= rate.slow * 2) {
+  throw new Error(`fast forward did not move the world clock: ${JSON.stringify(rate)}`);
+}
+if (!badge || !badge.includes('×16')) throw new Error(`no fast forward badge: ${badge}`);
+await shot('07x6-fast-forward');
+// The keys step through the offered speeds, and the badge goes away at real time.
+await page.keyboard.press('BracketLeft');
+console.log('after [:', JSON.stringify(await evaluate(() => window.voxelcraft.speed())));
+await evaluate(() => window.voxelcraft.setSpeed(1));
+await frame();
+if (await page.locator('.speed-badge').isVisible()) throw new Error('the badge outstayed x1');
 
 // --- the sample road ---------------------------------------------------------
 // What the title screen's 見本ワールド hands a new player: two villages a few hundred
@@ -1554,8 +1604,13 @@ const difficultyToast = await page.locator('.toast').count()
   : null;
 console.log('difficulty picked:', JSON.stringify({
   toast: difficultyToast,
-  note: await page.locator('.setting-note').innerText(),
+  note: await page.locator('.setting-note.difficulty-note').innerText(),
   rules: await evaluate(() => window.voxelcraft.difficulty()),
+}));
+console.log('game speed row:', JSON.stringify({
+  choices: await page.locator('.choice-row').last().locator('.choice').allInnerTexts(),
+  selected: await page.locator('.choice-row').last().locator('.choice.selected').innerText(),
+  note: await page.locator('.setting-note.speed-note').innerText(),
 }));
 await shot('13b-difficulty');
 await page.click('.menu-button:has-text("ゲームに戻る")');

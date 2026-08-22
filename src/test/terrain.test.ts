@@ -258,3 +258,39 @@ describe('TerrainGenerator', () => {
     }
   });
 });
+
+
+describe('desert decoration', () => {
+  /** Cactus columns per thousand sand surface cells, over a stretch of real desert. */
+  function cactiPerThousandSand(): number {
+    const gen = new TerrainGenerator(4242);
+    let sand = 0;
+    let cacti = 0;
+    // Sweep a wide band and take whatever desert it finds. The seed is not pinned to a
+    // desert, so the ratio rather than the count is what can be asserted.
+    for (let cz = -7; cz <= 7; cz++) {
+      for (let cx = -7; cx <= 7; cx++) {
+        const chunk = gen.generateChunk(cx, cz);
+        for (let z = 0; z < CHUNK_SIZE; z++) {
+          for (let x = 0; x < CHUNK_SIZE; x++) {
+            const h = gen.height(cx * CHUNK_SIZE + x, cz * CHUNK_SIZE + z);
+            if (chunk.blocks[blockIndex(x, h, z)] !== Block.SAND) continue;
+            sand++;
+            if (chunk.blocks[blockIndex(x, h + 1, z)] === Block.CACTUS) cacti++;
+          }
+        }
+      }
+    }
+    return sand === 0 ? 0 : (cacti * 1000) / sand;
+  }
+
+  it('scatters cacti thinly rather than filling the desert with them', () => {
+    // A desert used to run about 26 cacti per thousand sand cells, which read as a
+    // forest of them. The rate is per sand cell rather than a raw count so the test says
+    // what was actually tuned, and both directions are guarded: too many is the bug that
+    // was fixed, none at all is a desert with nothing in it.
+    const rate = cactiPerThousandSand();
+    expect(rate).toBeGreaterThan(1);
+    expect(rate).toBeLessThan(15);
+  });
+});

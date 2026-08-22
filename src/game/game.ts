@@ -61,7 +61,7 @@ import {
   writeSave,
 } from './save';
 import { findSpawn } from './seeds';
-import type { Settings } from './settings';
+import { SPEEDS, nearestSpeed, type Settings } from './settings';
 import { tickFurnace } from './smelting';
 import { generateTrades, restockTrades, tradesFromJSON, tradesToJSON } from './trading';
 import { VILLAGE_RADIUS, type HouseRecord } from '../world/generation/village';
@@ -96,6 +96,7 @@ import {
   type VillageRecord,
 } from './villages';
 import type { LedgerView } from '../ui/ledger';
+import type { RouteIdle } from '../ui/routePanel';
 import { helpView, type HelpView } from '../ui/help';
 import { applyGrowth, growthChunks, growthFor, growthVillagers, outpostBuildings } from './villageGrowth';
 import {
@@ -174,6 +175,12 @@ const SAMPLE_WIDTH = 3;
 const FAULT_TOAST_INTERVAL = 4;
 /** How far around the player the world looks for faults to draw. */
 const FAULT_REACH = 40;
+/** Milliseconds a frame will spend running the world forward before it gives up on the
+ *  rest of the requested speed. Roughly half a 30fps frame. */
+const WORLD_BUDGET_MS = 12;
+/** What a brand new world hands the player, and how much of each. */
+const STARTING_KIT: readonly string[] = ['oak_planks', 'dirt'];
+const STARTING_COUNT = 32;
 
 /** Chunk meshes rebuilt per frame; higher values load faster but stutter more. */
 const MESH_BUDGET = 3;
@@ -254,6 +261,8 @@ export class Game {
   /** Held until the world is ready, because a toast raised during construction would be
    *  shown to a screen that is still saying "generating terrain". */
   private sampleToast: string | null = null;
+  /** World steps the last frame actually managed, which is what the HUD reports. */
+  private effectiveSpeed = 1;
   private openContainerPos: { x: number; y: number; z: number } | null = null;
   private renderDistance: number;
   private keyHandler: ((event: KeyboardEvent) => void) | null = null;
@@ -347,9 +356,13 @@ export class Game {
     this.pool = new ChunkWorkerPool(options.seed);
     this.pool.setHandler((message) => this.onChunkReady(message));
 
-    if (options.save) this.applySave(options.save);
-    else if (options.sample) this.buildSampleRoad();
-    else this.placeAtSpawn();
+    if (options.save) {
+      this.applySave(options.save);
+    } else {
+      if (options.sample) this.buildSampleRoad();
+      else this.placeAtSpawn();
+      this.stockStartingKit();
+    }
 
     this.bindInput();
     window.addEventListener('resize', this.onResize);
@@ -441,11 +454,8 @@ export class Game {
     this.player.autoStep = this.options.settings.autoStep;
     this.applyDifficulty();
     if (this.settlePending && this.settlePlayerOnGround()) this.settlePending = false;
-    this.advanceWeather(this.weatherSeconds + dt);
     this.water.setCenter(this.player.x, this.player.z);
-    this.water.update(dt);
-    this.riverFlow.update(dt);
-    this.day.update(dt);
+    this.runWorld(dt);
     this.materials.setSun(Math.max(0.06, this.day.sunLight));
 
     // Only mouse look needs pointer lock; keyboard and clicks keep working without it
@@ -466,11 +476,6 @@ export class Game {
     if (!screenOpen) this.updateInteraction(dt);
     else this.resetMining();
 
-    this.updateMobs(dt);
-    this.updateDrops(dt);
-    this.updateTicks(dt);
-    this.updateFurnaces(dt);
-    this.updateVillages(dt);
     this.checkOpenContainer();
 
     this.hud.setUnderwater(
@@ -498,6 +503,59 @@ export class Game {
       this.autosaveTimer = 0;
       this.save(false);
     }
+  }
+
+  /** Runs the world's own clock, as many times as the game speed asks for.
+   *
+   *  Fast forward multiplies *steps*, never `dt`. A frame of `dt * 16` would hand the
+   *  collision sweep, the water simulation and every other fixed-step assumption a number
+   *  they were never written for; sixteen ordinary steps hand them exactly what they
+   *  already handle. And only the world is stepped — the player's own update, their
+   *  input, their mining and their hunger stay outside, so the clock racing does not take
+   *  the controls with it. Their damage cooldown is out here too, which is why sixteen
+   *  times the world is not sixteen times the danger.
+   *
+   *  The budget is the honest part. A slow machine cannot do sixteen steps in a frame, so
+   *  it does what it can and the HUD says how many that was rather than pretending. */
+  private runWorld(dt: number): void {
+    const wanted = Math.max(1, Math.round(this.options.settings.speed));
+    const deadline = performance.now() + WORLD_BUDGET_MS;
+    let steps = 0;
+    while (steps < wanted) {
+      this.stepWorld(dt);
+      steps++;
+      // The first step always runs; after that, stop rather than drop the frame rate.
+      if (steps < wanted && performance.now() > deadline) break;
+    }
+    this.effectiveSpeed = steps;
+  }
+
+  /** One step of everything that is not the player. */
+  private stepWorld(dt: number): void {
+    this.advanceWeather(this.weatherSeconds + dt);
+    this.water.update(dt);
+    this.riverFlow.update(dt);
+    this.day.update(dt);
+    this.updateMobs(dt);
+    this.updateDrops(dt);
+    this.updateTicks(dt);
+    this.updateFurnaces(dt);
+    this.updateVillages(dt);
+  }
+
+  /** Sets the world's clock speed, and says so. */
+  setSpeed(speed: number): number {
+    const next = nearestSpeed(speed);
+    this.options.settings.speed = next;
+    this.hud.toast(next === 1 ? 'ゲーム速度 ×1（等速）' : `ゲーム速度 ×${next}`);
+    return next;
+  }
+
+  /** Steps up or down the offered speeds. */
+  private nudgeSpeed(by: 1 | -1): void {
+    const at = SPEEDS.indexOf(nearestSpeed(this.options.settings.speed));
+    const next = SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, at + by))];
+    if (next !== this.options.settings.speed) this.setSpeed(next);
   }
 
   /** Moves the world clock the weather runs on. Everything that reads it is updated
@@ -621,7 +679,8 @@ export class Game {
             fromDepot: this.depotLabel(route.from),
             toDepot: this.depotLabel(route.to),
             nearest: this.nearestPorter(shipments, route),
-            stock: this.villages.get(route.from)?.stock ?? 0,
+            stock: this.stockOn(route),
+            idle: this.idleReason(route),
             grade: route.grade,
             load: this.transport.loadOf(route),
             wanted: this.villages.get(route.to)?.needs.includes(route.good) ?? false,
@@ -655,6 +714,8 @@ export class Game {
       biome: biomeDef(this.generator.biomeAt(Math.floor(this.player.x), Math.floor(this.player.z))).label,
       clock: this.day.clock,
       mobs: this.mobs.mobs.length,
+      speed: this.options.settings.speed,
+      effectiveSpeed: this.effectiveSpeed,
       waterDepth: this.water.depthAt(
         Math.floor(this.player.x),
         Math.floor(this.player.y + 0.4),
@@ -743,6 +804,14 @@ export class Game {
           if (this.warpDialog.isOpen) this.closeWarpDialog();
           else if (this.screens.isOpen) this.closeScreen();
           else this.openScreen(() => this.screens.openInventory());
+          break;
+        case 'BracketLeft':
+          if (this.paused || this.player.isDead || this.uiOpen) break;
+          this.nudgeSpeed(-1);
+          break;
+        case 'BracketRight':
+          if (this.paused || this.player.isDead || this.uiOpen) break;
+          this.nudgeSpeed(1);
           break;
         case 'KeyH':
           if (this.player.isDead) break;
@@ -1546,6 +1615,32 @@ export class Game {
     };
   }
 
+  /** What the two ends of a route have between them. A trip can start from either, so
+   *  the origin's pile alone was never the number that mattered. */
+  private stockOn(route: Route): number {
+    return (this.villages.get(route.from)?.stock ?? 0) + (this.villages.get(route.to)?.stock ?? 0);
+  }
+
+  /** Why a joined route has nothing moving on it, when it has nothing moving on it.
+   *
+   *  A road that is finished and idle is the most confusing state in the game, and the
+   *  panel used to answer it with a number that could not explain itself. Every case here
+   *  is something the player can act on: wait, haul the workshop its materials, or go and
+   *  walk into the village. */
+  private idleReason(route: Route): RouteIdle | null {
+    if (!route.connected || route.porters.length > 0 || this.stockOn(route) > 0) return null;
+    for (const id of [route.from, route.to]) {
+      const village = this.villages.get(id);
+      if (!village || !village.discovered) {
+        return { kind: 'undiscovered', village: village ? displayName(village) : '村', wants: null };
+      }
+      if (village.input !== null && village.inputStock <= 0) {
+        return { kind: 'starved', village: displayName(village), wants: itemLabel(village.input) };
+      }
+    }
+    return { kind: 'stock', village: '', wants: null };
+  }
+
   /** How far off and which way something is, in the terms the panel speaks. */
   private bearingTo(point: { x: number; z: number }): { distance: number; bearing: number } {
     return {
@@ -2314,6 +2409,15 @@ export class Game {
 
   // --- spawn placement -------------------------------------------------------
 
+  /** What a new world starts with. Deliberately the two blocks everything else is built
+   *  out of rather than tools: a bridge over the first stream, a floor, a way to fill in
+   *  the dip a road has to cross. Handed out here rather than in `placeAtSpawn`, which
+   *  also runs on respawn — a kit that arrives again every time the player dies is not a
+   *  starting kit. */
+  private stockStartingKit(): void {
+    for (const id of STARTING_KIT) this.player.inventory.add({ id, count: STARTING_COUNT });
+  }
+
   private placeAtSpawn(): void {
     const spawn = findSpawn(this.generator);
     this.spawnPoint = { x: spawn.x, z: spawn.z };
@@ -2591,6 +2695,9 @@ export class Game {
       },
       /** State of the road index, for working out why a road is not joining up. */
       roadIndex: () => ({ columns: this.roads.columns.size, revision: this.roads.revision }),
+      /** The world's clock speed, and how much of it the machine is keeping up with. */
+      speed: () => ({ set: this.options.settings.speed, effective: this.effectiveSpeed }),
+      setSpeed: (speed: number): number => this.setSpeed(speed),
       /** Road the player laid that the index will not have, and why. */
       roadFaults: (radius = FAULT_REACH): RoadFault[] => this.roadFaults(radius),
       /** Widens the quest route's road to what a cart needs, the way walking its length

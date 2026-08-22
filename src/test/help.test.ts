@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { KEYS, helpView } from '../ui/help';
 import { MILESTONES, QUEST_STEPS } from '../game/questline';
-import { CART_LOAD } from '../game/transport';
-import { RANKS, STAGE_POINTS } from '../game/villages';
+import { BLOCKS_PER_PORTER, CART_LOAD, MAX_PORTERS } from '../game/transport';
+import { MAX_STOCK, PRODUCE_SECONDS, RANKS, STAGE_POINTS } from '../game/villages';
 import { HEADROOM, MAX_STEP, ROAD_SPEED } from '../game/roads';
 
 function view(step: Parameters<typeof helpView>[0]['step'], milestone = 0) {
@@ -57,6 +57,17 @@ describe('the 遊びかた screen', () => {
     for (const rank of RANKS) expect(body).toContain(rank);
     for (const points of STAGE_POINTS) expect(body).toContain(`発展度 ${points}`);
     for (const speed of new Set(ROAD_SPEED.values())) expect(body).toContain(`${speed.toFixed(2)} 倍`);
+  });
+
+  it('says what makes goods actually move', () => {
+    const body = text(view('done', 0));
+    expect(body).toContain('荷が出る条件');
+    expect(body).toContain('工房の村は原料が届くまで 1 個も作らない');
+    expect(body).toContain('在庫が 1 個でもあれば荷は出発する');
+    expect(body).toContain('荷は在庫のあるほうの村から出る');
+    expect(body).toContain(`${PRODUCE_SECONDS} 秒`);
+    expect(body).toContain(`${MAX_STOCK} 個`);
+    expect(body).toContain(`${BLOCKS_PER_PORTER} ブロックごとに 1 人、最大 ${MAX_PORTERS} 人`);
   });
 
   it('documents every key the game binds, including its own', () => {

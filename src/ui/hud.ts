@@ -20,6 +20,9 @@ export interface DebugInfo {
   mobs: number;
   waterDepth: number;
   seed: number;
+  /** The world's clock speed, and how much of it the frame actually managed. */
+  speed: number;
+  effectiveSpeed: number;
 }
 
 /** Everything the navigation aids need, gathered once per frame by the game. */
@@ -57,6 +60,9 @@ export class Hud {
   private readonly buildingTitle = el('div', 'building-title');
   private readonly buildingHint = el('div', 'building-hint');
   private readonly underwater = el('div', 'underwater');
+  /** Shown only while the world is running fast, because a game that is quietly sixteen
+   *  times faster than the player expects is a game that has lied to them. */
+  private readonly speedBadge = el('div', 'speed-badge');
   readonly compass = new Compass();
   readonly minimap: Minimap;
   readonly forecast = new ForecastPanel();
@@ -93,12 +99,14 @@ export class Hud {
       left,
       this.coords.root,
       this.building,
+      this.speedBadge,
       bottom,
       this.toasts,
       this.clickPrompt,
     );
     this.building.append(this.buildingTitle, this.buildingHint);
     this.building.style.display = 'none';
+    this.speedBadge.style.display = 'none';
     this.underwater.style.display = 'none';
     this.clickPrompt.style.display = 'none';
     this.debug.style.display = 'none';
@@ -167,6 +175,16 @@ export class Hud {
       }
     }
 
+    // Fast forward is loud on purpose. It also says what the machine actually managed,
+    // so a speed the frame rate could not hold is visible rather than merely felt.
+    const fast = info.speed > 1;
+    this.speedBadge.style.display = fast ? '' : 'none';
+    if (fast) {
+      const behind = info.effectiveSpeed < info.speed ? `（実効 ×${info.effectiveSpeed}）` : '';
+      const text = `早送り ×${info.speed}${behind}`;
+      if (this.speedBadge.textContent !== text) this.speedBadge.textContent = text;
+    }
+
     this.renderBar(this.hearts, player.health, player.maxHealth, 'heart');
     this.renderBar(this.food, player.hunger.food, 20, 'drumstick');
     // The breath meter only appears once the player is actually holding their breath.
@@ -194,6 +212,7 @@ export class Hud {
         `時刻 ${info.clock}`,
         `チャンク ${info.chunks} (生成待ち ${info.pending})`,
         `モブ ${info.mobs}`,
+        `速度 ×${info.speed}（実効 ×${info.effectiveSpeed}）`,
         `水深 ${info.waterDepth.toFixed(2)}`,
         `シード ${info.seed}`,
         `手持ち ${held ? `${itemDef(held.id)?.label ?? held.id} x${held.count}` : 'なし'}`,

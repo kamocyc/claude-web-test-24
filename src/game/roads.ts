@@ -530,8 +530,14 @@ export class RoadNetwork {
     return reached;
   }
 
-  /** Dijkstra over the road columns. `wideEnough`, when given, restricts the walk to
-   *  columns a cart fits down, plus the named ends. */
+  /** Dijkstra over the road columns. `cartEnds`, when given, restricts the walk to what a
+   *  cart fits down — both ends of every step, plus the named village ends.
+   *
+   *  Testing only where the step *lands* was not enough. A cart met a three wide band with
+   *  one column missing, came at that column diagonally, found two other columns either
+   *  side of that heading, and squeezed past. Requiring the column it is *leaving* to be
+   *  wide the same way closes it: the diagonal that dodges the hole is not wide where it
+   *  starts either. */
   private walk(seeds: readonly string[], cartEnds: ReadonlySet<string> | null): Map<string, Reached> {
     const seen = new Map<string, Reached>();
     const settled = new Set<string>();
@@ -550,8 +556,11 @@ export class RoadNetwork {
         const nk = key(here.x + dx, here.z + dz);
         const y = this.columns.get(nk);
         if (y === undefined || Math.abs(y - here.y) > MAX_STEP) continue;
-        if (cartEnds && !cartEnds.has(nk) && !this.wideAcross(here.x + dx, here.z + dz, dx, dz)) {
-          continue;
+        if (cartEnds) {
+          const room = (at: string, ax: number, az: number): boolean =>
+            cartEnds.has(at) || this.wideAcross(ax, az, dx, dz);
+          if (!room(k, here.x, here.z)) continue;
+          if (!room(nk, here.x + dx, here.z + dz)) continue;
         }
         const next = cost + this.stepCost(here, { x: here.x + dx, z: here.z + dz, y });
         const known = seen.get(nk);

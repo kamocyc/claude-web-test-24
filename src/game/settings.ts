@@ -25,6 +25,23 @@ export interface Settings {
   autoTool: boolean;
   /** Walk up single block steps without jumping. */
   autoStep: boolean;
+  /** How many times faster the world runs than real time. The player is never sped up —
+   *  only the clock everything else lives on. */
+  speed: number;
+}
+
+/** The speeds the pause menu offers. Powers of two so the jumps read as jumps, and
+ *  sixteen at the top because that is where an afternoon of hauling becomes a minute. */
+export const SPEEDS: readonly number[] = [1, 2, 4, 8, 16];
+
+/** Snaps whatever came out of storage onto the nearest offered speed. */
+export function nearestSpeed(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  let best = SPEEDS[0];
+  for (const speed of SPEEDS) {
+    if (Math.abs(speed - value) < Math.abs(best - value)) best = speed;
+  }
+  return best;
 }
 
 export const SETTINGS_KEY = 'voxelcraft.settings.v1';
@@ -41,6 +58,7 @@ export const DEFAULT_SETTINGS: Settings = {
   coords: true,
   autoTool: true,
   autoStep: true,
+  speed: 1,
 };
 
 export const RENDER_DISTANCE_RANGE = { min: 4, max: 12 };
@@ -75,6 +93,7 @@ export function loadSettings(): Settings {
       coords: parsed.coords ?? DEFAULT_SETTINGS.coords,
       autoTool: parsed.autoTool ?? DEFAULT_SETTINGS.autoTool,
       autoStep: parsed.autoStep ?? DEFAULT_SETTINGS.autoStep,
+      speed: nearestSpeed(parsed.speed ?? DEFAULT_SETTINGS.speed),
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

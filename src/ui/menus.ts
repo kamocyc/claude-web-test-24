@@ -2,6 +2,7 @@ import { DIFFICULTIES, type Difficulty, difficultyRules } from '../game/difficul
 import {
   RENDER_DISTANCE_RANGE,
   SENSITIVITY_RANGE,
+  SPEEDS,
   type Settings,
 } from '../game/settings';
 import { VERIFICATION_SEED_TEXT } from '../game/seeds';
@@ -52,6 +53,7 @@ export class Menus {
   private distanceLabel!: HTMLElement;
   private sensitivityLabel!: HTMLElement;
   private difficultyButtons!: { id: Difficulty; node: HTMLButtonElement }[];
+  private speedButtons!: { speed: number; node: HTMLButtonElement }[];
   private difficultyNote!: HTMLElement;
   private readonly toggles = new Map<ToggleKey, HTMLInputElement>();
   private readonly seedLabel = el('div', 'menu-note seed-label');
@@ -126,12 +128,25 @@ export class Menus {
       choices.appendChild(node);
       return { id: rules.id, node };
     });
-    this.difficultyNote = el('div', 'setting-note');
+    this.difficultyNote = el('div', 'setting-note difficulty-note');
+
+    // Same shape as the difficulty row, because it is the same kind of thing: a handful
+    // of named choices rather than a scale.
+    const speeds = el('div', 'choice-row');
+    this.speedButtons = SPEEDS.map((speed) => {
+      const node = el('button', 'choice', `×${speed}`) as HTMLButtonElement;
+      node.type = 'button';
+      speeds.appendChild(node);
+      return { speed, node };
+    });
 
     settings.append(
       el('div', 'setting-label', '難易度'),
       choices,
       this.difficultyNote,
+      el('div', 'setting-label', 'ゲーム速度'),
+      speeds,
+      el('div', 'setting-note speed-note', '世界の時計だけが速くなる。移動も採掘も、受けるダメージもいつも通り。[ ] でも変えられる'),
       settingRow('描画距離', this.distanceInput, this.distanceLabel),
       settingRow('マウス感度', this.sensitivityInput, this.sensitivityLabel),
     );
@@ -163,6 +178,9 @@ export class Menus {
         choice.node.classList.toggle('selected', choice.id === settings.difficulty);
       }
       this.difficultyNote.textContent = difficultyRules(settings.difficulty).note;
+      for (const choice of this.speedButtons) {
+        choice.node.classList.toggle('selected', choice.speed === settings.speed);
+      }
     };
     this.distanceInput.value = String(settings.renderDistance);
     this.sensitivityInput.value = String(sensitivityToSlider(settings.sensitivity));
@@ -179,6 +197,14 @@ export class Menus {
     for (const choice of this.difficultyButtons) {
       choice.node.onclick = () => {
         settings.difficulty = choice.id;
+        render();
+        onChange(settings);
+      };
+    }
+
+    for (const choice of this.speedButtons) {
+      choice.node.onclick = () => {
+        settings.speed = choice.speed;
         render();
         onChange(settings);
       };
