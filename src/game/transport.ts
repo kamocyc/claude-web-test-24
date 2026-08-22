@@ -76,8 +76,13 @@ export interface Route {
   /** True once this pair has ever been joined, so a road dug up stays on the panel
    *  instead of quietly vanishing. */
   everConnected: boolean;
-  /** Trimmed to the corners, so a porter is not handed a point per block. */
+  /** Trimmed to the corners, so a porter is not handed a point per block. Both ends are
+   *  the doorway of a village's 集荷所, so a shipment is seen leaving a building rather
+   *  than appearing at the edge of a street. */
   waypoints: RoadPoint[];
+  /** The two doorways, when the villages are known. Null before the first survey. */
+  fromDoor: RoadPoint | null;
+  toDoor: RoadPoint | null;
   /** Cumulative distance along `waypoints`, same length. */
   cumulative: number[];
   length: number;
@@ -103,6 +108,12 @@ export interface SavedRoute {
  *  on it. Big enough to hop a fence or go round a tree, small enough that a porter can
  *  never be somewhere the road is not. */
 export const PORTER_LEASH = 7;
+
+/** Where a village loads and unloads. The game answers this from its building registry;
+ *  transport only needs the point, so it never learns what a building is. */
+export interface DepotSource {
+  doorOf(village: VillageId): RoadPoint | null;
+}
 
 /** What the game hands transport so it can show a porter. Kept narrow so the simulation
  *  itself has no idea mobs exist. */
@@ -167,6 +178,7 @@ export class TransportNetwork {
     private readonly registry: VillageRegistry,
     private readonly events: TransportEvents = {},
     private readonly host: PorterHost | null = null,
+    private readonly depots: DepotSource | null = null,
   ) {}
 
   /** Registers a pair worth watching. Idempotent, and direction-insensitive. */
@@ -185,6 +197,8 @@ export class TransportNetwork {
       connected: false,
       everConnected: false,
       waypoints: [],
+      fromDoor: null,
+      toDoor: null,
       cumulative: [],
       length: 0,
       quality: 1,
@@ -202,6 +216,14 @@ export class TransportNetwork {
     this.surveyedRevision = -1;
     this.surveyTimer = 0;
     return route;
+  }
+
+  /** Forces the next update to walk every road again. The road index has not moved, so
+   *  nothing else would notice — but where a route *ends* has, and that is the same thing
+   *  as far as its waypoints are concerned. */
+  invalidate(): void {
+    this.surveyedRevision = -1;
+    this.surveyTimer = 0;
   }
 
   find(from: VillageId, to: VillageId): Route | undefined {
@@ -272,7 +294,15 @@ export class TransportNetwork {
     if (result.connected) {
       route.connected = true;
       route.everConnected = true;
-      route.waypoints = toWaypoints(result.waypoints);
+      // The survey walks street to street; the last few blocks at each end are the walk
+      // between that street and the door goods actually go through. Those count towards
+      // the trip, which is what makes a 集荷所 by the road worth choosing.
+      route.fromDoor = this.depots?.doorOf(route.from) ?? null;
+      route.toDoor = this.depots?.doorOf(route.to) ?? null;
+      const walked = toWaypoints(result.waypoints);
+      if (route.fromDoor) walked.unshift(route.fromDoor);
+      if (route.toDoor) walked.push(route.toDoor);
+      route.waypoints = walked;
       const measured = measure(route.waypoints);
       route.cumulative = measured.cumulative;
       route.length = Math.max(1, measured.length);

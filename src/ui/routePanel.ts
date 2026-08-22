@@ -1,4 +1,4 @@
-import type { QuestObjective } from '../game/questline';
+import { gapText, type QuestObjective } from '../game/questline';
 import { clear, el, show } from './dom';
 
 export interface RouteView {
@@ -11,6 +11,10 @@ export interface RouteView {
   /** Straight line distance still to be paved, when it is not. */
   missing: number;
   porters: number;
+  /** The buildings goods leave from and arrive at. A route is between two doors, not two
+   *  map pins, and saying which door is what makes choosing one mean anything. */
+  fromDepot: string | null;
+  toDepot: string | null;
   /** Where the nearest shipment on this line is, relative to the player. Null when the
    *  line is running nothing. */
   nearest: { distance: number; bearing: number } | null;
@@ -83,6 +87,7 @@ export class RoutePanel {
       .map((r) => [
         r.from, r.to, r.surveyed, r.connected, Math.round(r.length),
         Math.round(r.missing), r.porters, r.grade, r.load, r.wanted, r.stock,
+        r.fromDepot, r.toDepot,
         r.nearest ? `${Math.round(r.nearest.distance)},${Math.round(r.nearest.bearing / 45)}` : '',
       ].join(':'))
       .join('|');
@@ -99,14 +104,16 @@ export class RoutePanel {
       if (!route.surveyed) status = '調べています...';
       else if (route.connected) {
         status = `接続済み ${Math.round(route.length)}m / ${route.grade} / 荷 ${route.load}`;
-      } else status = `未接続 / あと ${Math.round(route.missing)}m`;
+      } else status = `未接続 / ${gapText(route.missing)}`;
       row.appendChild(el('div', 'route-status', status));
       // A connected road that is carrying nothing looks broken and is not. Say which of
       // the two it is, and where to look to see it happening.
       if (route.connected) {
+        const between =
+          route.fromDepot && route.toDepot ? `${route.fromDepot} → ${route.toDepot} · ` : '';
         const cargo = route.nearest
-          ? `荷運び ${route.porters} · ${heading(route.nearest.bearing)}へ ${Math.round(route.nearest.distance)}m`
-          : `荷運び 0 · 出荷待ち 在庫 ${route.stock}/${route.load}`;
+          ? `${between}荷運び ${route.porters} · ${heading(route.nearest.bearing)}へ ${Math.round(route.nearest.distance)}m`
+          : `${between}出荷待ち 在庫 ${route.stock}/${route.load}`;
         row.appendChild(el('div', `route-cargo ${route.nearest ? 'moving' : 'waiting'}`, cargo));
       }
       this.list.appendChild(row);

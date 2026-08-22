@@ -28,10 +28,16 @@ export interface LedgerVillage {
 export interface LedgerRoute {
   from: string;
   to: string;
+  /** The buildings at each end, when the villages are known. */
+  fromDepot: string | null;
+  toDepot: string | null;
   good: string;
   connected: boolean;
   length: number;
   missing: number;
+  /** How much is left, in metres and in blocks of road — a dashed road may be laid every
+   *  twenty, so the two numbers are very different jobs. */
+  gap: string;
   grade: string;
   load: number;
   porters: number;
@@ -110,9 +116,11 @@ export function buildLedger(view: LedgerView): HTMLElement {
   for (const route of view.routes) {
     routes.appendChild(
       row(`ledger-row ${route.connected ? 'linked' : 'broken'}`, [
-        `${route.from} ⇄ ${route.to}`,
+        route.fromDepot && route.toDepot
+          ? `${route.from}・${route.fromDepot} ⇄ ${route.to}・${route.toDepot}`
+          : `${route.from} ⇄ ${route.to}`,
         route.good,
-        route.connected ? `接続済み ${Math.round(route.length)}m` : `未接続 あと ${Math.round(route.missing)}m`,
+        route.connected ? `接続済み ${Math.round(route.length)}m` : `未接続 ${route.gap}`,
         route.connected ? route.grade : '—',
         route.connected ? `${route.load}` : '—',
         `${route.porters}`,
@@ -123,7 +131,12 @@ export function buildLedger(view: LedgerView): HTMLElement {
   root.appendChild(routes);
 
   root.appendChild(
-    el('div', 'ledger-note', '道を良い材質で舗装すると荷運びが速くなり、一度に運ぶ量も増える。'),
+    el(
+      'div',
+      'ledger-note',
+      '道を良い材質で舗装すると荷運びが速くなり、一度に運ぶ量も増える。' +
+        '荷は村の「集荷所」の戸口から出て戸口へ入る — 建物を見て F キーで変えられる。',
+    ),
   );
   return root;
 }

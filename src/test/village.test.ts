@@ -131,12 +131,13 @@ describe('village houses can be walked into', () => {
 describe('village layout is pinned', () => {
   const site = { cellX: 0, cellZ: 0, x: 100, z: 200 };
   const expected: Record<VillageVariant, { count: number; hash: number }> = {
-    // Re-pinned once, when the houses were lifted a block so their floors sit level with
-    // the street instead of one below it. The block *count* is unchanged, which is what
-    // says it was a shift and not a reshuffle of the random stream.
-    plains: { count: 4685, hash: -1560636876 },
-    desert: { count: 4685, hash: 531560184 },
-    snowy: { count: 4685, hash: -969671730 },
+    // Re-pinned twice, both times deliberately: once when the houses were lifted a block
+    // so their floors sit level with the street, and once when every door gained a short
+    // path out to that street. Neither drew a number from the random stream, which is
+    // what the villager and chest counts below are here to say.
+    plains: { count: 4805, hash: 447130268 },
+    desert: { count: 4805, hash: -609592904 },
+    snowy: { count: 4805, hash: -1153132286 },
   };
 
   for (const variant of ['plains', 'desert', 'snowy'] as VillageVariant[]) {

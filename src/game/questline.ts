@@ -6,6 +6,7 @@
  *  arrive. Pure data — the game drives it with events and reads back an objective. */
 
 import { itemLabel } from './items';
+import { MAX_LINK } from './roads';
 import type { Route } from './transport';
 import {
   MAX_STAGE,
@@ -62,9 +63,17 @@ export interface SavedQuest {
 export interface NetworkState {
   villages: readonly VillageRecord[];
   routes: readonly Route[];
+  /** Where the player is, so "the nearest" can mean it. */
+  player: { x: number; z: number };
+  /** The nearest village nobody has walked into yet, when the grid knows of one. A goal
+   *  that needs another village has to be able to point at one, or "open a second route"
+   *  is an instruction with no address. */
+  unfound: { x: number; z: number } | null;
 }
 
-const EMPTY_STATE: NetworkState = { villages: [], routes: [] };
+const EMPTY_STATE: NetworkState = {
+  villages: [], routes: [], player: { x: 0, z: 0 }, unfound: null,
+};
 
 /** A standing goal for the network, once the tutorial has run out of things to teach.
  *
@@ -80,6 +89,40 @@ export interface Milestone {
   reward: number;
   done(state: NetworkState): boolean;
   marker?(state: NetworkState): { x: number; z: number; kind: 'village' | 'gap' } | null;
+  /** The two villages this goal is actually about, when it is about a particular pair.
+   *  Everything that draws the tutorial's own road — the panel row, the compass, the line
+   *  and beacons in the world — follows this once the tutorial is over, so a goal that
+   *  says "join two villages" can show which two and how far off it is. */
+  pair?(state: NetworkState): Route | null;
+}
+
+/** Blocks of road still to lay across a gap.
+ *
+ *  A road may be dashed up to `MAX_LINK`, so the metres between two ends of a road are
+ *  emphatically *not* the work: 368m of gap is nineteen blocks placed twenty apart, not
+ *  three hundred and sixty-eight. Saying the distance alone made the second route read as
+ *  an afternoon's digging when it is a walk with a shovel. */
+export function roadBlocksFor(missing: number): number {
+  return Math.max(1, Math.ceil(missing / MAX_LINK));
+}
+
+/** "あと 368m・道 19 個ぶん". Used wherever a gap is reported. */
+export function gapText(missing: number): string {
+  return `あと ${Math.round(missing)}m・道 ${roadBlocksFor(missing)} 個ぶん`;
+}
+
+/** The unfinished route with the least left to do, which is the one worth naming. */
+function closestGap(state: NetworkState): Route | null {
+  let best: Route | null = null;
+  for (const route of state.routes) {
+    if (route.connected || !route.surveyed) continue;
+    if (!best || route.missing < best.missing) best = route;
+  }
+  return best;
+}
+
+function nameOf(state: NetworkState, id: VillageId): string {
+  return state.villages.find((v) => v.id === id)?.name ?? '?';
 }
 
 function linked(state: NetworkState): Route[] {
@@ -96,11 +139,21 @@ function servedVillages(state: NetworkState): Set<VillageId> {
   return ids;
 }
 
+/** The matching village closest to the player. It used to be whichever came first in the
+ *  registry, which is nothing anybody can walk towards. */
 function nearest(
   state: NetworkState,
   match: (v: VillageRecord) => boolean,
 ): { x: number; z: number; kind: 'village' } | null {
-  const found = state.villages.find(match);
+  let found: VillageRecord | null = null;
+  let bestDistance = Infinity;
+  for (const village of state.villages) {
+    if (!match(village)) continue;
+    const distance = Math.hypot(village.x - state.player.x, village.z - state.player.z);
+    if (distance >= bestDistance) continue;
+    bestDistance = distance;
+    found = village;
+  }
   return found ? { x: found.x, z: found.z, kind: 'village' } : null;
 }
 
@@ -114,9 +167,27 @@ export const MILESTONES: readonly Milestone[] = [
   {
     id: 'second_route',
     title: '輸送路をもう 1 本ひらく',
-    detail: (s) => `つながっている輸送路 ${linked(s).length} / 2`,
+    detail: (s) => {
+      // Two different situations wear the same title, and only one of them is "lay road".
+      // Saying which one it is now is the whole difference between a goal and a number
+      // that does not move: a second route needs a second pair, and until the player has
+      // walked into another village there is no pair to work on at all.
+      const gap = closestGap(s);
+      if (gap) return `${nameOf(s, gap.from)}と${nameOf(s, gap.to)}を道でつなぐ — ${gapText(gap.missing)}`;
+      if (s.unfound) return 'つなぐ相手がいない。まずもう 1 つ村を見つける — コンパスの ⚑ へ';
+      return `つながっている輸送路 ${linked(s).length} / 2`;
+    },
     reward: 6,
     done: (s) => linked(s).length >= 2,
+    marker: (s) => {
+      const gap = closestGap(s);
+      // The stretch that needs fixing, not the destination: the same rule the tutorial's
+      // own `build_road` step follows.
+      if (gap?.gapFrom) return { x: gap.gapFrom.x, z: gap.gapFrom.z, kind: 'gap' };
+      if (s.unfound) return { x: s.unfound.x, z: s.unfound.z, kind: 'village' };
+      return nearest(s, (v) => !servedVillages(s).has(v.id));
+    },
+    pair: (s) => closestGap(s),
   },
   {
     id: 'feed_workshop',
@@ -400,14 +471,14 @@ export class Questline {
           return {
             step: this.step,
             title: `${origin.name}と${target.name}を道でつなぐ`,
-            detail: `とぎれている所まで あと ${Math.round(route.missing)}m`,
+            detail: `とぎれている所まで ${gapText(route.missing)}`,
             marker: { x: route.gapFrom.x, z: route.gapFrom.z, kind: 'gap' },
           };
         }
         return {
           step: this.step,
           title: `${origin.name}と${target.name}を道でつなぐ`,
-          detail: '歩ける道を敷く。20 マスまでのとぎれなら許される',
+          detail: `歩ける道を敷く。${MAX_LINK} マスまでのとぎれなら許されるので、置くのは飛び飛びでよい`,
           marker: { x: target.x, z: target.z, kind: 'village' },
         };
       }

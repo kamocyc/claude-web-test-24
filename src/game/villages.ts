@@ -145,6 +145,9 @@ export interface VillageRecord {
    *  in full because nothing can re-derive it. */
   outpost?: boolean;
   parent?: VillageId;
+  /** The building goods leave from and arrive at. Absent until the player chooses one,
+   *  and then the nearest building to the centre is used. */
+  depot?: string;
 }
 
 export interface SavedVillage {
@@ -163,6 +166,8 @@ export interface SavedVillage {
    *  cannot be re-derived and its whole description is stored alongside its progress. */
   outpost?: boolean;
   parent?: string;
+  /** Which building the player picked as the 集荷所, when they picked one. */
+  depot?: string;
   x?: number;
   z?: number;
   baseY?: number;
@@ -200,6 +205,7 @@ export function outpostFromSave(entry: SavedVillage): VillageRecord | null {
     progress: 0,
     outpost: true,
     parent: entry.parent,
+    depot: entry.depot,
   };
 }
 
@@ -482,6 +488,7 @@ export class VillageRegistry {
       spawnedStage: v.spawnedStage,
       inputStock: v.inputStock,
       received: v.received,
+      ...(v.depot ? { depot: v.depot } : {}),
       // A hamlet is not on the grid, so nothing can work out where it was or what it was
       // called. It is the one village whose description travels with its progress.
       ...(v.outpost
@@ -529,5 +536,6 @@ export class VillageRegistry {
     record.spawnedStage = saved.spawnedStage;
     record.inputStock = saved.inputStock ?? 0;
     record.received = saved.received ?? 0;
+    if (saved.depot) record.depot = saved.depot;
   }
 }

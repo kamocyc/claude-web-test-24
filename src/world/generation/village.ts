@@ -52,6 +52,35 @@ export interface Footprint {
   d: number;
 }
 
+/** A step outwards from a door, indexed by the side it faces. Matches `footprintFor`,
+ *  which grows a house away from the street its slot belongs to — so the door always ends
+ *  up on the wall nearest that street. */
+export const FACING_STEP: readonly (readonly [number, number])[] = [
+  [1, 0],
+  [0, -1],
+  [-1, 0],
+  [0, 1],
+];
+
+export type BuildingRole = 'house' | 'market';
+
+/** A building as something the rest of the game can address rather than merely avoid.
+ *
+ *  `Footprint` was only ever "ground that is taken"; a transport network needs to name a
+ *  building, stand somebody outside it, and walk them in. The doorway was computed inside
+ *  `buildHouse` and thrown away, so it is recorded here instead — by the builder that
+ *  knocks it out of the wall, which is the only thing that can be wrong about it. */
+export interface HouseRecord extends Footprint {
+  facing: 0 | 1 | 2 | 3;
+  role: BuildingRole;
+  profession: Profession;
+  /** The doorway cell itself, at floor level. */
+  door: { x: number; y: number; z: number };
+  /** The cell immediately outside the doorway: where a porter waits, and where a path to
+   *  this building has to reach. */
+  outside: { x: number; y: number; z: number };
+}
+
 export interface VillagePlan {
   site: VillageSite;
   baseY: number;
@@ -59,8 +88,9 @@ export interface VillagePlan {
   byChunk: Map<string, Placement[]>;
   villagers: VillagerMarker[];
   chests: ChestMarker[];
-  /** Where the houses stand. Growth adds to a village without landing on them. */
-  buildings: Footprint[];
+  /** The houses themselves. Growth adds to a village without landing on them, and
+   *  transport addresses them by name. */
+  buildings: HouseRecord[];
 }
 
 /** Returns the village centre inside a grid cell, or null when the cell has none. */
@@ -106,6 +136,9 @@ interface Building {
   facing: 0 | 1 | 2 | 3;
   profession: Profession;
   hasChest: boolean;
+  /** Plots already spoken for, so the path out of this door stops rather than running
+   *  through the neighbour's wall. */
+  taken?: readonly Footprint[];
 }
 
 const PROFESSIONS: readonly Profession[] = ['farmer', 'blacksmith', 'librarian', 'butcher'];
@@ -173,8 +206,7 @@ export function planVillage(
     // the first clear cell above it. Handing it the plateau instead sinks the house one
     // block into the ground, which leaves the doorway a single block clear of the street
     // — too low to walk through.
-    buildHouse(put, plan, b, baseY + 1, palette);
-    plan.buildings.push({ x0: b.x0, z0: b.z0, w: b.w, d: b.d });
+    buildHouse(put, plan, { ...b, taken: buildings }, baseY + 1, palette);
   }
 
   // --- farm plots -----------------------------------------------------------
@@ -334,8 +366,8 @@ function layoutBuildings(rng: Rng, site: VillageSite): Building[] {
   return buildings;
 }
 
-/** Only the two lists are needed, so village growth can hand in its own. */
-type HouseSink = Pick<VillagePlan, 'villagers' | 'chests'>;
+/** What a building reports about itself, so village growth can hand in its own lists. */
+type HouseSink = Pick<VillagePlan, 'villagers' | 'chests' | 'buildings'>;
 
 /** One house. `baseY` is the *floor level*: the first cell somebody standing inside would
  *  occupy. The floor itself is laid one below that, so a house whose floor level matches
@@ -382,6 +414,17 @@ function buildHouse(put: PutFn, plan: HouseSink, b: Building, baseY: number, pal
   const doorZ = b.facing === 0 || b.facing === 2 ? z0 + (d >> 1) : b.facing === 1 ? z0 : z1;
   put(doorX, baseY, doorZ, Block.AIR);
   put(doorX, baseY + 1, doorZ, Block.AIR);
+  const [outX, outZ] = FACING_STEP[b.facing];
+  const record: HouseRecord = {
+    x0, z0, w, d,
+    facing: b.facing,
+    role: 'house',
+    profession: b.profession,
+    door: { x: doorX, y: baseY, z: doorZ },
+    outside: { x: doorX + outX, y: baseY, z: doorZ + outZ },
+  };
+  plan.buildings.push(record);
+  doorPath(put, record, palette, baseY, b.taken);
 
   // Roof with a one block overhang.
   for (let z = z0 - 1; z <= z1 + 1; z++) {
@@ -424,6 +467,34 @@ function buildHouse(put: PutFn, plan: HouseSink, b: Building, baseY: number, pal
   });
 }
 
+/** A few blocks of path from a door towards the street it faces.
+ *
+ *  Every building the game can send goods from has to be reachable on foot from the road,
+ *  and "the door opens onto grass" is the commonest way that fails. Short on purpose: the
+ *  village's own streets are three or four blocks away, and a longer spur would start
+ *  laying road across somebody else's plot. */
+const DOOR_PATH = 4;
+
+function doorPath(
+  put: PutFn,
+  house: HouseRecord,
+  palette: Palette,
+  baseY: number,
+  taken: readonly Footprint[] = [],
+): void {
+  const [stepX, stepZ] = FACING_STEP[house.facing];
+  const inside = (f: Footprint, x: number, z: number): boolean =>
+    x >= f.x0 && x < f.x0 + f.w && z >= f.z0 && z < f.z0 + f.d;
+  for (let i = 0; i < DOOR_PATH; i++) {
+    const x = house.outside.x + stepX * i;
+    const z = house.outside.z + stepZ * i;
+    // The house's own plot is in `taken` — it is the list of every plot on the street —
+    // so it has to be skipped, or the path would stop before it started.
+    if (taken.some((f) => !inside(f, house.door.x, house.door.z) && inside(f, x, z))) break;
+    putRoad(put, x, baseY - 1, z, palette.path);
+  }
+}
+
 function buildFarm(put: PutFn, rng: Rng, cx: number, cz: number, baseY: number): void {
   const w = 5;
   const d = 7;
@@ -460,6 +531,8 @@ export interface GrowthPlan {
   placements: Placement[];
   villagers: VillagerMarker[];
   chests: ChestMarker[];
+  /** The buildings this plan raises, addressable the same way a village's own are. */
+  buildings: HouseRecord[];
   /** What this stage built on. Stage n + 1 is handed these along with the original
    *  village's, or the two would try to stand in the same place. */
   footprints: Footprint[];
@@ -486,13 +559,13 @@ export function planOutpost(
   baseY: number,
   variant: VillageVariant,
 ): GrowthPlan {
-  const plan: GrowthPlan = { placements: [], villagers: [], chests: [], footprints: [] };
+  const plan: GrowthPlan = { placements: [], villagers: [], chests: [], buildings: [], footprints: [] };
   const rng = mulberry32(hashInts(seed ^ 0x51d3, site.x, site.z));
   const palette = paletteFor(variant);
   const put = (x: number, y: number, z: number, b: BlockId): void => {
     plan.placements.push({ x, y, z, b });
   };
-  const sink: HouseSink = { villagers: plan.villagers, chests: plan.chests };
+  const sink: HouseSink = { villagers: plan.villagers, chests: plan.chests, buildings: plan.buildings };
 
   // The pad. A village stands on a plateau the terrain generator flattened for it; a
   // hamlet is written into a world that has already been generated, so it levels its own
@@ -515,17 +588,18 @@ export function planOutpost(
     { slot: { x: site.x, z: site.z - 2, facing: 3 }, w: 6, d: 5 },
     { slot: { x: site.x + 2, z: site.z + 2, facing: 1 }, w: 5, d: 5 },
   ];
-  for (const house of houses) {
-    const footprint = footprintFor(house.slot, house.w, house.d);
-    plan.footprints.push(footprint);
+  const plots = houses.map((house) => footprintFor(house.slot, house.w, house.d));
+  for (let i = 0; i < houses.length; i++) {
+    plan.footprints.push(plots[i]);
     buildHouse(
       put,
       sink,
       {
-        ...footprint,
-        facing: house.slot.facing,
+        ...plots[i],
+        facing: houses[i].slot.facing,
         profession: PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)],
         hasChest: true,
+        taken: plots,
       },
       baseY,
       palette,
@@ -556,7 +630,7 @@ export function planGrowth(
   stage: number,
   occupied: readonly Footprint[],
 ): GrowthPlan {
-  const plan: GrowthPlan = { placements: [], villagers: [], chests: [], footprints: [] };
+  const plan: GrowthPlan = { placements: [], villagers: [], chests: [], buildings: [], footprints: [] };
   if (stage <= 0) return plan;
 
   const rng = mulberry32(hashInts(seed ^ 0x9a0f, site.x, site.z, stage));
@@ -566,7 +640,7 @@ export function planGrowth(
   };
   // `buildHouse` reports its villager and chest through the object it is handed; growth
   // collects them the same way a fresh village does.
-  const sink: HouseSink = { villagers: plan.villagers, chests: plan.chests };
+  const sink: HouseSink = { villagers: plan.villagers, chests: plan.chests, buildings: plan.buildings };
 
   const slots = growthSlots(site);
   for (let i = slots.length - 1; i > 0; i--) {
@@ -595,6 +669,7 @@ export function planGrowth(
         facing: slot.facing,
         profession: PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)],
         hasChest: true,
+        taken,
       },
       // The floor level, not the plateau: see the same call in `planVillage`.
       baseY + 1,
@@ -667,6 +742,17 @@ function buildMarket(
     y: baseY + 1,
     z: plot.z0 + (plot.d >> 1),
     profession,
+  });
+  // A market hall is open on all four sides, so its "door" is the middle of the side
+  // facing the village centre — which is where a porter should be seen walking in.
+  const door = { x: plot.x0 + (plot.w >> 1), y: baseY, z: plot.z0 };
+  sink.buildings.push({
+    x0: plot.x0, z0: plot.z0, w: plot.w, d: plot.d,
+    facing: 1,
+    role: 'market',
+    profession,
+    door,
+    outside: { x: door.x, y: baseY, z: door.z - 1 },
   });
 }
 

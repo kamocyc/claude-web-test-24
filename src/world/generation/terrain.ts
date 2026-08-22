@@ -18,7 +18,7 @@ import {
 import { localWetness } from '../weather';
 import {
   type ChestMarker,
-  type Footprint,
+  type HouseRecord,
   type VillagePlan,
   type VillageSite,
   type VillageVariant,
@@ -363,8 +363,10 @@ export class TerrainGenerator {
     return out;
   }
 
-  /** Footprints of a village's original houses, so growth can avoid them. */
-  villageBuildings(x: number, z: number): Footprint[] {
+  /** A village's original houses — where they stand, which way they face and where their
+   *  doors are. Cheap and independent of what is loaded: a village plan is a pure function
+   *  of the seed and is cached, so this can be asked about a village nobody has visited. */
+  villageBuildings(x: number, z: number): HouseRecord[] {
     const site = { cellX: Math.floor(x / VILLAGE_CELL), cellZ: Math.floor(z / VILLAGE_CELL), x, z };
     const info = this.villageInfo(site);
     if (!info.valid) return [];

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { applyGrowth, clearGrowthCache, growthChunks, growthFor } from '../game/villageGrowth';
-import { overlaps, planGrowth, planVillage } from '../world/generation/village';
+import { overlaps, planGrowth, planVillage, type Footprint } from '../world/generation/village';
 import { Block } from '../world/blocks';
 import { Chunk, CHUNK_SIZE, CHUNK_VOLUME } from '../world/chunk';
 import { World } from '../world/world';
@@ -120,7 +120,7 @@ describe('growing past the first stage', () => {
   it('never lands a later stage on an earlier one', () => {
     clearGrowthCache();
     const village = planVillage(999, SITE, BASE_Y, 'plains');
-    const taken = [...village.buildings];
+    const taken: Footprint[] = [...village.buildings];
     for (let stage = 1; stage <= 4; stage++) {
       const plan = growthFor(999, record(stage), stage, village.buildings);
       for (const plot of plan.footprints) {

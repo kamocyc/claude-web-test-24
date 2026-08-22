@@ -222,6 +222,40 @@ describe('transport routes', () => {
     }
   });
 
+  it('starts and ends a trip at the doors it was given', () => {
+    const doors = {
+      doorOf: (id: string) =>
+        id === ID_A ? { x: 4, z: 4, y: GROUND } : { x: 236, z: -6, y: GROUND },
+    };
+    const world = new FakeWorld();
+    for (let x = 50; x <= 190; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world, TERRAIN);
+    roads.seedFromEdits();
+    const registry = new VillageRegistry(SEED, SOURCE);
+    registry.ensureNear(0, 0);
+    registry.discover(ID_A);
+    registry.discover(ID_B);
+    const transport = new TransportNetwork(roads, registry, {}, null, doors);
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+
+    const route = transport.routes[0];
+    expect(route.connected).toBe(true);
+    // The walk from the door to the street is part of the trip, which is what makes a
+    // 集荷所 by the road worth choosing over one at the back of the village.
+    expect(route.waypoints[0]).toEqual({ x: 4, z: 4, y: GROUND });
+    expect(route.waypoints[route.waypoints.length - 1]).toEqual({ x: 236, z: -6, y: GROUND });
+    expect(transport.pointAt(route, 0)).toEqual({ x: 4, z: 4, y: GROUND });
+  });
+
+  it('runs between village centres when nothing names a door', () => {
+    const { transport } = build();
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    expect(transport.routes[0].connected).toBe(true);
+    expect(transport.routes[0].fromDoor).toBeNull();
+  });
+
   it('delivers on time with somebody watching a porter that cannot move', () => {
     const stuck = new StuckHost();
     const { transport, registry, events } = build({ host: stuck });

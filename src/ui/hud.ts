@@ -34,6 +34,8 @@ export interface NavigationInfo {
   routes: RoutePanelView;
   showCoords: boolean;
   overlay: MinimapOverlay;
+  /** The building under the crosshair, when there is one worth naming. */
+  building: { title: string; hint: string } | null;
 }
 
 /** Health, hunger, hotbar, crosshair and the debug overlay. */
@@ -49,6 +51,11 @@ export class Hud {
   private readonly toasts = el('div', 'toasts');
   private readonly flash = el('div', 'damage-flash');
   private readonly clickPrompt = el('div', 'click-prompt', 'クリックしてプレイ');
+  /** What the player is looking at, when it is a building. Sits just under the crosshair
+   *  because it is about the thing in the middle of the screen. */
+  private readonly building = el('div', 'building-prompt');
+  private readonly buildingTitle = el('div', 'building-title');
+  private readonly buildingHint = el('div', 'building-hint');
   private readonly underwater = el('div', 'underwater');
   readonly compass = new Compass();
   readonly minimap: Minimap;
@@ -56,6 +63,7 @@ export class Hud {
   readonly routes = new RoutePanel();
   readonly coords = new CoordPanel();
   private debugVisible = false;
+  private clickPromptUp = false;
   private heldLabelTimer = 0;
 
   constructor(private readonly atlas: Atlas) {
@@ -84,10 +92,13 @@ export class Hud {
       this.forecast.root,
       left,
       this.coords.root,
+      this.building,
       bottom,
       this.toasts,
       this.clickPrompt,
     );
+    this.building.append(this.buildingTitle, this.buildingHint);
+    this.building.style.display = 'none';
     this.underwater.style.display = 'none';
     this.clickPrompt.style.display = 'none';
     this.debug.style.display = 'none';
@@ -101,6 +112,9 @@ export class Hud {
   /** Shown until the player clicks, because pointer lock needs a user gesture. */
   setClickPrompt(visible: boolean): void {
     this.clickPrompt.style.display = visible ? '' : 'none';
+    // The two sit in the same place under the crosshair, and nothing can be designated
+    // before the game has the pointer anyway.
+    this.clickPromptUp = visible;
   }
 
   toggleDebug(): void {
@@ -142,6 +156,16 @@ export class Hud {
     if (navigation.showRoutes) this.routes.update(navigation.routes);
     this.coords.setVisible(navigation.showCoords);
     if (navigation.showCoords) this.coords.update(player.x, player.y, player.z, player.yaw);
+    const showBuilding = navigation.building !== null && !this.clickPromptUp;
+    this.building.style.display = showBuilding ? '' : 'none';
+    if (navigation.building) {
+      if (this.buildingTitle.textContent !== navigation.building.title) {
+        this.buildingTitle.textContent = navigation.building.title;
+      }
+      if (this.buildingHint.textContent !== navigation.building.hint) {
+        this.buildingHint.textContent = navigation.building.hint;
+      }
+    }
 
     this.renderBar(this.hearts, player.health, player.maxHealth, 'heart');
     this.renderBar(this.food, player.hunger.food, 20, 'drumstick');

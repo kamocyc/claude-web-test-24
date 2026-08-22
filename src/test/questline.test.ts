@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { HAUL_COUNT, MILESTONES, Questline, type NetworkState } from '../game/questline';
+import {
+  HAUL_COUNT,
+  MILESTONES,
+  Questline,
+  gapText,
+  roadBlocksFor,
+  type NetworkState,
+} from '../game/questline';
 import {
   MAX_STAGE,
   VillageRegistry,
@@ -29,14 +36,74 @@ function route(connected: boolean, missing = 0, quality = 1): Route {
     quality, grade: 'x',
     gapFrom: missing > 0 ? { x: 60, z: 0, y: 60 } : null,
     gapTo: missing > 0 ? { x: 200, z: 0, y: 60 } : null,
+    fromDoor: null, toDoor: null,
     porters: [], delivered: 0, trips: 0,
   };
 }
 
 /** A network the milestones can be pointed at. */
 function state(villages: VillageRecord[], routes: Route[]): NetworkState {
-  return { villages, routes };
+  return { villages, routes, player: { x: 0, z: 0 }, unfound: null };
 }
+
+describe('the goal after the tutorial', () => {
+  const second = MILESTONES[0];
+
+  it('names the pair it means, and how much road is left', () => {
+    const { registry } = setup();
+    const a = registry.get(ID_A)!;
+    const b = registry.get(ID_B)!;
+    const gap = route(false, 368);
+    const view = state([a, b], [gap]);
+
+    expect(second.pair?.(view)).toBe(gap);
+    // The distance alone reads as an afternoon's digging; the road may be dashed every
+    // twenty blocks, so what the player actually has to place is nineteen of them.
+    expect(second.detail(view)).toContain('道 19 個ぶん');
+    expect(second.detail(view)).toContain(a.name);
+    expect(second.detail(view)).toContain(b.name);
+    expect(second.marker?.(view)).toEqual({ x: 60, z: 0, kind: 'gap' });
+  });
+
+  it('points at a village to find when there is no pair to work on yet', () => {
+    const { registry } = setup();
+    const view = {
+      ...state([registry.get(ID_A)!], []),
+      unfound: { x: 900, z: -200 },
+    };
+    expect(second.pair?.(view)).toBeNull();
+    expect(second.detail(view)).toContain('見つける');
+    expect(second.marker?.(view)).toEqual({ x: 900, z: -200, kind: 'village' });
+  });
+
+  it('counts blocks, not metres', () => {
+    expect(roadBlocksFor(0)).toBe(1);
+    expect(roadBlocksFor(20)).toBe(1);
+    expect(roadBlocksFor(21)).toBe(2);
+    expect(gapText(368)).toBe('あと 368m・道 19 個ぶん');
+  });
+});
+
+describe('a road laid before the road talk', () => {
+  it('still finishes the road step', () => {
+    const { registry, quest } = setup();
+    quest.onVillageDiscovered(registry.get(ID_A)!);
+    quest.complete('accept', registry);
+    quest.complete('deliver', registry);
+    // The route joins up here, one step early — which is what happens to anybody who
+    // paves the fifty blocks between the two villages before walking back to talk.
+    const joined = route(true);
+    expect(quest.onRouteEstablished(joined)).toBeNull();
+    expect(quest.step).toBe('learn_roads');
+
+    quest.complete('learn', registry);
+    expect(quest.step).toBe('build_road');
+    // Nothing about the world has changed, so the step has to be able to notice on its
+    // own that the road it is waiting for is already there.
+    expect(quest.onRouteEstablished(joined)).not.toBeNull();
+    expect(quest.step).toBe('watch_porter');
+  });
+});
 
 /** Walks the whole arc, returning the questline at the end. */
 function playThrough() {

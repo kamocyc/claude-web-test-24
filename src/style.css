@@ -987,6 +987,33 @@ body.screen-open #viewport {
   color: #7cc4ff;
 }
 
+/* What the player is looking at, when it is a building worth naming. Under the crosshair
+   because that is what it is about, and never in the way of the hotbar. */
+.building-prompt {
+  position: absolute;
+  left: 50%;
+  top: 56%;
+  transform: translateX(-50%);
+  padding: 5px 10px 6px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.46);
+  color: #f2f2f2;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.building-title {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.building-hint {
+  font-size: 11px;
+  color: #8ef0b8;
+}
+
 /* A shipment on its way. Green, because it is the thing working. */
 .compass-marker.porter {
   color: #8ef0b8;

@@ -268,6 +268,40 @@ console.log('at village:', JSON.stringify(await debugText()));
 const villagers = await evaluate(() => window.voxelcraft.mobs().filter((m) => m.kind === 'villager').length);
 console.log('villagers nearby:', villagers);
 
+// Buildings are addressable: each has a name, a doorway, and one of them is where the
+// village's goods come and go from.
+const stock = await evaluate(() => window.voxelcraft.buildings());
+console.log('buildings:', JSON.stringify({
+  village: stock.village,
+  depot: stock.list.find((b) => b.depot)?.label ?? null,
+  labels: stock.list.map((b) => b.label),
+}));
+if (!stock.list.some((b) => b.depot)) throw new Error('no village building takes the goods');
+
+// Stand outside a different building, look at it, and claim it with the key a player has.
+const claimed = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const list = window.voxelcraft.buildings().list;
+  const target = list.find((b) => !b.depot) ?? list[0];
+  const dx = target.outside.x - target.door.x;
+  const dz = target.outside.z - target.door.z;
+  const x = target.door.x + dx * 4 + 0.5;
+  const z = target.door.z + dz * 4 + 0.5;
+  g.player.teleportTo(x, g.world.heightAt(Math.floor(x), Math.floor(z)) + 1, z);
+  g.player.yaw = Math.atan2(-(target.door.x + 0.5 - x), -(target.door.z + 0.5 - z));
+  g.player.pitch = 0.05;
+  return target.label;
+});
+await settled();
+await frame();
+await frame();
+console.log('looking at:', JSON.stringify(await evaluate(() => window.voxelcraft.lookingAt())));
+await shot('06b-building');
+await page.keyboard.press('KeyF');
+await until((label) => window.voxelcraft.buildings().list.some((b) => b.depot && b.label === label),
+  claimed, 10000);
+console.log('depot moved to:', claimed);
+
 // Every house has to have a way in, and a doorway is only a doorway if somebody can walk
 // through it: two clear cells at the level the street outside is on.
 const doorways = await evaluate(() => {
@@ -538,6 +572,23 @@ await until(() => {
 });
 await shot('07x3-guide-linked');
 
+// A route runs between two doorways, not two map pins: the shipment leaves the building
+// the player picked and arrives at the other village's.
+const ends = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const q = window.voxelcraft.quest();
+  const route = g.transport.find(q.origin, q.target);
+  return {
+    fromDoor: route.fromDoor,
+    toDoor: route.toDoor,
+    startsAtDoor: JSON.stringify(route.waypoints[0]) === JSON.stringify(route.fromDoor),
+    endsAtDoor:
+      JSON.stringify(route.waypoints[route.waypoints.length - 1]) === JSON.stringify(route.toDoor),
+  };
+});
+console.log('route ends:', JSON.stringify(ends));
+if (!ends.startsAtDoor || !ends.endsAtDoor) throw new Error('a route does not run door to door');
+
 // Standing on the road while a shipment runs is the case that used to hang: a visible
 // porter drove the clock, so a mob caught on the ground stopped the line for exactly as
 // long as somebody was there to watch it not move.
@@ -603,6 +654,17 @@ console.log('freight pay: emeralds', purseBefore, '->', purseAfter,
 // The list itself is the report: nothing in this run earns one.
 await until(() => window.voxelcraft.quest().step === 'done', null, 30000);
 console.log('milestones:', JSON.stringify(await evaluate(() => window.voxelcraft.milestones())));
+// The goal after the tutorial has to say what to do about it. Before, it said only
+// "connected routes 1 / 2" and pointed at nothing at all.
+const goal = await evaluate(() => ({
+  title: document.querySelector('.route-quest-title')?.textContent ?? null,
+  detail: document.querySelector('.route-quest-detail')?.textContent ?? null,
+  aim: document.querySelector('.route-quest-aim')?.style.display === 'none'
+    ? null
+    : document.querySelector('.route-quest-aim')?.textContent ?? null,
+}));
+console.log('next goal:', JSON.stringify(goal));
+if (!goal.aim) throw new Error('the goal after the tutorial points nowhere');
 const grown = await evaluate(() =>
   window.voxelcraft.villages().slice().sort((a, b) => b.stage - a.stage)[0]);
 console.log('grown village:', JSON.stringify(grown));

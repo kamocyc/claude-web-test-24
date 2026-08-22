@@ -64,7 +64,7 @@ import { findSpawn } from './seeds';
 import type { Settings } from './settings';
 import { tickFurnace } from './smelting';
 import { generateTrades, restockTrades, tradesFromJSON, tradesToJSON } from './trading';
-import { VILLAGE_RADIUS } from '../world/generation/village';
+import { VILLAGE_RADIUS, type HouseRecord } from '../world/generation/village';
 import { RoadNetwork, type RoadPoint } from './roads';
 import { PORTER_LEASH, TransportNetwork, loadFor, type Arrival, type PorterView, type Route } from './transport';
 import {
@@ -73,12 +73,21 @@ import {
   kindLabel,
   radiusOf,
   rankLabel,
+  villageId,
+  type VillageId,
   type VillageRecord,
 } from './villages';
 import type { LedgerView } from '../ui/ledger';
-import { applyGrowth, growthChunks, growthVillagers } from './villageGrowth';
+import { applyGrowth, growthChunks, growthFor, growthVillagers, outpostBuildings } from './villageGrowth';
+import {
+  buildingAt,
+  buildingsOf,
+  depotOf,
+  describeBuilding,
+  type VillageBuilding,
+} from './buildings';
 import { outpostRecord, outpostSite } from './outpost';
-import { MILESTONES, Questline, type NetworkState, type QuestInteraction } from './questline';
+import { MILESTONES, Questline, gapText, type NetworkState, type QuestInteraction } from './questline';
 import { biomeDef } from '../world/generation/biome';
 import { riverCovers } from '../world/generation/rivers';
 import { RiverFlow } from '../world/riverFlow';
@@ -105,6 +114,9 @@ const ATTACK_REACH = 3.6;
 const AUTOSAVE_SECONDS = 30;
 /** Half the span the minimap covers, so only nearby roads are handed to it. */
 const MINIMAP_REACH = 130;
+/** How far away a building can be named. Longer than the player's reach, because naming
+ *  a building is about looking at it, not about touching it. */
+const BUILDING_REACH = 28;
 /** How far the road tiles of the in-world guide reach. Small on purpose: it is there to
  *  answer "does the game count *this* as road", which is a question about the ground the
  *  player is standing on. */
@@ -113,6 +125,8 @@ const GUIDE_TILE_REACH = 40;
 const GUIDE_ROAD = 0x5cff92;
 const GUIDE_GAP = 0xffa04d;
 const GUIDE_PORTER = 0x8ef0b8;
+/** The doorway a route loads and unloads at. */
+const GUIDE_DEPOT = 0xffd479;
 /** Blocks of height a debug road may gain or lose per step, matching what a walker can
  *  manage on a paved slope. */
 const ROAD_GRADE = 2;
@@ -150,6 +164,11 @@ export class Game {
   private readonly routeGuide = new RouteGuide();
   /** Draped guide lines by route, so a road is only walked over again when it moves. */
   private readonly guideLines = new Map<string, { key: string; points: GuidePoint[] }>();
+  /** Buildings by village, rebuilt only when the village grows a new one. */
+  private readonly villageBuildings = new Map<string, { stage: number; list: VillageBuilding[] }>();
+  /** The building the player is looking at, refreshed with the rest of the interaction. */
+  private lookedAt: { building: VillageBuilding; village: VillageRecord } | null = null;
+  private focusCache: { at: number; route: Route | undefined } = { at: -1e9, route: undefined };
   private readonly effects: Effects;
   private readonly sky: Sky;
   private readonly rain: Rain;
@@ -253,6 +272,7 @@ export class Game {
         movePorter: (id, point, speed) => this.movePorter(id, point, speed),
         removePorter: (id) => this.removePorter(id),
       },
+      { doorOf: (id) => this.depotDoor(id) },
     );
     this.hud = new Hud(this.atlas);
     this.screens = new ScreenManager(
@@ -474,7 +494,7 @@ export class Game {
     if (found.length === 0 && this.nearestVillage) {
       markers.push({ kind: 'village', x: this.nearestVillage.x, z: this.nearestVillage.z });
     }
-    const questRoute = this.questRoute();
+    const questRoute = this.focusRoute();
     const objective = this.questline.objective(this.villages, questRoute, this.networkState());
     // Whatever the objective is pointing at gets its own marker. The village being
     // carried to has not been walked into yet, so it is not in `found` — without this the
@@ -497,6 +517,7 @@ export class Game {
       showForecast: this.options.settings.forecast,
       showRoutes: this.options.settings.routes,
       showCoords: this.options.settings.coords,
+      building: this.buildingPrompt(),
       overlay: {
         markers,
         // Only the roads that could be on screen: the index holds every column the player
@@ -535,6 +556,8 @@ export class Game {
             length: route.length,
             missing: route.missing,
             porters: route.porters.length,
+            fromDepot: this.depotLabel(route.from),
+            toDepot: this.depotLabel(route.to),
             nearest: this.nearestPorter(shipments, route),
             stock: this.villages.get(route.from)?.stock ?? 0,
             grade: route.grade,
@@ -659,6 +682,10 @@ export class Game {
           if (this.screens.kind === 'ledger') this.closeScreen();
           else this.openScreen(() => this.screens.openLedger(() => this.ledgerView()));
           break;
+        case 'KeyF':
+          if (this.paused || this.player.isDead || this.uiOpen) break;
+          this.chooseDepot();
+          break;
         case 'KeyG':
           if (this.paused || this.player.isDead) break;
           // Without this the same keypress types a "g" into the field that just took
@@ -714,6 +741,53 @@ export class Game {
     };
   }
 
+  /** Finds the building in the middle of the screen, so it can be named and chosen.
+   *
+   *  A longer ray than the player's reach: standing back to see a whole house is the
+   *  natural way to look at one, and it would be strange to have to press your nose
+   *  against a wall to find out whose it is. */
+  private updateLookedAtBuilding(
+    eye: { x: number; y: number; z: number },
+    look: { x: number; y: number; z: number },
+  ): void {
+    this.lookedAt = null;
+    const hit = raycastVoxels(this.world, eye, look, { maxDistance: BUILDING_REACH });
+    if (!hit) return;
+    const village = this.villages.at(hit.x, hit.z);
+    if (!village || !village.discovered) return;
+    const building = buildingAt(this.buildingsFor(village), hit.x, hit.z);
+    if (building) this.lookedAt = { building, village };
+  }
+
+  /** What the HUD says about the building under the crosshair. */
+  private buildingPrompt(): { title: string; hint: string } | null {
+    if (!this.lookedAt || this.uiOpen) return null;
+    const { building, village } = this.lookedAt;
+    const depot = this.depotFor(village);
+    const isDepot = depot?.id === building.id;
+    return {
+      title: describeBuilding(building, village, isDepot),
+      hint: isDepot ? 'ここから荷が出入りする' : '[F] この村の集荷所にする',
+    };
+  }
+
+  /** Moves a village's loading and unloading to the building being looked at. */
+  private chooseDepot(): void {
+    if (!this.lookedAt) {
+      this.hud.toast('建物を見ながら F を押すと、その建物を集荷所にできる');
+      return;
+    }
+    const { building, village } = this.lookedAt;
+    if (this.depotFor(village)?.id === building.id) {
+      this.hud.toast(`${building.label}はすでに${village.name}の集荷所`);
+      return;
+    }
+    village.depot = building.id;
+    // Where a route ends has moved, and only a survey knows what that does to its length.
+    this.transport.invalidate();
+    this.hud.toast(`${village.name}の集荷所を${building.label}にした`);
+  }
+
   private updateLook(): void {
     const delta = this.options.input.takeMouseDelta();
     this.player.yaw -= delta.x;
@@ -727,6 +801,7 @@ export class Game {
     const look = this.player.lookVector();
     const hit = raycastVoxels(this.world, eye, look, { maxDistance: REACH });
     this.effects.setSelection(hit);
+    this.updateLookedAtBuilding(eye, look);
 
     const input = this.options.input;
     if (input.buttonJustPressed(0)) {
@@ -1152,6 +1227,12 @@ export class Game {
     }
     this.villages.produce(dt);
     this.transport.update(dt, this.player.x, this.player.z);
+    // The tutorial's road step is finished by the *event* of a route joining up, so a
+    // player who lays the road before being told to — the shortest road in the game runs
+    // between two villages fifty blocks apart — would reach the step with the event
+    // already spent, and wait for it forever.
+    const quest = this.questRoute();
+    if (quest?.connected) this.toast(this.questline.onRouteEstablished(quest));
     this.drainPendingVillagers();
   }
 
@@ -1184,6 +1265,44 @@ export class Game {
     if (originId && targetId) this.transport.requestRoute(originId, targetId);
   }
 
+  /** Every addressable building of a village, cached until the village grows. */
+  private buildingsFor(village: VillageRecord): VillageBuilding[] {
+    const cached = this.villageBuildings.get(village.id);
+    if (cached && cached.stage === village.stage) return cached.list;
+    const houses: HouseRecord[] = [];
+    // A hamlet is not on the village grid, so it has no generated houses at all: the two
+    // it was written with are its whole stock of buildings.
+    if (village.outpost) houses.push(...outpostBuildings(this.options.seed, village).buildings);
+    else houses.push(...this.generator.villageBuildings(village.x, village.z));
+    const occupied = village.outpost ? [] : this.generator.villageBuildings(village.x, village.z);
+    for (let stage = 1; stage <= village.stage; stage++) {
+      houses.push(...growthFor(this.options.seed, village, stage, occupied).buildings);
+    }
+    const list = buildingsOf(village, houses);
+    this.villageBuildings.set(village.id, { stage: village.stage, list });
+    return list;
+  }
+
+  /** The building a village loads and unloads at. */
+  private depotFor(village: VillageRecord): VillageBuilding | null {
+    return depotOf(village, this.buildingsFor(village));
+  }
+
+  /** The doorway transport should start and finish a trip at. */
+  private depotDoor(id: VillageId): RoadPoint | null {
+    const village = this.villages.get(id);
+    if (!village) return null;
+    const depot = this.depotFor(village);
+    return depot ? { x: depot.door.x, y: depot.door.y - 1, z: depot.door.z } : null;
+  }
+
+  /** Names the depot of a village, for the panel and the ledger. */
+  private depotLabel(id: VillageId): string | null {
+    const village = this.villages.get(id);
+    if (!village) return null;
+    return this.depotFor(village)?.label ?? null;
+  }
+
   /** Watches every pair of found villages close enough to be worth a road.
    *
    *  The player never asks for a route: they lay a road, and trade starts. Watching a pair
@@ -1208,13 +1327,18 @@ export class Game {
   private guideView(): GuideView {
     const lines: GuideLine[] = [];
     const beams: GuideBeam[] = [];
-    const questRoute = this.questRoute();
+    const questRoute = this.focusRoute();
     for (const route of this.transport.routes) {
       const id = `${route.from}|${route.to}`;
       if (route.connected) {
         if (route.waypoints.length >= 2) {
           const key = `${id}|c|${this.roads.revision}|${route.waypoints.length}`;
           lines.push({ key, points: this.guideLine(id, key, route.waypoints), colour: GUIDE_ROAD, dashed: false });
+        }
+        // A short marker over each end, so the two buildings the line actually runs
+        // between can be picked out of a village from across it.
+        for (const door of [route.fromDoor, route.toDoor]) {
+          if (door) beams.push({ ...door, colour: GUIDE_DEPOT, height: 4 });
         }
         continue;
       }
@@ -1278,6 +1402,39 @@ export class Game {
     return draped;
   }
 
+  /** The nearest village on the grid that the player has not walked into.
+   *
+   *  Not `nearestVillage`, which is simply the nearest one and is therefore usually the
+   *  village the player is standing in — no help at all to a goal whose whole content is
+   *  "go and find another one". */
+  private unfoundVillage(): { x: number; z: number } | null {
+    let best: { x: number; z: number } | null = null;
+    let bestDistance = Infinity;
+    for (const seed of this.generator.villagesAround(this.player.x, this.player.z, 3)) {
+      if (this.villages.get(villageId(seed.x, seed.z))?.discovered) continue;
+      const distance = Math.hypot(seed.x - this.player.x, seed.z - this.player.z);
+      if (distance >= bestDistance) continue;
+      bestDistance = distance;
+      best = { x: seed.x, z: seed.z };
+    }
+    return best;
+  }
+
+  /** The route everything points at: the tutorial's own while it is running, and after
+   *  that whichever pair the current goal is about. Without this the panel, the compass
+   *  and the line in the world all stayed pinned to the tutorial's fifty metre road while
+   *  the goal asked for a second one somewhere else entirely. */
+  private focusRoute(): Route | undefined {
+    if (this.questline.step !== 'done') return this.questRoute();
+    // Asked from both the HUD and the world guide every frame, and it answers by walking
+    // the whole network. Nothing about a goal changes in a quarter of a second.
+    const now = performance.now();
+    if (now - this.focusCache.at < 250) return this.focusCache.route;
+    const route = this.questline.currentMilestone()?.pair?.(this.networkState()) ?? undefined;
+    this.focusCache = { at: now, route };
+    return route;
+  }
+
   /** The shipment on this line the player is closest to, as a distance and a heading. */
   private nearestPorter(
     shipments: readonly PorterView[],
@@ -1297,7 +1454,15 @@ export class Game {
 
   /** What the milestones are allowed to look at. */
   private networkState(): NetworkState {
-    return { villages: this.villages.discovered(), routes: this.transport.routes };
+    return {
+      villages: this.villages.discovered(),
+      routes: this.transport.routes,
+      player: { x: this.player.x, z: this.player.z },
+      // A goal that needs another village has to be able to point at one, and the only
+      // thing that knows where the unvisited ones are is the village grid. One the player
+      // has already walked into is not an answer to "find another".
+      unfound: this.unfoundVillage(),
+    };
   }
 
   private claimMilestones(): void {
@@ -1465,7 +1630,7 @@ export class Game {
 
   /** Everything the ledger shows, gathered on demand. */
   private ledgerView(): LedgerView {
-    const objective = this.questline.objective(this.villages, this.questRoute(), this.networkState());
+    const objective = this.questline.objective(this.villages, this.focusRoute(), this.networkState());
     return {
       earnings: this.freightEarned,
       objective: objective ? { title: objective.title, detail: objective.detail } : null,
@@ -1493,10 +1658,13 @@ export class Game {
       routes: this.transport.routes.map((route) => ({
         from: this.villages.get(route.from)?.name ?? '?',
         to: this.villages.get(route.to)?.name ?? '?',
+        fromDepot: this.depotLabel(route.from),
+        toDepot: this.depotLabel(route.to),
         good: route.good ? itemLabel(route.good) : '—',
         connected: route.connected,
         length: route.length,
         missing: route.missing,
+        gap: gapText(route.missing),
         grade: route.grade,
         load: loadFor(route.quality),
         porters: route.porters.length,
@@ -1999,7 +2167,7 @@ export class Game {
         return message;
       },
       gotoQuestTarget: (): { x: number; z: number } | null => {
-        const objective = this.questline.objective(this.villages, this.questRoute());
+        const objective = this.questline.objective(this.villages, this.focusRoute(), this.networkState());
         if (!objective?.marker) return null;
         this.debug.teleport(objective.marker.x, objective.marker.z);
         return { x: objective.marker.x, z: objective.marker.z };
@@ -2042,6 +2210,35 @@ export class Game {
           tiles: view.tiles.length,
           beams: view.beams.length,
         };
+      },
+      /** Every addressable building of the village the player is standing in, and which
+       *  of them goods come and go through. */
+      buildings: () => {
+        const here = this.villages.at(this.player.x, this.player.z);
+        if (!here) return null;
+        const depot = this.depotFor(here);
+        return {
+          village: here.name,
+          depot: depot?.id ?? null,
+          list: this.buildingsFor(here).map((b) => ({
+            id: b.id, label: b.label, role: b.role,
+            door: b.door, outside: b.outside,
+            depot: b.id === depot?.id,
+          })),
+        };
+      },
+      /** What the crosshair is on, and the key that would claim it. */
+      lookingAt: () => this.buildingPrompt(),
+      /** Moves a village's loading and unloading, the way looking at a building and
+       *  pressing F does. */
+      setDepot: (id: string): string | null => {
+        const here = this.villages.at(this.player.x, this.player.z);
+        if (!here) return null;
+        const building = this.buildingsFor(here).find((b) => b.id === id);
+        if (!building) return null;
+        here.depot = building.id;
+        this.transport.invalidate();
+        return building.label;
       },
       /** State of the road index, for working out why a road is not joining up. */
       roadIndex: () => ({ columns: this.roads.columns.size, revision: this.roads.revision }),
