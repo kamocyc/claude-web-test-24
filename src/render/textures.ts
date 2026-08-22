@@ -370,16 +370,19 @@ const RAIL_TIE: Color = [96, 72, 46];
 
 tile('rail_top', (ctx, rng) => {
   drawings.get('gravel')!(ctx, rng);
-  // Sleepers first, both ways, then the steel over the top of them.
-  for (let i = 1; i < TILE; i += 4) {
-    rect(ctx, i, 0, 2, TILE, shade(RAIL_TIE, (rng() - 0.5) * 20));
-    rect(ctx, 0, i, TILE, 2, shade(RAIL_TIE, (rng() - 0.5) * 20));
+  // Sleepers first, both ways, and thin: at two pixels they cover half the tile and the
+  // block reads as a boardwalk with the track lost somewhere in it.
+  for (let i = 2; i < TILE; i += 4) {
+    rect(ctx, i, 0, 1, TILE, shade(RAIL_TIE, (rng() - 0.5) * 20));
+    rect(ctx, 0, i, TILE, 1, shade(RAIL_TIE, (rng() - 0.5) * 20));
   }
-  for (const at of [4, TILE - 6]) {
+  // Then the steel over the top of them, wide enough and bright enough to be what the
+  // eye lands on.
+  for (const at of [3, TILE - 5]) {
     rect(ctx, at, 0, 2, TILE, RAIL_STEEL);
     rect(ctx, 0, at, TILE, 2, RAIL_STEEL);
-    rect(ctx, at, 0, 1, TILE, shade(RAIL_STEEL, 26));
-    rect(ctx, 0, at, TILE, 1, shade(RAIL_STEEL, 26));
+    rect(ctx, at, 0, 1, TILE, shade(RAIL_STEEL, 34));
+    rect(ctx, 0, at, TILE, 1, shade(RAIL_STEEL, 34));
   }
 });
 

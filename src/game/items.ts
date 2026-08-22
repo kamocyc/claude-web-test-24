@@ -86,7 +86,9 @@ blockItem('drain', Block.DRAIN);
 // One item for both states of the gate; it is placed closed and toggled in place.
 blockItem('floodgate', Block.FLOODGATE_CLOSED);
 blockItem('gold_ore', Block.GOLD_ORE, { smeltsTo: 'gold_ingot' });
-blockItem('rail', Block.RAIL);
+// The side of a rail block is ballast; the icon has to be the track, or a stack of it
+// in the hotbar is indistinguishable from gravel.
+blockItem('rail', Block.RAIL, { tex: 'rail_top' });
 
 // Cobblestone smelts back into smooth stone.
 ITEMS.get('cobblestone')!.smeltsTo = 'stone';

@@ -915,6 +915,71 @@ if (pinched) {
 }
 
 
+// --- railing a road until a train runs --------------------------------------
+// Pavement is speed and width is load; rail is both, and the last thing a line can be
+// given. Every column rail and the cart becomes a train — and one column of dirt anywhere
+// puts it back to the cart it had already earned, which is the demotion the panel has to
+// be able to point at.
+const byRoad = await evaluate(QUEST_ROUTE);
+console.log('before railing:', JSON.stringify({ vehicle: byRoad.vehicle, load: byRoad.load }));
+if (byRoad.vehicle === 'train') throw new Error('a road nobody railed is already a railway');
+console.log('railed:', await evaluate(() => window.voxelcraft.buildRailway()));
+await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'train'`, null, { timeout: 60000 });
+const byTrain = await evaluate(QUEST_ROUTE);
+console.log('after railing:', JSON.stringify({
+  vehicle: byTrain.vehicle, load: byTrain.load, grade: byTrain.grade, climb: byTrain.climb,
+}));
+// Railing re-lays the line, so the two loads are not quite the same road's. The exact
+// multiplier is pinned in `transport.test.ts`; what matters here is that it plainly
+// bought a great deal more than the cart did.
+if (byTrain.load <= byRoad.load) {
+  throw new Error(`a train should carry more than a cart: ${byRoad.load} -> ${byTrain.load}`);
+}
+console.log('linked panel with a train:', JSON.stringify(
+  await page.locator('.route-row').first().innerText().catch(() => null)));
+await shot('07y4-railway');
+
+// One rail, out of the middle, and the train stops.
+const unrailed = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const q = window.voxelcraft.quest();
+  const a = g.villages.get(q.origin);
+  const b = g.villages.get(q.target);
+  const mx = Math.round((a.x + b.x) / 2);
+  const mz = Math.round((a.z + b.z) / 2);
+  const near = window.voxelcraft.roadColumnsNear(mx, mz, 10);
+  near.sort((p, r) => Math.hypot(p.x - mx, p.z - mz) - Math.hypot(r.x - mx, r.z - mz));
+  // 49 is the dirt path: still a road, so the line stays joined and merely demotes.
+  const taken = [];
+  for (const c of near) {
+    if (g.world.getBlock(c.x, c.y, c.z) !== 59) continue;
+    taken.push({ x: c.x, y: c.y, z: c.z, was: 59 });
+    g.world.setBlock(c.x, c.y, c.z, 49);
+    if (taken.length >= 3) break;
+  }
+  return taken.length > 0 ? { taken } : null;
+});
+if (!unrailed) console.log('one rail out of the line: NO RAIL COLUMN FOUND');
+if (unrailed) {
+  await page.waitForFunction(`${QUEST_ROUTE}?.vehicle !== 'train'`, null, { timeout: 60000 });
+  const broken = await evaluate(QUEST_ROUTE);
+  console.log('one rail turned back to dirt:', JSON.stringify({
+    took: unrailed.taken.length,
+    vehicle: broken.vehicle,
+    connected: broken.connected,
+    pinch: broken.railPinch,
+    note: await page.locator('.route-note.rail').first().innerText().catch(() => null),
+  }));
+  if (!broken.connected) throw new Error('a line short of one rail should still carry goods');
+  if (!broken.railPinch) throw new Error('a line short of one rail should say where');
+  await evaluate((list) => {
+    for (const c of list) window.voxelcraft.game.world.setBlock(c.x, c.y, c.z, c.was);
+  }, unrailed.taken);
+  await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'train'`, null, { timeout: 60000 });
+  console.log('railed back:', await evaluate(QUEST_ROUTE).then((r) => r.vehicle));
+}
+
+
 // A route runs between two doorways, not two map pins: the shipment leaves the building
 // the player picked and arrives at the other village's.
 const ends = await evaluate(() => {
