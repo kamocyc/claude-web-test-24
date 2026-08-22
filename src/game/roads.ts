@@ -26,16 +26,16 @@ import { CHUNK_SIZE, blockIndex, parseChunkKey, toChunkCoord, toLocalCoord } fro
 import { VILLAGE_RADIUS } from '../world/generation/village';
 import type { VillageRecord } from './villages';
 
+/** What a rail column is worth. The top of the table on purpose: rail is the one surface
+ *  a player pays iron for, so it has to be the fastest thing there is. */
+export const RAIL_SPEED = 2.2;
+
 /** Blocks a player lays to make a road, and how fast a porter walks on each. Bare stone
  *  and dirt are deliberately absent: they are what the world is already made of, so they
  *  could not be told apart from it.
  *
  *  The spread is what keeps a finished road worth returning to. A trodden dirt path joins
  *  two villages; paving it over in stone brick is what makes the line pay. */
-/** What a rail column is worth. The top of the table on purpose: rail is the one surface
- *  a player pays iron for, so it has to be the fastest thing there is. */
-export const RAIL_SPEED = 2.2;
-
 export const ROAD_SPEED: ReadonlyMap<BlockId, number> = new Map<BlockId, number>([
   [Block.DIRT_PATH, 1],
   [Block.GRAVEL, 1.2],
