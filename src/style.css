@@ -1,0 +1,1416 @@
+:root {
+  --slot: 44px;
+  --panel-bg: rgba(18, 18, 22, 0.92);
+  --slot-bg: rgba(0, 0, 0, 0.42);
+  --slot-border: rgba(255, 255, 255, 0.18);
+  --accent: #7cc4ff;
+  --heart-full: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 14.6 1.7 8.3a3.7 3.7 0 0 1 5.2-5.2L8 4.2l1.1-1.1a3.7 3.7 0 0 1 5.2 5.2z' fill='%23e33b3b' stroke='%23140505' stroke-width='1.2'/%3E%3C/svg%3E");
+  --heart-empty: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 14.6 1.7 8.3a3.7 3.7 0 0 1 5.2-5.2L8 4.2l1.1-1.1a3.7 3.7 0 0 1 5.2 5.2z' fill='%23000' fill-opacity='.45' stroke='%23000' stroke-width='1.2'/%3E%3C/svg%3E");
+  --food-full: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M10.5 2c2.4 0 3.8 2 3.2 4-.5 1.7-2.3 2.7-3.9 3.4L6 11.6l-.9 2.2-1.6-.7.9-2.2-2-1.1 1-1.7 1.9 1.1 3.6-2C10.4 6.4 11.6 5.4 12 4.3 12.3 3.3 11.7 2.7 10.5 2z' fill='%23c98a3a' stroke='%23241206' stroke-width='1'/%3E%3C/svg%3E");
+  --bubble-full: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23bfe4ff' stroke='%230d2b45' stroke-width='1.4'/%3E%3Ccircle cx='6' cy='6' r='1.6' fill='%23ffffff'/%3E%3C/svg%3E");
+  --bubble-empty: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23000' fill-opacity='.4' stroke='%23000' stroke-width='1.4'/%3E%3C/svg%3E");
+  --food-empty: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M10.5 2c2.4 0 3.8 2 3.2 4-.5 1.7-2.3 2.7-3.9 3.4L6 11.6l-.9 2.2-1.6-.7.9-2.2-2-1.1 1-1.7 1.9 1.1 3.6-2C10.4 6.4 11.6 5.4 12 4.3 12.3 3.3 11.7 2.7 10.5 2z' fill='%23000' fill-opacity='.45' stroke='%23000' stroke-width='1'/%3E%3C/svg%3E");
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #05070f;
+  color: #f2f2f2;
+  font-family: 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', system-ui, sans-serif;
+  user-select: none;
+}
+
+#viewport {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  cursor: none;
+}
+
+body.screen-open #viewport {
+  cursor: default;
+}
+
+/* ---------- HUD ---------- */
+
+.hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 20px;
+  height: 20px;
+  margin: -10px 0 0 -10px;
+  background:
+    linear-gradient(#fff, #fff) center / 2px 20px no-repeat,
+    linear-gradient(#fff, #fff) center / 20px 2px no-repeat;
+  mix-blend-mode: difference;
+  opacity: 0.85;
+}
+
+.bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.held-label {
+  font-size: 15px;
+  text-shadow: 0 2px 3px #000;
+  opacity: 0;
+  transition: opacity 0.4s;
+  height: 20px;
+}
+
+.stats {
+  display: flex;
+  gap: 26px;
+  width: min(92vw, 560px);
+  justify-content: space-between;
+}
+
+.stat-row {
+  display: flex;
+  gap: 2px;
+}
+
+.stat-row.food {
+  flex-direction: row-reverse;
+}
+
+.stat-row.air {
+  justify-content: center;
+  margin-bottom: 2px;
+}
+
+.icon {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  background-size: 18px 18px;
+  background-repeat: no-repeat;
+}
+
+.icon::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 18px;
+  width: 0;
+  background-size: 18px 18px;
+  background-repeat: no-repeat;
+}
+
+.icon.heart {
+  background-image: var(--heart-empty);
+}
+.icon.heart::after {
+  background-image: var(--heart-full);
+}
+.icon.drumstick {
+  background-image: var(--food-empty);
+}
+.icon.drumstick::after {
+  background-image: var(--food-full);
+}
+.icon.bubble {
+  background-image: var(--bubble-empty);
+}
+.icon.bubble::after {
+  background-image: var(--bubble-full);
+}
+.icon.full::after {
+  width: 18px;
+}
+.icon.half::after {
+  width: 9px;
+}
+
+.hotbar {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 6px;
+}
+
+.slot {
+  position: relative;
+  width: var(--slot);
+  height: var(--slot);
+  background: var(--slot-bg);
+  border: 2px solid var(--slot-border);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.slot.small {
+  --slot: 34px;
+}
+
+.hotbar-slot.selected {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35);
+}
+
+.slot-icon {
+  width: 78%;
+  height: 78%;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+.slot-count {
+  position: absolute;
+  right: 3px;
+  bottom: 1px;
+  font-size: 12px;
+  font-weight: 700;
+  text-shadow: 0 1px 2px #000, 0 0 3px #000;
+  pointer-events: none;
+}
+
+/* Top-left column: the debug readout, then the objective under it. */
+.hud-left {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  max-height: calc(100vh - 140px);
+}
+
+.debug {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 6px;
+  font-family: ui-monospace, monospace;
+}
+
+.toasts {
+  position: absolute;
+  right: 16px;
+  bottom: 90px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.toast {
+  padding: 5px 10px;
+  font-size: 13px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 4px;
+  transition: opacity 0.6s;
+}
+
+.toast.fade {
+  opacity: 0;
+}
+
+.damage-flash {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle, rgba(180, 20, 20, 0) 35%, rgba(180, 20, 20, 0.55) 100%);
+  opacity: 0;
+}
+
+.damage-flash.active {
+  animation: hurt 0.45s ease-out;
+}
+
+@keyframes hurt {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* ---------- container screens ---------- */
+
+.screen-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.panel {
+  background: var(--panel-bg);
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 14px 18px 18px;
+  max-height: 92vh;
+  overflow: auto;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+}
+
+.panel-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+.panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.panel-row {
+  display: flex;
+  gap: 22px;
+  align-items: flex-start;
+}
+
+.panel-row.furnace {
+  align-items: flex-end;
+}
+
+.sub-panel {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.slot-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.slot-label {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.slots {
+  display: grid;
+  gap: 4px;
+}
+
+.hotbar-grid .slots {
+  margin-top: 6px;
+}
+
+.result .slot {
+  border-color: var(--accent);
+}
+
+.recipe-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 420px;
+}
+
+.recipe-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.recipe-search {
+  flex: 1;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: inherit;
+  background: var(--slot-bg);
+  border: 1px solid var(--slot-border);
+  border-radius: 5px;
+}
+
+.recipe-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  opacity: 0.8;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.recipe-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 42vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.recipe-heading {
+  margin-top: 6px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  opacity: 0.55;
+}
+
+.recipe-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 5px 9px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.recipe-row:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.recipe-row.locked {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.recipe-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.recipe-name {
+  font-size: 13px;
+}
+
+.recipe-cost {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.recipe-ingredient.missing {
+  color: #ff9b8a;
+  opacity: 1;
+}
+
+.recipe-stock {
+  margin-left: auto;
+  font-size: 11px;
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+.recipe-empty {
+  padding: 10px 2px;
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.cursor-stack {
+  position: fixed;
+  width: var(--slot);
+  height: var(--slot);
+  margin: -22px 0 0 -22px;
+  pointer-events: none;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gauges {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+  padding-bottom: 6px;
+}
+
+.gauge {
+  position: relative;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--slot-border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.gauge.flame {
+  width: 18px;
+  height: 30px;
+  display: flex;
+  align-items: flex-end;
+}
+
+.gauge.flame .gauge-fill {
+  width: 100%;
+  background: linear-gradient(#ffd166, #e8622a);
+}
+
+.gauge.progress {
+  width: 70px;
+  height: 14px;
+}
+
+.gauge.progress .gauge-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #9fd8ff, #4a9fe0);
+}
+
+.trade-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.trade-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+}
+
+.trade-row.sold-out {
+  opacity: 0.4;
+}
+
+.trade-side {
+  display: flex;
+  gap: 4px;
+}
+
+.trade-arrow {
+  opacity: 0.7;
+}
+
+.trade-button {
+  margin-left: auto;
+  padding: 7px 16px;
+  font: inherit;
+  font-size: 13px;
+  color: #08131c;
+  background: var(--accent);
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.trade-button:disabled {
+  background: #56606a;
+  color: #9aa3ab;
+  cursor: not-allowed;
+}
+
+.trade-empty {
+  opacity: 0.7;
+  font-size: 13px;
+}
+
+/* ---------- menus ---------- */
+
+.menu-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Translucent while paused or dead, so the world stays visible behind. */
+  background: rgba(4, 8, 14, 0.6);
+}
+
+.menu-layer.opaque {
+  background: linear-gradient(160deg, #0b1522, #060a12 70%);
+}
+
+.menu {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 34px 44px;
+  background: rgba(10, 14, 22, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  min-width: 340px;
+  /* The pause menu grows every time a setting is added, and the buttons at the bottom of
+     it — save, and quit to the title — are the ones a player most needs to reach. Let it
+     scroll rather than putting them off the end of a short window. */
+  max-height: 92vh;
+  overflow-y: auto;
+}
+
+.menu-title {
+  margin: 0;
+  font-size: 34px;
+  letter-spacing: 0.08em;
+}
+
+.menu-note {
+  margin: 0;
+  opacity: 0.75;
+  font-size: 14px;
+}
+
+.menu-button {
+  width: 100%;
+  padding: 11px 18px;
+  font: inherit;
+  font-size: 15px;
+  color: #eaf2f8;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.menu-button:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.menu-button.primary {
+  background: var(--accent);
+  color: #08131c;
+  border-color: transparent;
+  font-weight: 700;
+}
+
+.seed-input {
+  width: 100%;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 14px;
+  color: #eaf2f8;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+}
+
+.controls {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.9;
+  opacity: 0.72;
+  text-align: center;
+}
+
+.menu.death .menu-title {
+  color: #ff7b7b;
+}
+
+.click-prompt {
+  position: absolute;
+  left: 50%;
+  top: 58%;
+  transform: translateX(-50%);
+  padding: 10px 20px;
+  font-size: 15px;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 8px;
+  letter-spacing: 0.05em;
+}
+
+.underwater {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle, rgba(30, 90, 170, 0.35) 30%, rgba(12, 46, 96, 0.7) 100%);
+}
+
+.settings {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Named choices — the difficulty — rather than a scale. */
+/* One column per choice, however many there are: four difficulties, five speeds. */
+.choice-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 6px;
+}
+
+.choice {
+  padding: 7px 4px;
+  font: inherit;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.choice:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.choice.selected {
+  color: #06243b;
+  font-weight: 700;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.setting-note {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.62);
+  line-height: 1.35;
+  min-height: 1.35em;
+}
+
+.setting-row {
+  display: grid;
+  grid-template-columns: 6.5em 1fr 6.5em;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.slider {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.slider-value {
+  text-align: right;
+  opacity: 0.8;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.compass {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  width: 420px;
+  height: 34px;
+  margin-left: -210px;
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+
+.compass-strip {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.compass-tick {
+  position: absolute;
+  top: 9px;
+  width: 2px;
+  height: 7px;
+  margin-left: -1px;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.compass-tick.major {
+  top: 2px;
+  width: auto;
+  height: auto;
+  margin-left: -6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.85);
+  background: none;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.compass-marker {
+  position: absolute;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-left: -16px;
+  width: 32px;
+  padding-top: 1px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.15;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
+.compass-marker.spawn { color: #9ad8ff; }
+.compass-marker.death { color: #ff8f7c; }
+.compass-marker.village { color: #ffd479; }
+
+.compass-distance {
+  font-size: 10px;
+  font-weight: 400;
+  opacity: 0.9;
+}
+
+.forecast {
+  position: absolute;
+  top: 168px;
+  right: 14px;
+  width: 116px;
+  padding: 6px 8px 7px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.42);
+  color: #f2f2f2;
+  font-size: 11px;
+  line-height: 1.35;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+}
+
+.forecast-head {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.forecast-icon {
+  font-size: 13px;
+}
+
+.forecast-season {
+  font-weight: 700;
+}
+
+.forecast-timer {
+  margin-left: auto;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+
+.forecast-next {
+  opacity: 0.75;
+}
+
+.forecast-next.urgent {
+  opacity: 1;
+  color: #ffd479;
+}
+
+.forecast-bar {
+  position: relative;
+  height: 4px;
+  margin: 5px 0 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* The centre line is the river's normal level, so the fill reads as a rise or a fall. */
+.forecast-bar::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  left: 50%;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.forecast-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 2px;
+  background: #9ad8ff;
+}
+
+.forecast.drought .forecast-fill {
+  background: #ffb35c;
+}
+
+.forecast-level {
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+.minimap {
+  position: absolute;
+  top: 46px;
+  right: 14px;
+  width: 112px;
+  height: 112px;
+  border: 2px solid rgba(255, 255, 255, 0.22);
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.minimap-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+.minimap-north {
+  position: absolute;
+  top: 1px;
+  left: 50%;
+  margin-left: -4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
+.toggle-row {
+  cursor: pointer;
+}
+
+.toggle-row .toggle {
+  margin-left: auto;
+}
+
+.seed-label {
+  cursor: pointer;
+  user-select: all;
+}
+
+.menu-button.subtle {
+  font-size: 13px;
+  opacity: 0.75;
+}
+
+/* ---------- objective and transport routes ---------- */
+.route-panel {
+  width: 210px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+}
+
+.route-quest {
+  background: rgba(0, 0, 0, 0.42);
+  border-radius: 6px;
+  border-left: 3px solid var(--accent);
+  padding: 6px 8px;
+}
+
+.route-quest-title {
+  font-size: 12px;
+  font-weight: bold;
+  color: #ffffff;
+}
+
+.route-quest-detail {
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.72);
+  line-height: 1.35;
+}
+
+/* Which way the objective is, under its own description. */
+.route-quest-aim {
+  margin-top: 3px;
+  color: #7cc4ff;
+  font-variant-numeric: tabular-nums;
+}
+
+.route-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.route-row {
+  background: rgba(0, 0, 0, 0.42);
+  border-radius: 5px;
+  border-left: 3px solid #ff9b53;
+  padding: 4px 8px;
+}
+
+/* A joined-up route reads as done at a glance; an unfinished one keeps the warm edge. */
+.route-row.linked {
+  border-left-color: #7fd18a;
+}
+
+.route-pair {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.route-status {
+  color: rgba(255, 255, 255, 0.66);
+  font-variant-numeric: tabular-nums;
+}
+
+.route-row.linked .route-status {
+  color: #7fd18a;
+}
+
+.route-row.broken .route-status {
+  color: #ff9b53;
+}
+
+.compass-marker.gap {
+  color: #ff9b53;
+}
+
+/* Wherever the objective is pointing, so the destination stands out from the villages
+   already on the strip. */
+.compass-marker.target {
+  color: #7cc4ff;
+}
+
+/* What the player is looking at, when it is a building worth naming. Under the crosshair
+   because that is what it is about, and never in the way of the hotbar. */
+.building-prompt {
+  position: absolute;
+  left: 50%;
+  top: 56%;
+  transform: translateX(-50%);
+  padding: 5px 10px 6px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.46);
+  color: #f2f2f2;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.building-title {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.building-hint {
+  font-size: 11px;
+  color: #8ef0b8;
+}
+
+/* A shipment on its way. Green, because it is the thing working. */
+.compass-marker.porter {
+  color: #8ef0b8;
+}
+
+.route-cargo {
+  font-variant-numeric: tabular-nums;
+}
+
+.route-cargo.moving {
+  color: #8ef0b8;
+}
+
+/* Joined up but idle: not a fault, just nothing loaded yet. */
+.route-cargo.waiting {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* Why a road does not join, or does not pay. Matches the beacon colours in the world. */
+.route-note {
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.route-note.fault {
+  color: #ff8f7c;
+}
+
+.route-note.narrow {
+  color: #ffc457;
+}
+
+.route-note.cost {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* ---------- the tutorial row above a villager's offers ---------- */
+.trade-row.quest-row {
+  border: 1px solid rgba(124, 196, 255, 0.55);
+  background: rgba(124, 196, 255, 0.1);
+}
+
+.quest-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.quest-label {
+  font-weight: bold;
+}
+
+.quest-detail {
+  margin-top: 2px;
+  font-size: 11px;
+  opacity: 0.72;
+}
+
+.trade-button.quest-button {
+  background: var(--accent);
+  color: #06243b;
+  font-weight: bold;
+}
+
+/* ---------- position readout and the debug warp box ---------- */
+.coords {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.42);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+}
+
+.coords-position {
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.coords-detail {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.warp-dialog {
+  position: fixed;
+  left: 50%;
+  top: 26%;
+  transform: translateX(-50%);
+  z-index: 25;
+  width: 260px;
+  padding: 14px 16px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(12, 16, 22, 0.94);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+}
+
+.warp-title {
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.warp-hint {
+  margin-top: 3px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.warp-input {
+  width: 100%;
+  margin-top: 9px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.45);
+  color: inherit;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+}
+
+.warp-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.warp-error {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #ff9d9d;
+}
+
+.warp-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.warp-buttons .menu-button {
+  flex: 1;
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+/* ---------- the trade ledger, and what a village is short of --------------- */
+
+.trade-note {
+  max-width: 520px;
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  border-left: 3px solid #c8b06a;
+  background: rgba(0, 0, 0, 0.28);
+  color: #e8e2cf;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ledger-host {
+  max-height: 60vh;
+  overflow-y: auto;
+  min-width: 640px;
+}
+
+.ledger-summary {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.ledger-stat {
+  padding: 4px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 3px;
+  font-size: 13px;
+  color: #e8e2cf;
+}
+
+.ledger-goal {
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border-left: 3px solid #7fc47f;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.ledger-goal-title {
+  font-size: 14px;
+  color: #e8e2cf;
+}
+
+.ledger-goal-detail {
+  font-size: 12px;
+  color: #b9b39f;
+}
+
+.ledger-heading {
+  margin: 10px 0 4px;
+  font-size: 13px;
+  color: #c8b06a;
+}
+
+.ledger-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ledger-row {
+  display: grid;
+  grid-template-columns: 1.4fr 0.6fr 1.4fr 1fr 1.6fr 0.8fr 0.7fr;
+  gap: 8px;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: #ded8c4;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.ledger-row.head {
+  color: #9a927c;
+  background: none;
+}
+
+/* A route that works, and one that has been dug up, should be tellable apart without
+   reading the text. */
+.ledger-row.linked {
+  border-left: 3px solid #7fc47f;
+}
+
+.ledger-row.broken {
+  border-left: 3px solid #c47f7f;
+}
+
+.ledger-row.starved {
+  border-left: 3px solid #c8b06a;
+}
+
+.ledger-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ledger-empty,
+.ledger-note {
+  padding: 6px;
+  font-size: 12px;
+  color: #9a927c;
+}
+
+/* ---------- 遊びかた（H） ---------- */
+
+.help-host {
+  max-height: 64vh;
+  overflow-y: auto;
+  min-width: 620px;
+  max-width: 720px;
+}
+
+.help-goal {
+  margin-bottom: 12px;
+  padding: 6px 10px;
+  border-left: 3px solid #7fc47f;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.help-goal-title {
+  font-size: 14px;
+  color: #e8e2cf;
+}
+
+.help-goal-detail {
+  font-size: 12px;
+  color: #b9b39f;
+}
+
+.help-heading {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  color: #c8b06a;
+  border-bottom: 1px solid rgba(200, 176, 106, 0.35);
+  padding-bottom: 3px;
+}
+
+.help-note {
+  margin: 3px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #cfc9b6;
+}
+
+.help-steps {
+  margin: 6px 0;
+}
+
+.help-step {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.help-mark {
+  width: 14px;
+  flex: 0 0 14px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.help-step.done .help-mark {
+  color: #8ef0b8;
+}
+
+.help-step.current .help-mark {
+  color: #ffd479;
+}
+
+.help-step.done .help-step-label {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.help-step.current .help-step-label {
+  color: #ffd479;
+}
+
+.help-step-label {
+  color: #e8e2cf;
+}
+
+.help-step-detail {
+  color: #9d977f;
+  font-size: 11px;
+}
+
+.help-table {
+  margin: 6px 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.help-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: #cfc9b6;
+}
+
+.help-row:nth-child(even) {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.help-row.head {
+  color: #c8b06a;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+/* Wider tables lay themselves out from the header's own cell count. */
+.help-row:has(> .help-cell:nth-child(3)) {
+  grid-template-columns: 2fr 1fr 1fr;
+}
+
+.help-row:has(> .help-cell:nth-child(4)) {
+  grid-template-columns: 2fr 1fr 1fr 1.4fr;
+}
+
+.help-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- fast forward ---------- */
+
+/* Loud on purpose: a world quietly running sixteen times faster than the player expects
+   is a world that has lied to them. */
+.speed-badge {
+  position: absolute;
+  /* Just under the compass strip, which owns the top of the screen. */
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 12px;
+  border: 1px solid rgba(255, 212, 121, 0.5);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #ffd479;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
