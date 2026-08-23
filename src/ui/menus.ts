@@ -26,7 +26,8 @@ const TOGGLE_LABELS: [ToggleKey, string][] = [
 export interface TitleActions {
   onNewWorld(seed: string): void;
   onContinue(): void;
-  /** The fixed world, plus a finished road between two villages to stand on. */
+  /** The fixed world, plus a road between two villages to stand on — railed most of
+   *  the way, with the last stretch and the rails for it left to the player. */
   onSampleWorld(): void;
 }
 
@@ -40,7 +41,7 @@ export class Menus {
   private readonly loadingText = el('div', 'menu-note', 'ワールドを生成しています...');
   private readonly seedInput = el('input', 'seed-input');
   private readonly continueButton = el('button', 'menu-button', '続きから');
-  private readonly sampleButton = el('button', 'menu-button subtle', '見本ワールド（道つき）');
+  private readonly sampleButton = el('button', 'menu-button subtle', '見本ワールド（道と鉄道）');
   private readonly verifyButton = el('button', 'menu-button subtle', '検証用ワールド');
   private newButton!: HTMLButtonElement;
   private resumeButton!: HTMLButtonElement;

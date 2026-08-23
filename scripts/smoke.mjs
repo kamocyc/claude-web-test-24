@@ -1227,9 +1227,33 @@ await page.waitForFunction(
 const sampleRoutes = await evaluate(() => window.voxelcraft.routes().filter((r) => r.length > 250));
 console.log('sample route:', JSON.stringify(sampleRoutes));
 // The sample road is laid three columns across, so somebody opening 見本ワールド sees a
-// cart on it rather than being told about one.
-if (!sampleRoutes.some((r) => r.vehicle === 'cart')) {
+// cart on it rather than being told about one. A train, if the pair happened to be one
+// this run already railed, is the better answer to the same question.
+if (!sampleRoutes.some((r) => r.vehicle === 'cart' || r.vehicle === 'train')) {
   throw new Error(`the sample road is too narrow for a cart: ${JSON.stringify(sampleRoutes)}`);
+}
+// And it is railed down the middle of all but its first stretch, with the rails for the
+// rest handed over — the half-built railway is the sample's second lesson, and a player
+// who is given neither the gap nor the rails to close it is given only the first.
+const sampleRail = await evaluate(() => {
+  const surfaces = window.voxelcraft.game.roads.surfaces;
+  let rail = 0;
+  for (const block of surfaces.values()) if (block === 59) rail++;
+  return { rail, columns: surfaces.size, held: window.voxelcraft.game.player.inventory.count('rail') };
+});
+console.log('sample railway:', JSON.stringify(sampleRail));
+if (sampleRail.rail < 100) {
+  throw new Error(`the sample road carries no railway: ${JSON.stringify(sampleRail)}`);
+}
+if (sampleRail.held < 60) {
+  throw new Error(`the sample world handed over too few rails: ${JSON.stringify(sampleRail)}`);
+}
+// The gap has to be reported, not merely left: a break nobody is pointed at is a bug the
+// player gets blamed for. (Unless this pair is already a train, in which case there is
+// no gap to report.)
+const sampleGap = sampleRoutes.find((r) => r.vehicle !== 'train');
+if (sampleGap && !sampleGap.railPinch) {
+  throw new Error(`the sample railway's gap is not pointed at: ${JSON.stringify(sampleGap)}`);
 }
 await evaluate(() => {
   window.voxelcraft.game.player.pitch = -0.12;

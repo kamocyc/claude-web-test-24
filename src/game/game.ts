@@ -180,6 +180,16 @@ const PAVE_BRIDGE = 12;
 /** Width of the road the sample world is built with. Three columns is what a cart needs,
  *  and a sample road nobody can run a cart down teaches the wrong half of the lesson. */
 const SAMPLE_WIDTH = 3;
+/** Columns of the sample road left unrailed, at the end the player starts on.
+ *
+ *  A railway handed over finished shows the train and nothing else: not the tools, not
+ *  the violet beacon over the break, not what a line looks like while it is half done.
+ *  Leaving the near end bare puts all three in front of the player at once, and the walk
+ *  to close it is three presses of `[R]` rather than an afternoon. */
+const SAMPLE_RAIL_GAP = 60;
+/** Rails the sample world hands over: enough for the gap, and enough over it that a
+ *  wandering line or a second thought does not strand the player halfway. */
+const SAMPLE_RAIL_SPARE = 24;
 /** Seconds between two complaints about a road that will not take. Often enough to catch
  *  the branch the player is standing under, rarely enough to stay out of the way. */
 const FAULT_TOAST_INTERVAL = 4;
@@ -271,6 +281,9 @@ export class Game {
   /** Held until the world is ready, because a toast raised during construction would be
    *  shown to a screen that is still saying "generating terrain". */
   private sampleToast: string | null = null;
+  /** The same, for the sample world's half-built railway. Two toasts rather than one
+   *  sentence: what is there and what is missing are two different things to read. */
+  private railToast: string | null = null;
   /** World steps the last frame actually managed, which is what the HUD reports. */
   private effectiveSpeed = 1;
   private openContainerPos: { x: number; y: number; z: number } | null = null;
@@ -448,6 +461,10 @@ export class Game {
         if (this.sampleToast) {
           this.hud.toast(this.sampleToast);
           this.sampleToast = null;
+        }
+        if (this.railToast) {
+          this.hud.toast(this.railToast);
+          this.railToast = null;
         }
         // Pointer lock can only be requested from a real user gesture, so the player
         // clicks once to start looking around.
@@ -2454,6 +2471,18 @@ export class Game {
     const start = this.roads.streetPoint(from, to.x, to.z);
     const end = this.roads.streetPoint(to, from.x, from.z);
     const blocks = this.runRoad(start, end, Block.DIRT_PATH, start.y, end.y, SAMPLE_WIDTH);
+    // Then the same line again in rail, one column wide, skipping the stretch nearest the
+    // player. The spine is worked out from `start` and `end` alone and is laid in order,
+    // so this second pass lands on exactly the centre of the band the first one put down,
+    // at the same heights — and `betterOf` keeps rail over dirt, so the road underneath
+    // is not disturbed. What comes out is a road three across with rails down the middle
+    // of all but its first `SAMPLE_RAIL_GAP` columns.
+    let reached = 0;
+    this.runRoad(start, end, Block.RAIL, start.y, end.y, 1, {
+      take: () => ++reached > SAMPLE_RAIL_GAP,
+    });
+    const gap = Math.min(SAMPLE_RAIL_GAP, reached);
+    this.player.inventory.add({ id: 'rail', count: gap + SAMPLE_RAIL_SPARE });
     this.villages.discover(from.id);
     this.villages.discover(to.id);
     this.transport.requestRoute(from.id, to.id);
@@ -2466,6 +2495,11 @@ export class Game {
     this.player.teleportTo(stand.x + 0.5, stand.y + 1, stand.z + 0.5);
     this.player.yaw = Math.atan2(-(end.x - start.x), -(end.z - start.z));
     this.sampleToast = `見本: ${from.name}と${to.name}を結ぶ ${blocks} マスの道（幅 ${SAMPLE_WIDTH}・荷車が通れる）`;
+    // The second line is the invitation. The first says what is already there; this says
+    // what is missing, where, and that the answer is in the player's hands.
+    this.railToast =
+      `この先はレールが敷いてある。足もとの ${gap} マスだけ空いているので、` +
+      `持っているレールで埋めれば列車が走る（紫の光の柱がその場所）`;
     return { from: from.name, to: to.name, blocks };
   }
 
