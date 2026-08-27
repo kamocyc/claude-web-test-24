@@ -8,6 +8,12 @@
  *  letting one drive the clock meant a porter caught on a doorway stopped the line for as
  *  long as somebody stood watching it.
  *
+ *  The clock *can* be stopped, and by exactly one thing: another shipment holding the
+ *  block of railway ahead. That is what a signal is. It is worth saying out loud which
+ *  half of the old rule that leaves standing — a shipment may wait for another shipment,
+ *  and a shipment may never wait for a mob. Blur the two and the porter on the doorstep
+ *  stops the line again.
+ *
  *  What the road is paved with sets both how fast that number moves and how much one trip
  *  carries, so a line the player comes back to and improves keeps paying more. And a
  *  porter only walks home empty when there is nothing at the far end worth bringing
@@ -39,6 +45,15 @@ export const MAX_PORTERS = 3;
 export const PORTER_SPACING = 0.15;
 /** Seconds between attempts to survey a road that is not connected yet. */
 export const RESURVEY_INTERVAL = 2;
+/** The block id of a stretch of railway no signal bounds, which is every stretch of one
+ *  nobody has signalled. Kept in step with the railway's own by hand rather than imported,
+ *  because this module does not know what a railway is made of and is not going to start
+ *  now — what it needs is a number that no real block ever takes, and zero is that. */
+export const UNWATCHED = 0;
+/** How long a shipment stands at a signal before the line is called blocked rather than
+ *  busy. Long enough that a train waiting its turn at a passing loop is just traffic;
+ *  short enough that somebody who has jammed a single line finds out in the same visit. */
+export const STALL_WAIT = 10;
 /** Emeralds paid for hauling one good over this many blocks. Deliberately modest: the
  *  network should fund the shopping, not end it. A well paved line pays a few emeralds a
  *  trip, so an afternoon of hauling buys a villager's table rather than all of them. */
@@ -120,6 +135,9 @@ export interface Porter {
    *  line, another porter walks it in at the far end — and this is how the view notices
    *  it has to swap one for the other. Null whenever nothing is drawing it. */
   mobVehicle: Vehicle | null;
+  /** Seconds this shipment has been standing at a signal it may not pass. Zero whenever
+   *  it moved, so it counts the wait it is in rather than the waits it has had. */
+  held: number;
 }
 
 export interface Route {
@@ -172,6 +190,19 @@ export interface Route {
    *  out to the platform and in at the far end by somebody on foot, and only the middle
    *  of the journey is a train. */
   railSpan: { from: number; to: number } | null;
+  /** Where along the trip the block of railway changes, as fractions of `length` — the
+   *  same units `porter.t` is in, and for the same reason `railSpan` is. Empty on a route
+   *  no signal watches, which is every route in a world where nobody has built one. */
+  sections: { at: number; id: number }[];
+  /** The signal a shipment on this route has been stuck at for longer than `STALL_WAIT`,
+   *  and null the rest of the time.
+   *
+   *  Two trains nose to nose on a single line each hold the block the other is waiting
+   *  for, and neither ever moves again. That is left to happen on purpose: the railway is
+   *  the player's, and a game that quietly untangled it would be teaching them nothing
+   *  about why the siding they did not build was worth building. What it must not be is
+   *  silent, so this is what the yellow light and the note on the panel are made of. */
+  stall: RoadPoint | null;
   /** The longest stretch at either end between a depot's door and the road proper. */
   doorGap: number;
   /** Straight-line distance still to be paved, when not connected. */
@@ -220,6 +251,14 @@ export interface RailWay {
   /** Blocks of up and down along it. Not derivable from the points to any accuracy worth
    *  having: they are samples of a curve, and the sag between two of them is real. */
   climb: number;
+  /** Where along `points` the block of railway changes, and to which. Empty on a line no
+   *  signal bounds, and absent entirely from a `RailSource` that has never heard of
+   *  signals — a test that hands over four points and a length still works.
+   *
+   *  This is the whole of what this module learns about the graph. It never sees a node,
+   *  a switch or a curve: a block is an opaque number, two shipments may not hold the
+   *  same one, and that is the entire rule. */
+  sections?: { at: number; id: number }[];
 }
 
 /** The railway, as the only two questions transport has to ask of it.
@@ -308,6 +347,18 @@ export class TransportNetwork {
   private surveyedRails = -1;
   /** Where the round robin over routes starts this update. */
   private dispatchCursor = 0;
+  /** Which shipment is holding each watched block of railway.
+   *
+   *  One map for the whole network and not one per route, because that is the entire
+   *  point of a junction: two lines that share a stretch of rail have to share the
+   *  occupancy of it too, or a signal would only ever hold up the line it stands on.
+   *
+   *  Rebuilt from where the shipments actually are at the top of every update rather than
+   *  kept in step by hand. There are half a dozen ways a shipment stops existing — it
+   *  arrives, its road is dug up, its route stops being a railway — and a claim leaked by
+   *  any one of them would wedge a block shut for the rest of the session with nothing on
+   *  the line to show for it. */
+  private readonly holding = new Map<number, Porter>();
 
   constructor(
     private readonly roads: RoadNetwork,
@@ -348,6 +399,8 @@ export class TransportNetwork {
       railPinch: null,
       stationGap: null,
       railSpan: null,
+      sections: [],
+      stall: null,
       doorGap: 0,
       missing: 0,
       gapFrom: null,
@@ -432,6 +485,7 @@ export class TransportNetwork {
         }
       }
     }
+    this.reblock();
     // Round robin rather than array order. Every route sharing a village calls
     // `takeStock` on it in the same frame and `takeStock` hands over whatever is there,
     // so a fixed order let whichever route happened to be first drain that village every
@@ -519,6 +573,8 @@ export class TransportNetwork {
       route.railPinch = this.railhead(places);
       route.stationGap = this.stationGap(places);
       route.railSpan = null;
+      route.sections = [];
+      route.stall = null;
       route.missing = 0;
       route.gapFrom = null;
       route.gapTo = null;
@@ -535,6 +591,8 @@ export class TransportNetwork {
     route.railPinch = this.railhead(places);
     route.stationGap = this.stationGap(places);
     route.railSpan = null;
+    route.sections = [];
+    route.stall = null;
     this.setVehicle(route, 'porter');
     if (was) {
       // The road was broken while goods were on it. Send them home rather than losing
@@ -586,6 +644,16 @@ export class TransportNetwork {
       from: (route.cumulative[railFirst] ?? 0) / route.length,
       to: (route.cumulative[railLast] ?? route.length) / route.length,
     };
+    // The blocks, in the same units and by the same arithmetic. The walk at each end is
+    // part of the trip but no part of any block: the first boundary is moved back to the
+    // doorstep so that a shipment which has not reached the platform yet is already
+    // holding the block it is about to enter, rather than claiming it at the last moment
+    // with the train already rolling.
+    route.sections = way.sections?.map((mark, i) => ({
+      at: i === 0 ? 0 : (route.cumulative[railFirst + mark.at] ?? 0) / route.length,
+      id: mark.id,
+    })) ?? [];
+    route.stall = null;
     route.cartPinch = null;
     route.railPinch = null;
     route.stationGap = null;
@@ -718,6 +786,59 @@ export class TransportNetwork {
     return t >= span.from && t <= span.to ? 'train' : 'porter';
   }
 
+  /** Which block of railway a point along a route is in, and `UNWATCHED` where no signal
+   *  bounds it. The boundaries are in order, so this is the last one already passed. */
+  sectionAt(route: Route, t: number): number {
+    let id = UNWATCHED;
+    for (const mark of route.sections) {
+      if (mark.at > t) break;
+      id = mark.id;
+    }
+    return id;
+  }
+
+  /** Re-reads which shipment holds which block, and reports whichever route has had one
+   *  standing at a signal long enough to call it stuck.
+   *
+   *  Where two shipments are already inside one watched block — a signal built under a
+   *  train that was halfway past it — one of them holds it and the other is simply not
+   *  recorded. That is deliberate: neither is asked to leave, and the one not holding it
+   *  is free to carry on to the far end, which is the only way out of a situation nobody
+   *  could have avoided making. */
+  private reblock(): void {
+    this.holding.clear();
+    for (const route of this.routes) {
+      let stall: RoadPoint | null = null;
+      for (const porter of route.porters) {
+        const id = this.sectionAt(route, porter.t);
+        if (id !== UNWATCHED && !this.holding.has(id)) this.holding.set(id, porter);
+        if (porter.held < STALL_WAIT || stall) continue;
+        stall = this.pointAt(route, porter.t);
+      }
+      route.stall = stall;
+    }
+  }
+
+  /** Whether a shipment may move to where it is about to be.
+   *
+   *  Only the crossing matters. A shipment already inside a block stays free to move
+   *  about in it however long somebody else has been recorded as holding it, and a
+   *  shipment that is not crossing a boundary is never asked anything at all — which is
+   *  what makes an unsignalled railway, where there are no boundaries, cost nothing. */
+  private clearAhead(route: Route, porter: Porter, next: number): boolean {
+    if (route.sections.length === 0) return true;
+    const here = this.sectionAt(route, porter.t);
+    const want = this.sectionAt(route, next);
+    if (want === here || want === UNWATCHED) return true;
+    const held = this.holding.get(want);
+    if (held && held !== porter) return false;
+    // Taken now rather than at the top of the next update, so two shipments a step apart
+    // on the same line do not both walk into the block in the same frame.
+    this.holding.set(want, porter);
+    if (this.holding.get(here) === porter) this.holding.delete(here);
+    return true;
+  }
+
   private advance(route: Route, dt: number, playerX: number, playerZ: number): void {
     if (!route.connected) return;
 
@@ -728,7 +849,14 @@ export class TransportNetwork {
       const porter = route.porters[i];
       // The clock is the truth, watched or not. Letting the mob drive it instead meant a
       // porter snagged on a doorway stopped the whole line for as long as the player
-      // stood there — which is exactly when they were looking.
+      // stood there — which is exactly when they were looking. The one thing that may
+      // stop it is the block ahead being somebody else's.
+      if (!this.clearAhead(route, porter, porter.t + step * porter.dir)) {
+        porter.held += dt;
+        this.syncMob(route, porter, playerX, playerZ);
+        continue;
+      }
+      porter.held = 0;
       porter.t += step * porter.dir;
       this.syncMob(route, porter, playerX, playerZ);
 
@@ -777,6 +905,7 @@ export class TransportNetwork {
         cargo,
         mobId: null,
         mobVehicle: null,
+        held: 0,
       });
       return;
     }

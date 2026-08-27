@@ -12,9 +12,12 @@ import {
   loadFor,
   payFor,
   portersFor,
+  STALL_WAIT,
   type DepotSource,
+  type Porter,
   type PorterHost,
   type RailSource,
+  type Route,
   type RailWay,
   type TransportEvents,
   type Vehicle,
@@ -116,7 +119,27 @@ class FakeRails implements RailSource {
 
   wayBetween(from: RoadPoint, to: RoadPoint): RailWay | null {
     if (this.built < 1 || !this.manned) return null;
-    return { points: this.line(from, to, 1), climb: 0 };
+    const points = this.line(from, to, 1);
+    return { points, climb: 0, sections: this.blocks(points.length) };
+  }
+
+  /** Signals every `gap` points along the line, or none at all. Zero is what every
+   *  railway in the world is until somebody builds one, and it is the case that has to
+   *  keep behaving exactly as it always did. */
+  signalEvery(gap: number): void {
+    this.gap = gap;
+    this.moved++;
+  }
+
+  private gap = 0;
+
+  /** The blocks the signals cut the line into, numbered from 101 so that nothing in a
+   *  test can be confused with the unwatched zero. */
+  private blocks(points: number): { at: number; id: number }[] {
+    if (this.gap <= 0) return [];
+    const out: { at: number; id: number }[] = [];
+    for (let at = 0; at < points; at += this.gap) out.push({ at, id: 101 + out.length });
+    return out;
   }
 
   /** An end near a place with nothing to load freight at it. The rails here run from the
@@ -959,5 +982,128 @@ describe('a train on a railway', () => {
     for (let t = 0; t < 4; t += 0.5) transport.update(0.5, 0, 0);
     expect(transport.routes[0].vehicle).toBe('porter');
     expect(drawn[drawn.length - 1]).toBe('porter');
+  });
+});
+
+describe('signals and the block ahead', () => {
+  /** A railway between the two villages, signalled or not, with the route surveyed and
+   *  whatever `dispatch` sent on it cleared away — every test here places its own
+   *  shipments, because where they are is the entire subject. */
+  function railway(gap: number) {
+    const rails = new FakeRails();
+    rails.signalEvery(gap);
+    const { transport } = build({ surface: null, rails });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    const route = transport.routes[0];
+    route.porters.length = 0;
+    return { transport, route };
+  }
+
+  /** Puts a shipment on the line at `t`, heading the way `dir` says. */
+  function ship(route: Route, t: number, dir: 1 | -1): Porter {
+    const porter: Porter = {
+      t, dir, home: dir === 1 ? 0 : 1, good: 'wheat', cargo: 1,
+      mobId: null, mobVehicle: null, held: 0,
+    };
+    route.porters.push(porter);
+    return porter;
+  }
+
+  it('cuts the trip up where the railway says the blocks are', () => {
+    const { route } = railway(3);
+    // Nine points from village to village, a signal every third: three blocks, and the
+    // first one starts at the very beginning of the trip rather than at the platform.
+    expect(route.sections.map((mark) => mark.id)).toEqual([101, 102, 103]);
+    expect(route.sections[0].at).toBe(0);
+    expect(route.sections[1].at).toBeCloseTo(0.375, 3);
+    expect(route.sections[2].at).toBeCloseTo(0.75, 3);
+  });
+
+  it('lets two shipments share an unsignalled line, exactly as it always did', () => {
+    // The rule the whole feature stands on: every railway built before signals existed
+    // has none on it, and must go on running as if none of this were here.
+    const { transport, route } = railway(0);
+    expect(route.sections).toEqual([]);
+    const front = ship(route, 0.5, 1);
+    const behind = ship(route, 0.4, 1);
+    run(transport, 1);
+    expect(behind.t, 'the second shipment was held up on a line with no signals')
+      .toBeGreaterThan(0.4);
+    expect(behind.held).toBe(0);
+    expect(front.t).toBeGreaterThan(0.5);
+  });
+
+  it('stops a shipment at the signal rather than letting it into an occupied block', () => {
+    const { transport, route } = railway(3);
+    // One in the middle block, one coming up behind it in the first.
+    ship(route, 0.5, 1);
+    const behind = ship(route, 0.3, 1);
+    run(transport, 4);
+    expect(behind.t, 'the second shipment ran into the back of the first')
+      .toBeLessThan(route.sections[1].at);
+    expect(behind.held, 'it was not recorded as waiting').toBeGreaterThan(0);
+  });
+
+  it('lets it go the moment the block ahead is empty', () => {
+    const { transport, route } = railway(3);
+    const front = ship(route, 0.5, 1);
+    const behind = ship(route, 0.3, 1);
+    run(transport, 4);
+    const waited = behind.t;
+    expect(waited, 'nothing was ever held up, so nothing is being let go').toBeLessThan(
+      route.sections[1].at,
+    );
+    route.porters.splice(route.porters.indexOf(front), 1);
+    run(transport, 4);
+    expect(behind.t, 'the block stayed shut after the train in it had gone')
+      .toBeGreaterThan(route.sections[1].at);
+    expect(behind.t).toBeGreaterThan(waited);
+    expect(behind.held).toBe(0);
+  });
+
+  it('does not hold up a shipment already inside the block it is in', () => {
+    // A signal built under a train halfway past it leaves two shipments in one block.
+    // Neither is asked to leave: whichever is not recorded as holding it is still free to
+    // carry on out of the far end, which is the only way that ever untangles itself.
+    const { transport, route } = railway(3);
+    const first = ship(route, 0.5, 1);
+    const second = ship(route, 0.55, 1);
+    run(transport, 1);
+    expect(first.t).toBeGreaterThan(0.5);
+    expect(second.t).toBeGreaterThan(0.55);
+  });
+
+  it('jams when two shipments meet head on, and says so rather than going quiet', () => {
+    // Left to happen on purpose. The railway is the player's, and untangling it for them
+    // would teach them nothing about the passing loop they did not build — but a line
+    // that stopped in silence would teach them nothing either.
+    const { transport, route } = railway(3);
+    // Nose to nose either side of the signal at 0.375: each is in the block the other
+    // wants, so neither can be let through and neither will ever give way.
+    const east = ship(route, 0.3, 1);
+    const west = ship(route, 0.4, -1);
+    run(transport, 4);
+    expect(route.stall, 'a jam was called before anybody had waited long enough').toBeNull();
+    run(transport, STALL_WAIT);
+    expect(east.held).toBeGreaterThan(STALL_WAIT);
+    expect(west.held).toBeGreaterThan(STALL_WAIT);
+    expect(route.stall, 'the line jammed and nothing said so').not.toBeNull();
+    // And it stays jammed: nothing here quietly picks a winner.
+    const held = { east: east.t, west: west.t };
+    run(transport, 10);
+    expect(east.t).toBeCloseTo(held.east, 6);
+    expect(west.t).toBeCloseTo(held.west, 6);
+  });
+
+  it('forgets the jam once the line is running again', () => {
+    const { transport, route } = railway(3);
+    ship(route, 0.3, 1);
+    const west = ship(route, 0.4, -1);
+    run(transport, STALL_WAIT + 4);
+    expect(route.stall).not.toBeNull();
+    route.porters.splice(route.porters.indexOf(west), 1);
+    run(transport, 2);
+    expect(route.stall).toBeNull();
   });
 });

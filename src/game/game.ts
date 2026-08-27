@@ -3970,6 +3970,29 @@ export class Game {
           ways: node.ports.length,
           taken: node.ports.filter((port) => port.edge !== null).length,
         })),
+      /** Every signal on the network. */
+      signals: () => this.trackNet.signals().map((node) => ({
+        id: node.id,
+        x: Math.round(node.x), y: Math.round(node.y), z: Math.round(node.z),
+      })),
+      /** Puts a signal on the end of the line nearest a point, or takes one down. */
+      putSignal: (x: number, z: number, built = true): number | null => {
+        const near = this.trackNet.nodesNear(x, z, 6);
+        if (near.length === 0) return null;
+        near.sort((a, b) => Math.hypot(a.x - x, a.z - z) - Math.hypot(b.x - x, b.z - z));
+        if (!this.trackNet.setSignal(near[0].id, built)) return null;
+        this.transport.invalidate();
+        return near[0].id;
+      },
+      /** The blocks the signals cut the railway into, and how many runs are in each.
+       *  `watched` is the ones a signal actually bounds, which are the only ones anything
+       *  ever waits for — a network with none placed reports every block unwatched. */
+      sections: () => {
+        const blocks = this.trackNet.sections();
+        const count = new Map<number, number>();
+        for (const id of blocks.of.values()) count.set(id, (count.get(id) ?? 0) + 1);
+        return [...count].map(([id, runs]) => ({ id, runs, watched: blocks.watched.has(id) }));
+      },
       /** Every station on the network, and which village each one is close enough to
        *  serve. A line with no station on it carries nothing, so this is the first thing
        *  to look at when a finished railway is not running trains. */

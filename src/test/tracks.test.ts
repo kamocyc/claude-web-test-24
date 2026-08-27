@@ -15,6 +15,7 @@ import {
   TRACK_WIDTH,
   edgesOf,
   freePorts,
+  UNWATCHED,
   type TrackAnchor,
   type TrackCurve,
   type TrackEdge,
@@ -1036,5 +1037,123 @@ describe('finding a way through a switch', () => {
     const head = net.railheadTowards({ x: 0, y: 64, z: 0 }, { x: 400, y: 64, z: 400 })!;
     expect(head.x).toBeCloseTo(66, 0);
     expect(head.z).toBeCloseTo(34, 0);
+  });
+});
+
+describe('cutting the railway into blocks', () => {
+  /** Three runs end to end, east from the origin through joints at 60 and 120, with a
+   *  station on each end. The same shape as the way-between fixture, and the simplest
+   *  thing a signal can be put in the middle of. */
+  function chain(): TrackNetwork {
+    const net = new TrackNetwork();
+    for (const run of [
+      net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0)),
+      net.lay(end(60, 64, 0, 1, 0), end(120, 64, 0, 1, 0)),
+      net.lay(end(120, 64, 0, 1, 0), end(180, 64, 0, 1, 0)),
+    ]) {
+      if (!run.ok) throw new Error('could not lay the line');
+    }
+    for (const x of [0, 180]) {
+      const at = net.nodesNear(x, 0, 4)[0];
+      net.setStation(at.id, true);
+    }
+    return net;
+  }
+
+  /** The node at a place, which on this fixture is a joint between two runs. */
+  function nodeAt(net: TrackNetwork, x: number): number {
+    const near = net.nodesNear(x, 0, 4);
+    if (near.length === 0) throw new Error(`no end near ${x}`);
+    return near[0].id;
+  }
+
+  const west = { x: 0, y: 64, z: 0 };
+  const east = { x: 180, y: 64, z: 0 };
+
+  it('leaves an unsignalled railway as one stretch that nobody watches', () => {
+    // The rule the whole feature stands on. Every world built before signals existed has
+    // no signals in it, and must keep running exactly as it did.
+    const net = chain();
+    const blocks = net.sections();
+    expect(new Set(blocks.of.values()).size, 'the line broke up on its own').toBe(1);
+    expect(blocks.watched.size).toBe(0);
+    expect(net.wayBetween(west, east)!.sections).toEqual([]);
+  });
+
+  it('splits the line in two at a signal, and watches both halves', () => {
+    const net = chain();
+    expect(net.setSignal(nodeAt(net, 120), true)).toBe(true);
+    const blocks = net.sections();
+    const ids = [...net.edges.values()].map((edge) => blocks.of.get(edge.id)!);
+    expect(new Set(ids).size, 'one signal did not make two blocks').toBe(2);
+    // Both of them are bounded by that signal, so both are enforced.
+    expect(blocks.watched.size).toBe(2);
+  });
+
+  it('joins runs across a joint with no signal on it', () => {
+    // A block is not a run. Three runs with one signal is two blocks, not three.
+    const net = chain();
+    net.setSignal(nodeAt(net, 120), true);
+    const blocks = net.sections();
+    const first = [...net.edges.values()].filter((edge) => edge.curve.length < 61);
+    expect(first).toHaveLength(3);
+    const west60 = blocks.of.get(first[0].id);
+    const mid = blocks.of.get(first[1].id);
+    expect(mid, 'the joint at 60 broke the block without a signal on it').toBe(west60);
+  });
+
+  it('tells a way where along itself the block changes', () => {
+    const net = chain();
+    net.setSignal(nodeAt(net, 120), true);
+    const way = net.wayBetween(west, east)!;
+    expect(way.sections).toHaveLength(2);
+    expect(way.sections[0].at, 'the first block does not start at the start').toBe(0);
+    expect(way.sections[0].id).not.toBe(UNWATCHED);
+    expect(way.sections[1].id).not.toBe(way.sections[0].id);
+    // And the boundary really is the signal, not somewhere else along the line.
+    expect(way.points[way.sections[1].at].x).toBeCloseTo(120, 0);
+  });
+
+  it('leaves another line elsewhere in the world alone', () => {
+    // Signalling one railway must not start enforcing every other one. A player who puts
+    // a signal on the branch line near their town has not asked for the main line across
+    // the map to start queueing.
+    const net = chain();
+    net.setSignal(nodeAt(net, 120), true);
+    const far = net.lay(end(0, 64, 400, 1, 0), end(60, 64, 400, 1, 0));
+    if (!far.ok) throw new Error('could not lay the second line');
+    const blocks = net.sections();
+    expect(blocks.watched.has(blocks.of.get(far.edge.id)!)).toBe(false);
+    expect(blocks.watched.size, 'the far line joined a block it is not attached to').toBe(2);
+  });
+
+  it('takes a signal down again, and says so only when something changed', () => {
+    const net = chain();
+    const joint = nodeAt(net, 120);
+    expect(net.setSignal(joint, true)).toBe(true);
+    expect(net.setSignal(joint, true), 'building the same signal twice both counted').toBe(false);
+    expect(net.setSignal(joint, false)).toBe(true);
+    expect(net.sections().watched.size).toBe(0);
+  });
+
+  it('moves the revision, so the route survey looks again', () => {
+    // Without this a signal would not be noticed until somebody happened to lay a curve,
+    // and the block it makes would not be enforced until then.
+    const net = chain();
+    const before = net.revision;
+    net.setSignal(nodeAt(net, 120), true);
+    expect(net.revision).toBeGreaterThan(before);
+    expect(net.signals().map((node) => Math.round(node.x))).toEqual([120]);
+  });
+
+  it('survives a save, because a signal is on a node and node ids are kept', () => {
+    // Edge ids are re-issued on load. A signal recorded against one would come back
+    // somewhere else along the line, which is worse than losing it.
+    const net = chain();
+    net.setSignal(nodeAt(net, 120), true);
+    const back = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(net.toJSON())));
+    expect(back.signals().map((node) => Math.round(node.x))).toEqual([120]);
+    expect(back.sections().watched.size).toBe(2);
+    expect(back.wayBetween(west, east)!.sections).toHaveLength(2);
   });
 });

@@ -666,6 +666,21 @@ export function freePorts(node: TrackNode): number[] {
 }
 
 
+/** The railway cut into blocks by its signals.
+ *
+ *  `of` is which block each run belongs to; `watched` is the blocks a signal actually
+ *  bounds, which are the only ones anybody waits for. A network with no signals on it has
+ *  one block and an empty `watched`, and behaves exactly as it did before signals. */
+export interface TrackSections {
+  of: Map<number, number>;
+  watched: Set<number>;
+}
+
+/** The block id of a stretch no signal bounds. Real ids are edge ids, which start at one,
+ *  so nothing ever collides with it. Two trains may be in the same unwatched stretch at
+ *  once — that is not a block, it is the rest of the railway. */
+export const UNWATCHED = 0;
+
 /** One state of the walk in `wayBetween`: standing at a node, having come in by a port.
  *
  *  The port is half the state and not a detail. At a switch, arriving on the branch and
@@ -698,6 +713,13 @@ export interface TrackWay {
   length: number;
   /** Blocks of up and down along the way. */
   climb: number;
+  /** Where along `points` the block changes, and to which — `at` is the index of the
+   *  point the new block starts at, and the first entry is always at zero.
+   *
+   *  `UNWATCHED` for a stretch no signal bounds. Empty on a line with no signals near it
+   *  at all, which is what makes an unsignalled railway behave exactly as it did: whoever
+   *  reads this has nothing to check. */
+  sections: { at: number; id: number }[];
 }
 
 export class TrackNetwork {
@@ -715,6 +737,8 @@ export class TrackNetwork {
   private readonly deckCells = new Map<string, DeckPiece[]>();
   private readonly deckIndexed = new Set<number>();
   private deckRevision = -1;
+  private sectionCache: TrackSections | null = null;
+  private sectionRevision = -1;
 
   /** Nodes with a port still free, which are the only places a new track may join.
    *
@@ -722,6 +746,74 @@ export class TrackNetwork {
    *  time, so callers that want to draw or aim at one want `freePorts` as well. */
   freeEnds(): TrackNode[] {
     return [...this.nodes.values()].filter((node) => freePorts(node).length > 0);
+  }
+
+  /** Puts a signal on an end, or takes one down. False when there is no such end or it is
+   *  already what it is being asked to become.
+   *
+   *  This moves `revision` for the same reason `setStation` does: it changes what the
+   *  sections are, and the route survey skips itself while nothing it has looked at has
+   *  moved. */
+  setSignal(nodeId: number, built: boolean): boolean {
+    const node = this.nodes.get(nodeId);
+    if (!node || node.signal === built) return false;
+    node.signal = built;
+    this.revision++;
+    return true;
+  }
+
+  /** Every signal on the network. */
+  signals(): TrackNode[] {
+    return [...this.nodes.values()].filter((node) => node.signal);
+  }
+
+  /** Which block each run belongs to.
+   *
+   *  A block is the stretch of railway a train has to have to itself, and its boundaries
+   *  are the signals: two runs are in the same block when you can get from one to the
+   *  other without passing one. So this is a union-find over the runs, joining across
+   *  every node that has no signal on it.
+   *
+   *  **A block with no signal anywhere on its edge is not enforced.** That is what keeps
+   *  every railway built before signals existed running exactly as it did: with none
+   *  placed, the whole network is one unwatched block and nothing waits for anything.
+   *  Put one signal down and the two stretches either side of it become blocks that mean
+   *  something, and nothing else does. */
+  sections(): TrackSections {
+    if (this.sectionCache && this.sectionRevision === this.revision) return this.sectionCache;
+    const owner = new Map<number, number>();
+    for (const id of this.edges.keys()) owner.set(id, id);
+    const find = (id: number): number => {
+      let at = id;
+      while (owner.get(at) !== at) at = owner.get(at)!;
+      // Point everything walked over straight at the root, so the next walk is one hop.
+      for (let up = id; up !== at;) {
+        const next = owner.get(up)!;
+        owner.set(up, at);
+        up = next;
+      }
+      return at;
+    };
+    for (const node of this.nodes.values()) {
+      if (node.signal) continue;
+      const here = edgesOf(node);
+      for (let i = 1; i < here.length; i++) {
+        const a = find(here[0]);
+        const b = find(here[i]);
+        if (a !== b) owner.set(b, a);
+      }
+    }
+    const of = new Map<number, number>();
+    for (const id of this.edges.keys()) of.set(id, find(id));
+    // A block only counts where a signal actually bounds it.
+    const watched = new Set<number>();
+    for (const node of this.nodes.values()) {
+      if (!node.signal) continue;
+      for (const id of edgesOf(node)) watched.add(find(id));
+    }
+    this.sectionRevision = this.revision;
+    this.sectionCache = { of, watched };
+    return this.sectionCache;
   }
 
   /** Every station on the network. */
@@ -1405,11 +1497,20 @@ export class TrackNetwork {
     }
 
     const points: TrackPoint[] = [];
+    const blocks = this.sections();
+    const sections: { at: number; id: number }[] = [];
     let length = 0;
     let climb = 0;
     for (const step of chain) {
       const edge = this.edges.get(step.edge);
       if (!edge) continue;
+      // Which block this run is in, before its samples go on: the boundary is the node
+      // between the two runs, which is the point already at the end of `points`.
+      const found = blocks.of.get(edge.id);
+      const id = found !== undefined && blocks.watched.has(found) ? found : UNWATCHED;
+      if (sections.length === 0 || sections[sections.length - 1].id !== id) {
+        sections.push({ at: Math.max(0, points.length - 1), id });
+      }
       // A curve runs from its `a` end to its `b` end; walked the other way it is the same
       // samples backwards.
       const samples = sampleTrack(edge.curve, spacing);
@@ -1422,7 +1523,11 @@ export class TrackNetwork {
       }
       length += edge.curve.length;
     }
-    return points.length < 2 ? null : { points, length, climb };
+    if (points.length < 2) return null;
+    // A way that never leaves an unwatched stretch has no boundaries worth reporting, and
+    // saying so as an empty list is what lets the caller skip the whole question.
+    const watched = sections.some((mark) => mark.id !== UNWATCHED);
+    return { points, length, climb, sections: watched ? sections : [] };
   }
 
   /** An end near a place that could be a station and is not.
