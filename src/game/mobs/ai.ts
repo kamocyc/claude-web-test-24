@@ -91,6 +91,11 @@ export class Mob implements Damageable {
   /** Development of the village these offers were rolled for, or -1 when they are the
    *  generic table. The game re-rolls only when this falls behind the village. */
   villageStage = -1;
+  /** Wagons coupled up behind, for the one kind that has any. Set from what the shipment
+   *  is carrying when the mob is spawned, so a train the player sees pull out of a station
+   *  is as long as the load actually is — and a locomotive on its own is a line that is
+   *  only paying one way. */
+  cars = 0;
   /** Animation phase, advanced by how far the mob has walked. */
   walkPhase = 0;
 

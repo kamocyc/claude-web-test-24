@@ -108,6 +108,9 @@ export interface SavedTrackNode {
   hx: number;
   hz: number;
   grade: number;
+  /** Whether a station stands on this end. Absent on every node of a railway saved before
+   *  stations existed, and on every end of one that has none. */
+  station?: boolean;
 }
 
 /** Only the pair of ends, and which way round the track runs through each. The curve

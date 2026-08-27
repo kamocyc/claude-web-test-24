@@ -4,13 +4,16 @@ import type { Mob } from '../game/mobs/ai';
 import type { Arrow } from '../game/mobs/spawner';
 import { itemDef } from '../game/items';
 import { blockDef } from '../world/blocks';
-import { modelFor, type ModelPart } from './models';
+import { modelFor, trainModel, type ModelPart } from './models';
 import type { Atlas } from './textures';
 
 interface MobView {
   group: THREE.Group;
   parts: { mesh: THREE.Mesh; part: ModelPart }[];
   material: THREE.MeshLambertMaterial[];
+  /** Wagons this view was built with, so a train that picks up a different load is built
+   *  again instead of pulling the wrong number of them for the rest of the trip. */
+  cars: number;
 }
 
 const BOX = new THREE.BoxGeometry(1, 1, 1);
@@ -42,6 +45,10 @@ export class EntityRenderer {
     for (const mob of mobs) {
       alive.add(mob.id);
       let view = this.mobViews.get(mob.id);
+      if (view && view.cars !== mob.cars) {
+        this.disposeMobView(view);
+        view = undefined;
+      }
       if (!view) {
         view = this.createMobView(mob);
         this.mobViews.set(mob.id, view);
@@ -84,8 +91,7 @@ export class EntityRenderer {
     }
     for (const [id, view] of this.mobViews) {
       if (alive.has(id)) continue;
-      this.group.remove(view.group);
-      for (const material of view.material) material.dispose();
+      this.disposeMobView(view);
       this.mobViews.delete(id);
     }
   }
@@ -94,7 +100,7 @@ export class EntityRenderer {
     const group = new THREE.Group();
     const parts: MobView['parts'] = [];
     const materials: THREE.MeshLambertMaterial[] = [];
-    for (const part of modelFor(mob.kind)) {
+    for (const part of mob.kind === 'train' ? trainModel(mob.cars) : modelFor(mob.kind)) {
       const material = new THREE.MeshLambertMaterial({ color: part.color });
       const mesh = new THREE.Mesh(BOX, material);
       mesh.scale.set(part.size[0], part.size[1], part.size[2]);
@@ -103,7 +109,12 @@ export class EntityRenderer {
       parts.push({ mesh, part });
       materials.push(material);
     }
-    return { group, parts, material: materials };
+    return { group, parts, material: materials, cars: mob.cars };
+  }
+
+  private disposeMobView(view: MobView): void {
+    this.group.remove(view.group);
+    for (const material of view.material) material.dispose();
   }
 
   private syncDrops(drops: ItemDrop[], time: number): void {

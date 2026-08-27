@@ -60,6 +60,22 @@ export const TRAIN_LOAD = 4;
  *  is the old rail block's speed, kept to the digit, because what a finished railway pays
  *  should not have changed underneath a player who had already built one. */
 export const RAIL_QUALITY = 2.2;
+/** Goods one wagon holds, and the most a train will ever be drawn with.
+ *
+ *  A railway is quoted one quality along its whole length, so a wagon is exactly what one
+ *  porter's sack would have been on it — and a full train is therefore `TRAIN_LOAD`
+ *  wagons, which is the multiplier the player was promised, drawn rather than written.
+ *  The cap is one over that: a guard against some future load, not a rule anybody meets. */
+export const WAGON_LOAD = loadFor(RAIL_QUALITY);
+export const MAX_WAGONS = TRAIN_LOAD + 1;
+
+/** Wagons a load couples up. Zero for a train running home empty, which is worth seeing:
+ *  a pair of villages where only one makes what the other wants pays half of what a
+ *  complementary pair does, and this is where that shows. */
+export function carsFor(cargo: number): number {
+  return Math.max(0, Math.min(MAX_WAGONS, Math.ceil(cargo / WAGON_LOAD)));
+}
+
 /** Detour past which the panel starts saying so. Under it a road is merely following the
  *  ground; over it, it is going somewhere else first. */
 export const DETOUR_NOTICE = 1.15;
@@ -99,6 +115,11 @@ export interface Porter {
   good: GoodId;
   cargo: number;
   mobId: number | null;
+  /** What the mob currently drawing this shipment was spawned as. A railed trip changes
+   *  hands twice — a porter carries it out to the platform, the train takes it down the
+   *  line, another porter walks it in at the far end — and this is how the view notices
+   *  it has to swap one for the other. Null whenever nothing is drawing it. */
+  mobVehicle: Vehicle | null;
 }
 
 export interface Route {
@@ -142,6 +163,15 @@ export interface Route {
    *  neither village has a station at all: a beacon over every village in the world would
    *  answer a question nobody asked. */
   railPinch: RoadPoint | null;
+  /** An end of the line at one of the two villages with no station on it, on a pair whose
+   *  rails have arrived and are carrying nothing because of it. Null once both ends have
+   *  one, and null where there is no track to build a station on. */
+  stationGap: RoadPoint | null;
+  /** The stretch of the trip that is on rails, as two fractions of the whole. Null on a
+   *  route the railway does not carry. What it is for is the view: the goods are hauled
+   *  out to the platform and in at the far end by somebody on foot, and only the middle
+   *  of the journey is a train. */
+  railSpan: { from: number; to: number } | null;
   /** The longest stretch at either end between a depot's door and the road proper. */
   doorGap: number;
   /** Straight-line distance still to be paved, when not connected. */
@@ -201,8 +231,11 @@ export interface RailSource {
   /** The rails from one place to the other, when they join the two. */
   wayBetween(from: RoadPoint, to: RoadPoint): RailWay | null;
   /** Where a line setting out from one towards the other runs out, when one has been
-   *  started. Null when nothing serves `from`. */
+   *  started. Null when there is no track near `from` at all. */
   railheadTowards(from: RoadPoint, to: RoadPoint): RoadPoint | null;
+  /** An end of the line at a place that has no station, when the rails are there and the
+   *  station is not. Null once one serves the place, and null where there is no track. */
+  stationGapAt(place: RoadPoint): RoadPoint | null;
   /** Bumped whenever the rails move. Without it a railway laid or pulled up would not be
    *  noticed until somebody happened to touch a road block: the survey is skipped
    *  entirely while nothing it has looked at has changed. */
@@ -212,7 +245,10 @@ export interface RailSource {
 /** What the game hands transport so it can show a porter. Kept narrow so the simulation
  *  itself has no idea mobs exist. */
 export interface PorterHost {
-  spawnPorter(point: RoadPoint, vehicle: Vehicle): number | null;
+  /** `cargo` is how much this trip is carrying, which is how many wagons a train couples
+   *  up. Zero is a real answer: a train running home with nothing is a locomotive on its
+   *  own, and a line that only pays one way should look like one. */
+  spawnPorter(point: RoadPoint, vehicle: Vehicle, cargo: number): number | null;
   porterPosition(mobId: number): { x: number; z: number } | null;
   /** Walks the mob towards where its shipment has got to, at the route's speed, and puts
    *  it back on the road if it has fallen more than `PORTER_LEASH` behind. */
@@ -230,6 +266,8 @@ export interface PorterView {
   good: GoodId;
   /** 0 on the walk home with nothing worth carrying. */
   cargo: number;
+  /** What is carrying it *here*, which on a railed route is a train in the middle and
+   *  somebody on foot at either end. See `vehicleAt`. */
   vehicle: Vehicle;
   /** Whether a mob is currently drawing this one. */
   visible: boolean;
@@ -308,6 +346,8 @@ export class TransportNetwork {
       vehicle: 'porter',
       cartPinch: null,
       railPinch: null,
+      stationGap: null,
+      railSpan: null,
       doorGap: 0,
       missing: 0,
       gapFrom: null,
@@ -356,7 +396,7 @@ export class TransportNetwork {
           dir: porter.dir,
           good: porter.good,
           cargo: porter.cargo,
-          vehicle: route.vehicle,
+          vehicle: this.vehicleAt(route, porter.t),
           visible: porter.mobId !== null,
         });
       }
@@ -477,6 +517,8 @@ export class TransportNetwork {
       // finished. Saying where that one stops is the whole of what the old violet beacon
       // was for, and it is worth more now: the rails do not have to follow this road.
       route.railPinch = this.railhead(places);
+      route.stationGap = this.stationGap(places);
+      route.railSpan = null;
       route.missing = 0;
       route.gapFrom = null;
       route.gapTo = null;
@@ -491,6 +533,8 @@ export class TransportNetwork {
     route.nearMiss = result.nearMiss;
     route.cartPinch = null;
     route.railPinch = this.railhead(places);
+    route.stationGap = this.stationGap(places);
+    route.railSpan = null;
     this.setVehicle(route, 'porter');
     if (was) {
       // The road was broken while goods were on it. Send them home rather than losing
@@ -520,6 +564,8 @@ export class TransportNetwork {
     const lead = this.walkToStation(route.from, route.fromDoor, way.points[0]);
     const trail = this.walkToStation(route.to, route.toDoor, way.points[way.points.length - 1]);
     route.waypoints = [...lead.points, ...way.points, ...trail.points.reverse()];
+    const railFirst = lead.points.length;
+    const railLast = railFirst + way.points.length - 1;
     // The walk from the door to the station, exactly as a road route charges the walk
     // from the door to the road. A railway that stops at the edge of the village is a
     // railway with a walk on the end of it, and the panel should say so.
@@ -533,8 +579,16 @@ export class TransportNetwork {
     route.direct = Math.max(1, Math.hypot(doors.to.x - doors.from.x, doors.to.z - doors.from.z));
     route.detour = route.length / route.direct;
     this.setVehicle(route, 'train');
+    // Which part of the trip the train does. The rest of it is somebody walking the goods
+    // between the depot's door and the platform, which is what the walk charged above
+    // actually looks like from the outside.
+    route.railSpan = {
+      from: (route.cumulative[railFirst] ?? 0) / route.length,
+      to: (route.cumulative[railLast] ?? route.length) / route.length,
+    };
     route.cartPinch = null;
     route.railPinch = null;
+    route.stationGap = null;
     route.missing = 0;
     route.gapFrom = null;
     route.gapTo = null;
@@ -569,6 +623,16 @@ export class TransportNetwork {
       ?? this.rails.railheadTowards(places.to, places.from);
   }
 
+  /** The end of the line to build a station on, when the rails have arrived at one of the
+   *  two villages and nothing there puts freight on them.
+   *
+   *  `from` first, and only one at a time: two beacons for one job would read as two jobs,
+   *  and a player who builds the near one is told about the far one the moment they have. */
+  private stationGap(places: { from: RoadPoint; to: RoadPoint }): RoadPoint | null {
+    if (!this.rails) return null;
+    return this.rails.stationGapAt(places.from) ?? this.rails.stationGapAt(places.to);
+  }
+
   /** Changes what hauls a route, dropping any mob that is now the wrong shape. The next
    *  frame draws the right ones where the shipments actually are, and no cargo moves. */
   private setVehicle(route: Route, vehicle: Vehicle): void {
@@ -577,6 +641,7 @@ export class TransportNetwork {
       if (porter.mobId === null) continue;
       this.host?.removePorter(porter.mobId);
       porter.mobId = null;
+      porter.mobVehicle = null;
     }
     route.vehicle = vehicle;
   }
@@ -639,6 +704,20 @@ export class TransportNetwork {
     return loadFor(route.quality) * multiplier;
   }
 
+  /** What is carrying the goods at a point along the trip.
+   *
+   *  Only the view differs from `route.vehicle`, never the economy: a railed line is worth
+   *  a train's load at a train's speed for the whole of its length, including the walk at
+   *  each end, exactly as it was before there was anything to see. What this decides is
+   *  what the player watches — a porter carrying crates out of the village to the
+   *  platform, a train taking them down the line, and a porter walking them in at the
+   *  other end. The change of hands *is* the loading; there is no separate wait for it. */
+  vehicleAt(route: Route, t: number): Vehicle {
+    const span = route.railSpan;
+    if (!span) return route.vehicle;
+    return t >= span.from && t <= span.to ? 'train' : 'porter';
+  }
+
   private advance(route: Route, dt: number, playerX: number, playerZ: number): void {
     if (!route.connected) return;
 
@@ -697,6 +776,7 @@ export class TransportNetwork {
         good,
         cargo,
         mobId: null,
+        mobVehicle: null,
       });
       return;
     }
@@ -766,31 +846,42 @@ export class TransportNetwork {
   /** Shows the porter when the player is close enough to see it, and stops bothering
    *  when they are not. The mob is a view of the shipment and never the other way round:
    *  it is walked towards where the shipment has got to, and put back on the road if it
-   *  falls behind. */
+   *  falls behind.
+   *
+   *  It is also where the goods change hands. A shipment that has reached the platform is
+   *  drawn by a train from there on rather than by the porter who brought it out, and the
+   *  swap is done the only way a view of a number can do anything: the old mob goes and a
+   *  new one appears where the goods are. That is the loading, and it happens at the one
+   *  place the player is looking. */
   private syncMob(route: Route, porter: Porter, playerX: number, playerZ: number): void {
     if (!this.host) return;
     const here = this.pointAt(route, porter.t);
     if (!here) return;
     const near = Math.hypot(here.x - playerX, here.z - playerZ) <= PORTER_VISIBLE;
+    const vehicle = this.vehicleAt(route, porter.t);
 
     if (porter.mobId !== null) {
       const position = this.host.porterPosition(porter.mobId);
       if (!position) {
         // Despawned by distance, or killed. The shipment carries on unseen.
         porter.mobId = null;
+        porter.mobVehicle = null;
         return;
       }
-      if (!near) {
-        this.host.removePorter(porter.mobId);
-        porter.mobId = null;
+      // Out of sight, or at the platform where what is carrying it changes. Either way the
+      // one drawing it now is the wrong one.
+      if (near && vehicle === porter.mobVehicle) {
+        this.host.movePorter(porter.mobId, here, this.speedOf(route));
         return;
       }
-      this.host.movePorter(porter.mobId, here, this.speedOf(route));
-      return;
+      this.host.removePorter(porter.mobId);
+      porter.mobId = null;
+      porter.mobVehicle = null;
     }
 
     if (!near) return;
-    porter.mobId = this.host.spawnPorter(here, route.vehicle);
+    porter.mobId = this.host.spawnPorter(here, vehicle, porter.cargo);
+    porter.mobVehicle = porter.mobId === null ? null : vehicle;
   }
 
   /** Only the pair matters. The road itself lives in the edits, so a route re-surveys

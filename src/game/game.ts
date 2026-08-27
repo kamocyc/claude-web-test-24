@@ -13,6 +13,7 @@ import {
   type TrackGhostView,
   type TrackMarkerView,
   type TrackPierView,
+  type TrackStationView,
   type TrackView,
 } from '../render/trackRenderer';
 import { createChunkMaterials, type ChunkMaterials } from '../render/materials';
@@ -90,6 +91,7 @@ import {
   MIN_RADIUS,
   MIN_SPAN,
   SNAP_RADIUS,
+  STATION_REACH,
   TrackNetwork,
   pointAt,
   railsFor,
@@ -108,6 +110,7 @@ import {
 import { runRoad, treadBrush, treadLine, TREAD_DIRT, type PaveMaterial, type PaveTarget } from './paving';
 import {
   CATCH_UP,
+  carsFor,
   PORTER_LEASH,
   PORTER_LOST,
   TransportNetwork,
@@ -184,6 +187,9 @@ const GUIDE_NARROW = 0xffc457;
 /** Where the railway runs out. Violet, because amber already means "too narrow" and red
  *  already means "does not count" — three different jobs need three different colours. */
 const GUIDE_RAILGAP = 0xb08cff;
+/** The station that is not built yet. A warmer violet than the railhead's, because the
+ *  two are next door to each other and the answer to them is not the same. */
+const GUIDE_STATION = 0xff9adf;
 /** The doorway a route loads and unloads at. */
 const GUIDE_DEPOT = 0xffd479;
 /** Blocks of height a laid road may gain or lose per column — deliberately gentler than
@@ -245,6 +251,10 @@ const SAMPLE_TRACK_GAP = 48;
 /** Rails the sample world hands over: enough for the gap, and enough over it that a
  *  wandering line or a second thought does not strand the player halfway. */
 const SAMPLE_TRACK_SPARE = 24;
+/** Stations in the sample world's pack. One to build at the near end, one spare: a station
+ *  put down in the wrong place is picked back up, but a player who has to work that out
+ *  before they can finish the line has been charged for a rule they were still learning. */
+const SAMPLE_STATIONS = 2;
 /** How far to one side of the sample road its railway runs.
  *
  *  Not on top of it. The road and the railway are the two halves of the demonstration and
@@ -456,7 +466,7 @@ export class Game {
         onStageUp: (id, stage) => this.onVillageGrew(id, stage),
       },
       {
-        spawnPorter: (point, vehicle) => this.spawnPorter(point, vehicle),
+        spawnPorter: (point, vehicle, cargo) => this.spawnPorter(point, vehicle, cargo),
         porterPosition: (id) => {
           const mob = this.livePorter(id);
           return mob ? { x: mob.x, z: mob.z } : null;
@@ -478,6 +488,7 @@ export class Game {
       {
         wayBetween: (from, to) => this.trackNet.wayBetween(from, to),
         railheadTowards: (from, to) => this.trackNet.railheadTowards(from, to),
+        stationGapAt: (place) => this.trackNet.stationGapNear(place),
         revision: () => this.trackNet.revision,
       },
     );
@@ -849,6 +860,7 @@ export class Game {
             vehicle: route.vehicle,
             cartPinch: route.cartPinch ? this.bearingTo(route.cartPinch) : null,
             railPinch: route.railPinch ? this.bearingTo(route.railPinch) : null,
+            stationGap: route.stationGap ? this.bearingTo(route.stationGap) : null,
             climb: route.climb,
             detour: route.detour,
             doorGap: route.doorGap,
@@ -1367,6 +1379,14 @@ export class Game {
 
     if (!held || !def) return;
 
+    // A station is aimed at the rails and not at a block. The end of a curve is nowhere
+    // near the middle of anybody's cube, and the ground under it is not what is being
+    // built on — so this gets its own trace, the same one the track tool uses.
+    if (held.id === 'station') {
+      this.useStation();
+      return;
+    }
+
     // Buckets look through water rather than at it, so they get their own trace.
     if (held.id === 'bucket' || held.id === 'water_bucket') {
       this.useBucket(held.id === 'bucket');
@@ -1840,6 +1860,69 @@ export class Game {
     this.hud.toast(paid > 0 ? `線路を撤去した（レール ${paid} 本）` : '線路を撤去した');
   }
 
+  /** Builds a station on the end of the line under the crosshair, or takes one back.
+   *
+   *  One button doing both directions, which is unusual here and right for this: a station
+   *  is one thing in one place, and "click it again to pick it up" needs no explaining.
+   *  The alternative was the track tool's split of build on the right and remove on the
+   *  left, and that would have meant the left button doing something other than mining
+   *  while an ordinary item was in the player's hand.
+   *
+   *  Whether the station is near enough to a village to be of any use is the game's
+   *  business and not the player's guesswork, so the toast says which village it serves,
+   *  or how far the nearest one is when it serves none. */
+  private useStation(): void {
+    const node = this.trackAim().node;
+    if (!node) {
+      this.warn('線路の端に向けて右クリックすると駅を建てる');
+      return;
+    }
+    if (node.station) {
+      this.trackNet.setStation(node.id, false);
+      this.transport.invalidate();
+      const refund = this.player.inventory.unlimited ? 0 : 1;
+      if (refund > 0 && this.player.inventory.add({ id: 'station', count: 1 }) > 0) {
+        this.dropAtPlayer({ id: 'station', count: 1 });
+      }
+      this.hud.toast('駅を撤去した');
+      return;
+    }
+    if (!this.player.inventory.has('station', 1)) {
+      this.warn('駅が無い（作業台で 木材 6 ＋ 鉄インゴット 1）');
+      return;
+    }
+    this.trackNet.setStation(node.id, true);
+    this.transport.invalidate();
+    this.player.inventory.remove('station', 1);
+    const served = this.villageServedBy(node);
+    if (served) {
+      this.hud.toast(`${displayName(served.village)}の駅を建てた`);
+      return;
+    }
+    const away = Math.round(this.distanceToNearestVillage(node));
+    this.hud.toast(`駅を建てた — どの村にも届いていない（一番近い村まで ${away}m）`);
+  }
+
+  /** The discovered village a station stands close enough to serve, nearest first. */
+  private villageServedBy(place: TrackPoint): { village: VillageRecord; distance: number } | null {
+    let best: { village: VillageRecord; distance: number } | null = null;
+    for (const village of this.villages.discovered()) {
+      const distance = Math.hypot(village.x - place.x, village.z - place.z);
+      if (distance > STATION_REACH || (best && best.distance <= distance)) continue;
+      best = { village, distance };
+    }
+    return best;
+  }
+
+  /** How far the nearest village of any kind is, for a station that serves none. */
+  private distanceToNearestVillage(place: TrackPoint): number {
+    let best = Infinity;
+    for (const seed of this.generator.villagesAround(place.x, place.z, 3)) {
+      best = Math.min(best, Math.hypot(seed.x - place.x, seed.z - place.z));
+    }
+    return best === Infinity ? 0 : best;
+  }
+
   /** The curve as it would be if the player clicked now.
    *
    *  Because the shape is a pure function of the aim and the yaw, the end of the ghost
@@ -1905,12 +1988,16 @@ export class Game {
         edges.push({ id: edge.id, samples });
         this.collectPiers(samples, piers);
       }
+      const stations = this.trackStations();
       this.trackViewCache = {
         // The pier count is in here because a pier over an unloaded chunk is skipped:
-        // without it, the far end of a long run would never grow its legs.
-        key: `${key}:${piers.length}`,
+        // without it, the far end of a long run would never grow its legs. So is what is
+        // waiting on each platform, because that is the one part of this that changes
+        // while nothing about the railway does.
+        key: `${key}:${piers.length}:${stations.map((s) => s.waiting).join(',')}`,
         edges,
         piers,
+        stations,
         markers: [],
         ghost: null,
       };
@@ -1919,6 +2006,24 @@ export class Game {
     view.markers = holding ? this.trackMarkers() : [];
     view.ghost = holding ? this.trackGhost : null;
     return view;
+  }
+
+  /** The stations in range, each with the pile its village has waiting on it.
+   *
+   *  The pile is the village's own stock and not something the station holds: a station is
+   *  where the goods are put on the train, not a second warehouse with its own arithmetic.
+   *  What the crates say is "there is this much here to go", which is the question a
+   *  player standing on a platform watching nothing happen is actually asking. */
+  private trackStations(): TrackStationView[] {
+    const out: TrackStationView[] = [];
+    for (const node of this.trackNet.stations()) {
+      if (Math.hypot(node.x - this.player.x, node.z - this.player.z) > TRACK_DRAW) continue;
+      out.push({
+        x: node.x, y: node.y, z: node.z, hx: node.hx, hz: node.hz,
+        waiting: this.villageServedBy(node)?.village.stock ?? 0,
+      });
+    }
+    return out;
   }
 
   /** Every end a new curve could be joined to, plus the start of the one being laid.
@@ -2190,6 +2295,14 @@ export class Game {
       if (!route.connected || !route.railPinch) continue;
       if (route !== questRoute && !this.nearPlayer(route.railPinch, FAULT_REACH * 2)) continue;
       beams.push({ ...route.railPinch, colour: GUIDE_RAILGAP, height: 12 });
+    }
+    // And where the rails have arrived and there is nothing to load them at. This is the
+    // beacon over a railway that looks finished, which is the only kind of finished-
+    // looking thing in the game that carries nothing.
+    for (const route of this.transport.routes) {
+      if (!route.connected || !route.stationGap) continue;
+      if (route !== questRoute && !this.nearPlayer(route.stationGap, FAULT_REACH * 2)) continue;
+      beams.push({ ...route.stationGap, colour: GUIDE_STATION, height: 12 });
     }
     const tiles = this.roads.columnsIn(
       this.player.x - GUIDE_TILE_REACH,
@@ -2572,11 +2685,14 @@ export class Game {
     };
   }
 
-  private spawnPorter(point: RoadPoint, vehicle: Vehicle): number | null {
+  private spawnPorter(point: RoadPoint, vehicle: Vehicle, cargo: number): number | null {
     if (!this.world.hasChunk(toChunkCoord(point.x), toChunkCoord(point.z))) return null;
     const middle = centreOf(vehicle);
     const mob = new Mob(vehicle, point.x + middle, point.y + 1, point.z + middle);
     mob.follow = { x: mob.x, z: mob.z };
+    // What the train couples up behind it. A porter carries its load on its back and has
+    // nowhere to put a second crate, so the count is only ever read for a train.
+    mob.cars = carsFor(cargo);
     // The one thing on rails is the only thing given the deck to stand on. Everything
     // else that walks has no reason to be up on a viaduct and no way down off one; a
     // train has both, and without this it walks off the first pier and falls.
@@ -2977,8 +3093,15 @@ export class Game {
     // nearest the player is left open, and the tool and the rails to close it go in the
     // pack.
     const railway = this.layRailway(start, end, SAMPLE_TRACK_GAP);
+    // The far end already has its station, because the far half of the line is already
+    // built and a demonstration should demonstrate a whole thing. The near one is the
+    // player's, and it is the second half of the invitation: closing the gap is not
+    // enough on its own, and finding that out by building the rails and watching nothing
+    // happen would be the worst possible way to learn the rule.
+    if (railway.laid > 0) this.buildStationNear(end);
     this.player.inventory.add({ id: 'track_tool', count: 1 });
     this.player.inventory.add({ id: 'rail', count: railsFor(SAMPLE_TRACK_GAP) + SAMPLE_TRACK_SPARE });
+    this.player.inventory.add({ id: 'station', count: SAMPLE_STATIONS });
     this.villages.discover(from.id);
     this.villages.discover(to.id);
     this.transport.requestRoute(from.id, to.id);
@@ -2996,7 +3119,8 @@ export class Game {
     this.railToast = railway.laid === 0
       ? null
       : `道の横に ${Math.round(railway.length)} マスの線路が高架で敷いてある。足もとの ${SAMPLE_TRACK_GAP} マスだけ空いているので、` +
-        `線路敷設ツールでつなげば列車が走る（紫の光の柱がその場所。空を見上げて 2 度目のクリック）`;
+        `線路敷設ツールでつなぎ、こちら側の端に駅を建てれば列車が走る` +
+        `（向こうの端の駅はもう建っている。紫の光の柱がつなぐ場所。空を見上げて 2 度目のクリック）`;
     return { from: from.name, to: to.name, blocks };
   }
 
@@ -3013,6 +3137,25 @@ export class Game {
    *  allowed. That is one pass and it cannot bury the deck in a hillside, which a smoothed
    *  copy of the ground can. What it does instead is fly: a dip is crossed on piers rather
    *  than dived into, which is what a railway looks like and what a road cannot do. */
+  /** Puts a station on the end of the line nearest a place. For the builders that hand a
+   *  player a railway they did not lay themselves: a line arriving at a village with
+   *  nothing to load it at is a line that carries nothing, and being handed one of those
+   *  as a demonstration would demonstrate the wrong thing. */
+  private buildStationNear(place: { x: number; z: number }, reach = STATION_REACH): TrackNode | null {
+    let best: TrackNode | null = null;
+    let nearest = Infinity;
+    for (const node of this.trackNet.nodesNear(place.x, place.z, reach)) {
+      const gap = Math.hypot(node.x - place.x, node.z - place.z);
+      if (gap >= nearest) continue;
+      nearest = gap;
+      best = node;
+    }
+    if (!best) return null;
+    this.trackNet.setStation(best.id, true);
+    this.transport.invalidate();
+    return best;
+  }
+
   private layRailway(
     from: { x: number; z: number },
     to: { x: number; z: number },
@@ -3339,6 +3482,7 @@ export class Game {
           detour: Math.round(route.detour * 100) / 100,
           direct: Math.round(route.direct), doorGap: Math.round(route.doorGap),
           cartPinch: route.cartPinch, railPinch: route.railPinch, nearMiss: route.nearMiss,
+          stationGap: route.stationGap,
         })),
       /** Everything the L screen shows, without opening it. */
       ledger: (): LedgerView => this.ledgerView(),
@@ -3351,6 +3495,16 @@ export class Game {
       }),
       porters: () =>
         this.mobs.mobs.filter((mob) => HAULING_KINDS.includes(mob.kind)).length,
+      /** Every hauler currently drawn, and what it is. A railed shipment is a porter in
+       *  the village, a train on the rails and a porter again at the far end, so what is
+       *  in here changes as the goods change hands — and `cars` is the load, coupled up. */
+      haulers: () =>
+        this.mobs.mobs
+          .filter((mob) => HAULING_KINDS.includes(mob.kind))
+          .map((mob) => ({
+            kind: mob.kind, cars: mob.cars,
+            x: Math.round(mob.x), y: Math.round(mob.y), z: Math.round(mob.z),
+          })),
       /** Where every shipment currently is, whether or not anybody can see it. Standing
        *  at one of these is what makes a porter appear. */
       porterSpots: () =>
@@ -3499,6 +3653,26 @@ export class Game {
       })),
       /** Pulls one curve out of the network, the way a left click on it would. */
       removeTrack: (edgeId: number): boolean => this.trackNet.remove(edgeId),
+      /** Every station on the network, and which village each one is close enough to
+       *  serve. A line with no station on it carries nothing, so this is the first thing
+       *  to look at when a finished railway is not running trains. */
+      stations: () => this.trackNet.stations().map((node) => ({
+        id: node.id,
+        x: Math.round(node.x), y: Math.round(node.y), z: Math.round(node.z),
+        serves: this.villageServedBy(node)?.village.name ?? null,
+      })),
+      /** Builds a station on the end of the line nearest a point, the way pointing at that
+       *  end and clicking with one in hand would. Null when there is no end near enough. */
+      buildStation: (x: number, z: number): { id: number; x: number; y: number; z: number } | null => {
+        const node = this.buildStationNear({ x, z });
+        return node ? { id: node.id, x: node.x, y: node.y, z: node.z } : null;
+      },
+      /** Takes one back down, so a test can watch a running line stop. */
+      removeStation: (nodeId: number): boolean => {
+        const removed = this.trackNet.setStation(nodeId, false);
+        if (removed) this.transport.invalidate();
+        return removed;
+      },
       /** The height of the deck over a point, or null where there is none to stand on. */
       trackDeckAt: (x: number, z: number, low = -64, high = 320): number | null =>
         this.trackNet.surfaceTopAt(x, z, low, high),
@@ -3528,6 +3702,8 @@ export class Game {
           edges: view.edges.length,
           samples: view.edges.reduce((total, edge) => total + edge.samples.length, 0),
           piers: view.piers.length,
+          stations: view.stations.length,
+          waiting: view.stations.reduce((total, station) => total + station.waiting, 0),
           markers: view.markers.length,
           ghost: view.ghost ? (view.ghost.valid ? 'valid' : 'invalid') : 'none',
         };

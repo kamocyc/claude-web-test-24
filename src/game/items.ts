@@ -160,6 +160,12 @@ for (const tier of TIERS) {
 // hotbar — which would take it out of the player's hand halfway through laying a curve.
 item({ id: 'track_tool', label: '線路敷設ツール', tex: 'track_tool', maxStack: 1 });
 
+// The station. Not a block either, for the same reason the rail is not one: it stands on
+// the end of a curve, and a curve does not pass through the middle of anybody's block. It
+// is put down by pointing at an end of the line and clicking - see `useStation` in
+// `game.ts` - and taken back by pointing at the station and clicking again.
+item({ id: 'station', label: '駅', tex: 'station', maxStack: 16 });
+
 // --- armour ------------------------------------------------------------------
 const ARMOR_LABELS: Record<ArmorSlot, string> = {
   helmet: 'ヘルメット',

@@ -268,8 +268,8 @@ export const MILESTONES: readonly Milestone[] = [
   // has no way to freight yet.
   {
     id: 'railway',
-    title: '鉄道を敷く（線路で村と村をつなぐ）',
-    detail: () => '線路が両方の村に届くと列車が走り、速さも一度に運ぶ量も上がる',
+    title: '鉄道を敷く（線路でつなぎ、両端に駅を建てる）',
+    detail: () => '線路が両方の村に届き、その両端に駅が建つと列車が走る。速さも一度に運ぶ量も上がる',
     reward: 20,
     done: (s) => linked(s).some((r) => r.vehicle === 'train'),
   },

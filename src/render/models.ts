@@ -118,9 +118,10 @@ const MODELS: Record<MobKind, ModelPart[]> = {
     { size: [0.14, 0.66, 0.66], offset: [-0.65, 0.62, 0.95], color: 0x4a3423, role: 'body' },
     { size: [0.14, 0.66, 0.66], offset: [0.65, 0.62, 0.95], color: 0x4a3423, role: 'body' },
   ],
-  // A little locomotive with one wagon. Nothing here has a leg or an arm role: the
-  // renderer swings those from the walk phase, and a train that walked would be telling
-  // the player the wrong thing about what is moving the goods.
+  // The locomotive on its own. Nothing here has a leg or an arm role: the renderer swings
+  // those from the walk phase, and a train that walked would be telling the player the
+  // wrong thing about what is moving the goods. What it is pulling is not in this list —
+  // see `trainModel`, because the answer changes with the load.
   train: [
     // boiler, cab and chimney
     { size: [0.72, 0.6, 1.3], offset: [0, 0.62, -0.42], color: 0x2f3438, role: 'body' },
@@ -131,14 +132,38 @@ const MODELS: Record<MobKind, ModelPart[]> = {
     // wheels
     { size: [0.86, 0.34, 0.34], offset: [0, 0.24, -0.72], color: 0x1c2023, role: 'body' },
     { size: [0.86, 0.34, 0.34], offset: [0, 0.24, 0.1], color: 0x1c2023, role: 'body' },
-    // the wagon behind, borrowing the cart's crate so the freight reads the same
-    { size: [0.66, 0.34, 0.86], offset: [0, 0.5, 1.15], color: 0x8a6a3a, role: 'body' },
-    { size: [0.7, 0.08, 0.9], offset: [0, 0.69, 1.15], color: 0x5f4826, role: 'body' },
-    { size: [0.5, 0.3, 0.6], offset: [0, 0.81, 1.15], color: 0xb99a5e, role: 'body' },
-    { size: [0.74, 0.28, 0.28], offset: [0, 0.22, 1.15], color: 0x1c2023, role: 'body' },
   ],
 };
 
+/** Where the first wagon's middle sits behind the locomotive's, and the pitch after it.
+ *  The pitch is a little more than a wagon is long, which is what leaves a gap for the
+ *  coupling to be visible in. */
+const WAGON_LEAD = 1.15;
+const WAGON_PITCH = 1.06;
+
 export function modelFor(kind: MobKind): ModelPart[] {
   return MODELS[kind];
+}
+
+/** The locomotive with `cars` wagons coupled up behind it.
+ *
+ *  A separate function rather than another entry in `MODELS` because the shape depends on
+ *  the load, and the load is the one thing about a shipment the player can read from a
+ *  hillside: four wagons is a full train, one is a village that had almost nothing ready,
+ *  none is a train going home empty. Each wagon borrows the cart's crate so that the same
+ *  freight looks the same however it is being carried. */
+export function trainModel(cars: number): ModelPart[] {
+  const parts = [...MODELS.train];
+  for (let i = 0; i < cars; i++) {
+    const z = WAGON_LEAD + i * WAGON_PITCH;
+    parts.push(
+      // the coupling, drawn before the wagon it pulls so a gap never reads as a break
+      { size: [0.14, 0.14, WAGON_PITCH - 0.86], offset: [0, 0.34, z - WAGON_PITCH / 2], color: 0x1c2023, role: 'body' },
+      { size: [0.66, 0.34, 0.86], offset: [0, 0.5, z], color: 0x8a6a3a, role: 'body' },
+      { size: [0.7, 0.08, 0.9], offset: [0, 0.69, z], color: 0x5f4826, role: 'body' },
+      { size: [0.5, 0.3, 0.6], offset: [0, 0.81, z], color: 0xb99a5e, role: 'body' },
+      { size: [0.74, 0.28, 0.28], offset: [0, 0.22, z], color: 0x1c2023, role: 'body' },
+    );
+  }
+  return parts;
 }

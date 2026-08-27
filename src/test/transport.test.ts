@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   BASE_LOAD,
   CART_LOAD,
+  MAX_WAGONS,
+  WAGON_LOAD,
+  carsFor,
   PORTER_SPEED,
   RAIL_QUALITY,
   TRAIN_LOAD,
@@ -9,6 +12,7 @@ import {
   loadFor,
   payFor,
   portersFor,
+  type DepotSource,
   type PorterHost,
   type RailSource,
   type RailWay,
@@ -66,6 +70,7 @@ class StuckHost implements PorterHost {
     this.at.set(this.spawned, { x: point.x, z: point.z });
     return this.spawned;
   }
+
   porterPosition(mobId: number): { x: number; z: number } | null {
     return this.at.get(mobId) ?? null;
   }
@@ -87,6 +92,9 @@ class StuckHost implements PorterHost {
 class FakeRails implements RailSource {
   private built = 1;
   private moved = 1;
+  /** Whether somebody has built the stations. Rails on their own are a line that runs
+   *  past the two villages rather than one that serves them. */
+  private manned = true;
 
   /** Deck height. Well clear of the ground, so nothing here can be confused with a road. */
   static readonly DECK = GROUND + 3;
@@ -96,13 +104,28 @@ class FakeRails implements RailSource {
     this.moved++;
   }
 
+  /** Builds or takes down the stations at both ends at once. */
+  station(built: boolean): void {
+    this.manned = built;
+    this.moved++;
+  }
+
   revision(): number {
     return this.moved;
   }
 
   wayBetween(from: RoadPoint, to: RoadPoint): RailWay | null {
-    if (this.built < 1) return null;
+    if (this.built < 1 || !this.manned) return null;
     return { points: this.line(from, to, 1), climb: 0 };
+  }
+
+  /** An end near a place with nothing to load freight at it. The rails here run from the
+   *  first village towards the second, so which end is which cannot be told apart by
+   *  coordinates alone — the fake answers for whatever it is asked about, and transport
+   *  asks about the origin first. */
+  stationGapAt(place: RoadPoint): RoadPoint | null {
+    if (this.built <= 0 || this.manned) return null;
+    return { x: place.x, y: FakeRails.DECK, z: place.z };
   }
 
   railheadTowards(from: RoadPoint, to: RoadPoint): RoadPoint | null {
@@ -134,11 +157,14 @@ interface BuildOptions {
   width?: number;
   /** A railway between the two villages, when the test is about one. */
   rails?: FakeRails;
+  /** Doorways for the two villages, when the test cares that goods start and finish at a
+   *  building rather than at a point on the map. */
+  depots?: DepotSource | null;
 }
 
 /** The villages' streets end at x=30 and x=210, and a road connects by touching one, so
  *  an unbroken run from 31 to 209 is the finished road. */
-function build({ surface = Block.DIRT_PATH, host, width = 1, rails }: BuildOptions = {}) {
+function build({ surface = Block.DIRT_PATH, host, width = 1, rails, depots }: BuildOptions = {}) {
   const world = new FakeWorld();
   const span = Math.floor((width - 1) / 2);
   if (surface !== null) {
@@ -168,9 +194,21 @@ function build({ surface = Block.DIRT_PATH, host, width = 1, rails }: BuildOptio
     onConnected: () => events.connected++,
     onDisconnected: () => events.disconnected++,
   };
-  const transport = new TransportNetwork(roads, registry, handlers, host ?? null, null, rails ?? null);
+  const transport = new TransportNetwork(
+    roads, registry, handlers, host ?? null, depots ?? null, rails ?? null,
+  );
   return { world, roads, registry, transport, events };
 }
+
+/** Depots a little way off the line, so that the walk between a doorway and the platform
+ *  is a real part of the trip rather than nothing at all. Both sit twenty blocks south of
+ *  their village's middle, which is where the railway runs. */
+const DOORS: DepotSource = {
+  doorOf: (village) => (village === ID_A
+    ? { x: 0, y: GROUND, z: -20 }
+    : { x: 240, y: GROUND, z: -20 }),
+  plotsOf: () => [],
+};
 
 /** Runs the simulation in small steps, the way the game loop does. */
 function run(transport: TransportNetwork, seconds: number, step = 0.5): void {
@@ -805,6 +843,93 @@ describe('a train on a railway', () => {
     none.transport.requestRoute(ID_A, ID_B);
     run(none.transport, 3);
     expect(none.transport.routes[0].railPinch).toBeNull();
+  });
+
+  it('carries nothing until both ends have a station, and says where to build one', () => {
+    // The rule the whole feature is: a line that reaches both villages and has nothing to
+    // load freight at is a line that carries nothing. And it has to say so — finished
+    // track that carries nothing looks exactly like finished track that does.
+    const rails = new FakeRails();
+    rails.station(false);
+    const { transport } = build({ surface: null, rails });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    const route = transport.routes[0];
+    expect(route.connected, 'rails with no stations carried the goods').toBe(false);
+    expect(route.stationGap, 'nothing said where to build the station').not.toBeNull();
+
+    rails.station(true);
+    run(transport, 3);
+    expect(transport.routes[0].connected).toBe(true);
+    expect(transport.routes[0].vehicle).toBe('train');
+    expect(transport.routes[0].stationGap, 'still asking for a station it has').toBeNull();
+  });
+
+  it('does not ask for a station where there is no track to build one on', () => {
+    const { transport } = build({ surface: Block.DIRT_PATH });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    expect(transport.routes[0].stationGap).toBeNull();
+  });
+
+  it('walks the goods out to the platform and hauls them from there', () => {
+    // What loading looks like from the outside: somebody carries the crates out of the
+    // village, the train takes them down the line, and somebody carries them in at the
+    // far end. The clock never changes hands — only the picture of it does.
+    const rails = new FakeRails();
+    const { transport, registry } = build({ surface: null, rails, depots: DOORS });
+    transport.requestRoute(ID_A, ID_B);
+    registry.produce(600);
+    run(transport, 3);
+    const route = transport.routes[0];
+    expect(route.vehicle, 'the line is not railed').toBe('train');
+    expect(route.railSpan, 'a railed route has no rail span').not.toBeNull();
+    // The walk out of the village is a real part of the trip, so the rails are the middle
+    // of it and not the whole of it.
+    expect(route.railSpan!.from).toBeGreaterThan(0);
+    expect(route.railSpan!.to).toBeLessThan(1);
+    // At the door it is a porter, in the middle it is a train, at the far door a porter.
+    expect(transport.vehicleAt(route, 0)).toBe('porter');
+    expect(transport.vehicleAt(route, 0.5)).toBe('train');
+    expect(transport.vehicleAt(route, 1)).toBe('porter');
+  });
+
+  it('draws the porter out to the platform and a train from there', () => {
+    const drawn: { vehicle: Vehicle; cargo: number }[] = [];
+    const host: PorterHost = {
+      spawnPorter: (_point, vehicle, cargo) => {
+        drawn.push({ vehicle, cargo });
+        return drawn.length;
+      },
+      porterPosition: () => ({ x: 0, z: 0 }),
+      movePorter: () => {},
+      removePorter: () => {},
+    };
+    const { transport, registry } = build({
+      surface: null, rails: new FakeRails(), host, depots: DOORS,
+    });
+    transport.requestRoute(ID_A, ID_B);
+    registry.produce(600);
+    // Standing at the origin, where the walk out of the village happens.
+    for (let t = 0; t < 3; t += 0.25) transport.update(0.25, 0, -20);
+    expect(drawn[0]?.vehicle, 'the goods left the depot on a train').toBe('porter');
+    expect(drawn.map((one) => one.vehicle)).toContain('train');
+    // And the train is told what it is pulling, so it can couple up that many wagons.
+    const train = drawn.find((one) => one.vehicle === 'train');
+    expect(train!.cargo).toBeGreaterThan(0);
+  });
+
+  it('couples up a wagon for every sack the train is carrying', () => {
+    // A full train is exactly the load multiplier it was promised, drawn: four wagons.
+    // Anything less is a village that had less than a full load ready, and none at all is
+    // a train going home empty — which is what a line that only pays one way looks like.
+    expect(carsFor(0)).toBe(0);
+    expect(carsFor(1)).toBe(1);
+    expect(carsFor(WAGON_LOAD)).toBe(1);
+    expect(carsFor(WAGON_LOAD + 1)).toBe(2);
+    expect(carsFor(WAGON_LOAD * TRAIN_LOAD)).toBe(TRAIN_LOAD);
+    expect(carsFor(WAGON_LOAD * 40), 'a load nobody can carry drew a train to the horizon')
+      .toBe(MAX_WAGONS);
   });
 
   it('draws a train while a train is running it, and a walker afterwards', () => {

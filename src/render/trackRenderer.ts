@@ -38,6 +38,33 @@ const PIER_SIZE = 0.34;
 const CAP_THICK = 0.16;
 const CAP_LONG = 0.5;
 
+/** The station. A platform down one side of the track with a roof over part of it, and
+ *  the crates that are waiting to be loaded standing on it.
+ *
+ *  Down one side rather than both: a single platform is what a light railway has, and two
+ *  would hide the track between them from anybody standing beside the line. The length is
+ *  a train's — a locomotive and four wagons is about six blocks — so a train that stops
+ *  here looks like it fits. */
+const PLATFORM_LONG = 7;
+const PLATFORM_WIDE = 2.4;
+const PLATFORM_THICK = 0.5;
+/** Gap between the edge of the track and the edge of the platform. Enough that the
+ *  platform is not a thing the train drives through, little enough to read as loading. */
+const PLATFORM_GAP = 0.15;
+const ROOF_LONG = 4.2;
+const ROOF_HEIGHT = 2.5;
+const POST_SIZE = 0.16;
+const CRATE = 0.52;
+/** Crates on the platform, at most. Past this the pile stops growing and starts meaning
+ *  "full", which is all a heap of boxes can say anyway. */
+const MAX_CRATES = 6;
+
+const PLATFORM_COLOUR = 0x9d968a;
+const PLATFORM_EDGE = 0xb6afa2;
+const ROOF_COLOUR = 0xa8503f;
+const CRATE_COLOUR = 0xb99a5e;
+const CRATE_BAND = 0x5f4826;
+
 const STEEL = 0xb0b4bc;
 const STEEL_TOP = 0xd0d4dc;
 const TIMBER = 0x7a5a38;
@@ -64,6 +91,20 @@ export interface TrackPierView {
   sz: number;
 }
 
+export interface TrackStationView {
+  /** The end of the line the station stands on. */
+  x: number;
+  y: number;
+  z: number;
+  /** The track's heading through it, unit in XZ: the platform lies alongside this. */
+  hx: number;
+  hz: number;
+  /** Goods standing on the platform waiting for a train, as the village's own pile. Zero
+   *  draws an empty platform, which is worth seeing: it is a station whose village has
+   *  nothing to send. */
+  waiting: number;
+}
+
 export interface TrackMarkerView {
   x: number;
   y: number;
@@ -86,13 +127,14 @@ export interface TrackView {
   key: string;
   edges: TrackEdgeView[];
   piers: TrackPierView[];
+  stations: TrackStationView[];
   markers: TrackMarkerView[];
   ghost: TrackGhostView | null;
 }
 
 type Vec = [number, number, number];
 
-const EMPTY: TrackView = { key: '', edges: [], piers: [], markers: [], ghost: null };
+const EMPTY: TrackView = { key: '', edges: [], piers: [], stations: [], markers: [], ghost: null };
 
 export class TrackRenderer {
   readonly group = new THREE.Group();
@@ -166,6 +208,7 @@ export class TrackRenderer {
       emitSleepers(positions, colours, edge.samples, TIMBER);
     }
     for (const pier of view.piers) emitPier(positions, colours, pier, PIER_COLOUR);
+    for (const station of view.stations) emitStation(positions, colours, station);
     replaceGeometry(this.laid, positions, colours, true);
   }
 
@@ -319,6 +362,70 @@ function emitPier(positions: number[], colours: number[], pier: TrackPierView, c
   if (height <= 0) return;
   const leg = { x: pier.x, y: pier.bottom + height / 2, z: pier.z };
   box(positions, colours, colour, leg, f, s, u, PIER_SIZE / 2, PIER_SIZE / 2, height / 2, 0);
+}
+
+/** A platform beside the rails, a roof over the middle of it, and the freight waiting on
+ *  it. All three are the same idea from different distances: from a hilltop the roof says
+ *  a station is there, from the road the crates say whether it has anything to send, and
+ *  from the platform itself the train that pulls in is as long as the pile was. */
+function emitStation(positions: number[], colours: number[], station: TrackStationView): void {
+  const flat = Math.hypot(station.hx, station.hz) || 1;
+  const f: Vec = [station.hx / flat, 0, station.hz / flat];
+  const s: Vec = [f[2], 0, -f[0]];
+  const u: Vec = [0, 1, 0];
+  // Middle of the platform, one half width plus the gap out from the centreline.
+  const across = TRACK_WIDTH / 2 + PLATFORM_GAP + PLATFORM_WIDE / 2;
+  const centre = {
+    x: station.x + s[0] * across,
+    y: station.y,
+    z: station.z + s[2] * across,
+  };
+  // The deck is the top, so the slab hangs below the line rather than standing on it.
+  box(
+    positions, colours, PLATFORM_COLOUR, centre, f, s, u,
+    PLATFORM_LONG / 2, PLATFORM_WIDE / 2, PLATFORM_THICK / 2, -PLATFORM_THICK / 2,
+  );
+  // A lip along the track side, which is what makes the platform read as an edge to stand
+  // at rather than as a slab somebody left there.
+  const lip = {
+    x: station.x + s[0] * (TRACK_WIDTH / 2 + PLATFORM_GAP + 0.15),
+    y: station.y,
+    z: station.z + s[2] * (TRACK_WIDTH / 2 + PLATFORM_GAP + 0.15),
+  };
+  box(positions, colours, PLATFORM_EDGE, lip, f, s, u, PLATFORM_LONG / 2, 0.15, 0.04, -0.04);
+
+  // Two posts and a roof over the middle of it.
+  const postAcross = PLATFORM_WIDE / 2 - POST_SIZE;
+  for (const along of [-ROOF_LONG / 2 + POST_SIZE, ROOF_LONG / 2 - POST_SIZE]) {
+    const post = {
+      x: centre.x + f[0] * along + s[0] * postAcross,
+      y: centre.y,
+      z: centre.z + f[2] * along + s[2] * postAcross,
+    };
+    box(
+      positions, colours, TIMBER, post, f, s, u,
+      POST_SIZE / 2, POST_SIZE / 2, ROOF_HEIGHT / 2, ROOF_HEIGHT / 2,
+    );
+  }
+  const roof = { x: centre.x, y: centre.y, z: centre.z };
+  box(
+    positions, colours, ROOF_COLOUR, roof, f, s, u,
+    ROOF_LONG / 2, PLATFORM_WIDE / 2 + 0.2, 0.12, ROOF_HEIGHT + 0.12,
+  );
+
+  // The freight. Laid out in a row down the platform under the roof, so a full station and
+  // an empty one are told apart from wherever the train would be coming from.
+  const crates = Math.max(0, Math.min(MAX_CRATES, Math.round(station.waiting)));
+  for (let i = 0; i < crates; i++) {
+    const along = (i - (MAX_CRATES - 1) / 2) * (CRATE + 0.14);
+    const crate = {
+      x: centre.x + f[0] * along + s[0] * 0.35,
+      y: centre.y,
+      z: centre.z + f[2] * along + s[2] * 0.35,
+    };
+    box(positions, colours, CRATE_COLOUR, crate, f, s, u, CRATE / 2, CRATE / 2, CRATE / 2, CRATE / 2);
+    box(positions, colours, CRATE_BAND, crate, f, s, u, CRATE / 2 + 0.01, CRATE / 2 + 0.01, 0.04, CRATE / 2);
+  }
 }
 
 /** The ribbon a refused ghost falls back to: where the track would have run, without

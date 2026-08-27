@@ -46,7 +46,7 @@ export const MAX_GRADE = 0.2;
 /** How near an existing free end has to be for a click to mean "join onto that". */
 export const SNAP_RADIUS = 2.0;
 
-/** How near a place an end of the line has to be to serve it.
+/** How near a place a station has to be to serve it.
  *
  *  A railway is not a road: it does not have to reach the door, and it should not have to,
  *  because the last thirty blocks of a village are houses. A village is 38 blocks across
@@ -475,6 +475,9 @@ export interface TrackNode {
   grade: number;
   /** Edge ids. At most two: a third would be a switch, and there are no switches here. */
   edges: number[];
+  /** Whether a station stands here. Freight only ever joins or leaves the railway at
+   *  one of these — see `stationsFor`. */
+  station: boolean;
 }
 
 export interface TrackEdge {
@@ -560,8 +563,9 @@ export interface TrackWay {
 export class TrackNetwork {
   readonly nodes = new Map<number, TrackNode>();
   readonly edges = new Map<number, TrackEdge>();
-  /** Bumped by `lay` and `remove` and by nothing else, so the renderer can decide whether
-   *  to rebuild by comparing one number. */
+  /** Bumped by `lay`, `remove`, `clear` and `setStation` and by nothing else, so the
+   *  renderer and the route survey can each decide whether to do their work again by
+   *  comparing one number. */
   revision = 0;
   private nextId = 1;
   private readonly cells = new Map<string, number[]>();
@@ -575,6 +579,26 @@ export class TrackNetwork {
   /** Open ends, which are the only places a new track may join. */
   freeEnds(): TrackNode[] {
     return [...this.nodes.values()].filter((node) => node.edges.length < 2);
+  }
+
+  /** Every station on the network. */
+  stations(): TrackNode[] {
+    return [...this.nodes.values()].filter((node) => node.station);
+  }
+
+  /** Builds or takes down the station on an end. False when there is no such end, or when
+   *  it is already what it is being asked to become — so a caller can charge for the one
+   *  that changed something and nothing for the one that did not.
+   *
+   *  This moves `revision` because it changes what `wayBetween` answers. Without that the
+   *  route survey, which skips itself entirely while nothing it has looked at has moved,
+   *  would not notice a station until somebody happened to lay a curve. */
+  setStation(nodeId: number, built: boolean): boolean {
+    const node = this.nodes.get(nodeId);
+    if (!node || node.station === built) return false;
+    node.station = built;
+    this.revision++;
+    return true;
   }
 
   totalLength(): number {
@@ -813,6 +837,7 @@ export class TrackNetwork {
       hz: anchor.hz,
       grade: anchor.grade,
       edges: [],
+      station: false,
     };
     this.nodes.set(node.id, node);
     const key = cellKey(node.x, node.z);
@@ -937,12 +962,23 @@ export class TrackNetwork {
 
   // --- the railway as a way between two places ----------------------------------
 
-  /** The ends of the line near enough to a place to serve it, nearest first. */
-  private stationsFor(place: TrackPoint, reach: number): TrackNode[] {
+  /** The ends of the line near enough to a place to be of any use to it, nearest first. */
+  private endsNear(place: TrackPoint, reach: number): TrackNode[] {
     return this.nodesNear(place.x, place.z, reach).sort(
       (a, b) =>
         Math.hypot(a.x - place.x, a.z - place.z) - Math.hypot(b.x - place.x, b.z - place.z),
     );
+  }
+
+  /** The stations near enough to a place to serve it, nearest first.
+   *
+   *  Rails alone are not a service. A line that runs past a village without stopping at
+   *  it is a line that runs past it, and until somebody builds the place where freight
+   *  is put on and taken off, that is all it is. This is the one rule the whole of the
+   *  station is: everything else about it — what it looks like, what it costs, where the
+   *  crates pile up — hangs off the answer to this question. */
+  private stationsFor(place: TrackPoint, reach: number): TrackNode[] {
+    return this.endsNear(place, reach).filter((node) => node.station);
   }
 
   /** The rails from one place to another, when there are rails the whole way.
@@ -1025,16 +1061,31 @@ export class TrackNetwork {
     return points.length < 2 ? null : { points, length, climb };
   }
 
+  /** An end near a place that could be a station and is not.
+   *
+   *  The one thing a player cannot see for themselves. Rails that run to the village and
+   *  carry nothing look exactly like rails that carry something, and "you have built the
+   *  whole railway and forgotten the station" is otherwise a silence. Null once something
+   *  near does serve the place, and null where there is no track near it at all — that
+   *  one is a railway to lay, not a station to build, and `railheadTowards` says so. */
+  stationGapNear(place: TrackPoint, reach = STATION_REACH): TrackNode | null {
+    const near = this.endsNear(place, reach);
+    if (near.length === 0 || near.some((node) => node.station)) return null;
+    return near[0];
+  }
+
   /** Where a line that sets out from one place towards another runs out.
    *
-   *  Null when nothing serves `from` at all: a village with no station has no railway to
-   *  report the end of, and a beacon over every village in the world would be answering a
-   *  question nobody asked. Otherwise it is the end of the line nearest the far village -
-   *  which is the place to stand and keep laying. */
+   *  Asked of the ends rather than of the stations, so that a player laying towards a
+   *  village they have not built a station at yet is still shown where their own line
+   *  has got to. Null when there is no track near `from` at all: a beacon over every
+   *  village in the world would be answering a question nobody asked. Otherwise it is the
+   *  end of the line nearest the far village - which is the place to stand and keep
+   *  laying. */
   railheadTowards(from: TrackPoint, to: TrackPoint, reach = STATION_REACH): TrackPoint | null {
     const seen = new Set<number>();
     const queue: number[] = [];
-    for (const node of this.stationsFor(from, reach)) {
+    for (const node of this.endsNear(from, reach)) {
       if (seen.has(node.id)) continue;
       seen.add(node.id);
       queue.push(node.id);
@@ -1065,6 +1116,9 @@ export class TrackNetwork {
     return {
       nodes: [...this.nodes.values()].map((node) => ({
         id: node.id, x: node.x, y: node.y, z: node.z, hx: node.hx, hz: node.hz, grade: node.grade,
+        // Written only where there is one, so a save from before stations existed and a
+        // save of a railway with none are the same bytes.
+        ...(node.station ? { station: true } : {}),
       })),
       edges: [...this.edges.values()].map((edge) => ({
         a: edge.a, b: edge.b, dirA: edge.dirA, dirB: edge.dirB,
@@ -1079,7 +1133,9 @@ export class TrackNetwork {
   static fromJSON(data: SavedTracks): TrackNetwork {
     const net = new TrackNetwork();
     for (const saved of data.nodes) {
-      const node: TrackNode = { ...saved, edges: [] };
+      // A railway saved before stations existed comes back with none, which reads as
+      // "the line is built and the stations are not" — true, and the panel says so.
+      const node: TrackNode = { ...saved, edges: [], station: saved.station === true };
       net.nodes.set(node.id, node);
       const key = cellKey(node.x, node.z);
       const cell = net.cells.get(key);

@@ -524,15 +524,32 @@ describe('the deck as something to stand on', () => {
 });
 
 describe('the railway as a way between two places', () => {
+  /** Puts a station on the end of the line nearest each place, which is what a player
+   *  pointing at that end and clicking does. Every way between two places wants this: rails
+   *  on their own are a line that runs past a village rather than one that serves it. */
+  function stationsAt(net: TrackNetwork, ...places: { x: number; z: number }[]): void {
+    for (const place of places) {
+      const near = net.nodesNear(place.x, place.z, 8);
+      if (near.length === 0) throw new Error(`no end near (${place.x}, ${place.z})`);
+      near.sort(
+        (a, b) =>
+          Math.hypot(a.x - place.x, a.z - place.z) - Math.hypot(b.x - place.x, b.z - place.z),
+      );
+      net.setStation(near[0].id, true);
+    }
+  }
+
   /** Three runs laid end to end, east from the origin: (0,0) to (180,0), through joints
    *  at 60 and 120. The middle one is deliberately laid from its far end backwards, so
-   *  the walk has to turn a curve round to follow it. */
+   *  the walk has to turn a curve round to follow it. Both ends get a station, because a
+   *  line without them carries nothing. */
   function line(): TrackNetwork {
     const net = new TrackNetwork();
     const first = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
     const last = net.lay(end(180, 64, 0, -1, 0), end(120, 64, 0, -1, 0));
     const middle = net.lay(end(60, 64, 0, 1, 0), end(120, 64, 0, 1, 0));
     if (!first.ok || !last.ok || !middle.ok) throw new Error('could not lay the line');
+    stationsAt(net, { x: 0, z: 0 }, { x: 180, z: 0 });
     return net;
   }
 
@@ -564,6 +581,73 @@ describe('the railway as a way between two places', () => {
     }
   });
 
+  it('carries nothing until both ends have a station on them', () => {
+    // The whole of the rule. Rails that run past a village serve it exactly as much as a
+    // road that runs past one: not at all.
+    const net = new TrackNetwork();
+    for (const run of [
+      net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0)),
+      net.lay(end(60, 64, 0, 1, 0), end(120, 64, 0, 1, 0)),
+      net.lay(end(120, 64, 0, 1, 0), end(180, 64, 0, 1, 0)),
+    ]) {
+      if (!run.ok) throw new Error('could not lay the line');
+    }
+    expect(net.wayBetween(west, east), 'rails alone joined the two').toBeNull();
+    stationsAt(net, { x: 0, z: 0 });
+    expect(net.wayBetween(west, east), 'one station was enough').toBeNull();
+    stationsAt(net, { x: 180, z: 0 });
+    expect(net.wayBetween(west, east)).not.toBeNull();
+  });
+
+  it('forgets the way again when a station is taken down', () => {
+    const net = line();
+    const station = net.stations().find((node) => node.x < 1);
+    expect(station, 'the fixture built no station at the west end').toBeDefined();
+    expect(net.setStation(station!.id, false)).toBe(true);
+    expect(net.wayBetween(west, east)).toBeNull();
+    // And a second attempt changes nothing, so a caller can charge for the one that did.
+    expect(net.setStation(station!.id, false)).toBe(false);
+  });
+
+  it('moves the revision when a station is built, so the survey notices', () => {
+    // The route survey skips itself entirely while nothing it has looked at has moved. A
+    // station that did not move this would not be seen until somebody laid a curve.
+    const net = line();
+    const before = net.revision;
+    const spare = net.nodes.values().next().value!;
+    net.setStation(spare.id, !spare.station);
+    expect(net.revision).toBeGreaterThan(before);
+  });
+
+  it('points at the end to build the station on, and stops once one is there', () => {
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the line');
+    const gap = net.stationGapNear(west);
+    expect(gap?.x).toBeCloseTo(0, 6);
+    stationsAt(net, { x: 0, z: 0 });
+    expect(net.stationGapNear(west), 'still asked for a station it already has').toBeNull();
+    // And nothing at all where there is no track: that one is a railway to lay, and
+    // `railheadTowards` is what says so.
+    expect(net.stationGapNear({ x: 900, y: 64, z: 0 })).toBeNull();
+  });
+
+  it('keeps its stations across a save, and opens an older one with none', () => {
+    const net = line();
+    const reloaded = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(net.toJSON())));
+    expect(reloaded.stations()).toHaveLength(2);
+    expect(reloaded.wayBetween(west, east)).not.toBeNull();
+
+    // A railway saved before stations existed. It comes back as a built line with none of
+    // them, which is true, and the panel says so rather than the line quietly carrying on.
+    const older = net.toJSON();
+    for (const node of older.nodes) delete node.station;
+    const opened = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(older)));
+    expect(opened.stations()).toHaveLength(0);
+    expect(opened.wayBetween(west, east)).toBeNull();
+    expect(opened.edges.size).toBe(net.edges.size);
+  });
+
   it('says nothing when the rails do not reach one of the places', () => {
     const net = line();
     expect(net.wayBetween(west, { x: 600, y: 64, z: 0 })).toBeNull();
@@ -576,6 +660,7 @@ describe('the railway as a way between two places', () => {
     // that serve the origin, or it arrives before it has left and the pair reads as
     // having no railway between them at all.
     const { net } = eastward();
+    stationsAt(net, { x: 0, z: 0 }, { x: 30, z: 0 });
     const way = net.wayBetween({ x: 0, y: 64, z: 0 }, { x: 26, y: 64, z: 0 });
     expect(way).not.toBeNull();
     expect(way!.points[0].x).toBeCloseTo(0, 6);
@@ -587,6 +672,7 @@ describe('the railway as a way between two places', () => {
     // origin is the far end of the run. The freight should still start where its own
     // village would put it on board.
     const { net } = eastward();
+    stationsAt(net, { x: 0, z: 0 }, { x: 30, z: 0 });
     const way = net.wayBetween({ x: 28, y: 64, z: 0 }, { x: 2, y: 64, z: 0 });
     expect(way!.points[0].x).toBeCloseTo(30, 6);
     expect(way!.points[way!.points.length - 1].x).toBeCloseTo(0, 6);
@@ -598,6 +684,7 @@ describe('the railway as a way between two places', () => {
     if (!up.ok) throw new Error('could not lay the climb');
     const down = net.lay(end(40, 68, 0, 1, 0), end(80, 64, 0, 1, 0));
     if (!down.ok) throw new Error('could not lay the descent');
+    stationsAt(net, { x: 0, z: 0 }, { x: 80, z: 0 });
     // A reach of five, so that the summit forty blocks along is not itself close enough
     // to both ends to count as the station for either of them.
     const way = net.wayBetween({ x: 0, y: 64, z: 0 }, { x: 80, y: 64, z: 0 }, 5);

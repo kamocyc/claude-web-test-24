@@ -67,6 +67,15 @@ recipe('basics', 'table', { id: 'rail', count: 16 }, [
   { id: 'oak_planks', count: 2 },
 ]);
 
+// A station is two of them - one for each end of the line - so it is priced as half of
+// what a player will actually pay. Timber for the platform and its roof, iron for the
+// fittings: a cost, but nothing beside the rail a line of any length eats, because the
+// thing that should be expensive about a railway is the railway.
+recipe('basics', 'table', { id: 'station', count: 1 }, [
+  { id: 'oak_planks', count: 6 },
+  { id: 'iron_ingot', count: 1 },
+]);
+
 // Iron for the head and sticks for the handle, priced like a tool rather than like track:
 // what the player pays per block of curve is the rail it eats as they lay it.
 recipe('tools', 'table', { id: 'track_tool', count: 1 }, [

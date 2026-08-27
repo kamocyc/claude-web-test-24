@@ -925,7 +925,37 @@ const byRoad = await evaluate(QUEST_ROUTE);
 console.log('before the railway:', JSON.stringify({ vehicle: byRoad.vehicle, load: byRoad.load }));
 if (byRoad.vehicle === 'train') throw new Error('a pair nobody has railed is already a railway');
 console.log('railway laid:', await evaluate(() => window.voxelcraft.buildRailway()));
+
+// Rails alone are a line that runs past the villages. Nothing should move until there is
+// somewhere at each end to put freight on and take it off, and the panel should say where
+// to build it — a finished railway that carries nothing is otherwise a silence.
+await until(`${QUEST_ROUTE}?.stationGap !== null`, null, 60000);
+const unmanned = await evaluate(QUEST_ROUTE);
+console.log('rails with no stations:', JSON.stringify({
+  vehicle: unmanned.vehicle,
+  stationGap: unmanned.stationGap,
+  note: await page.locator('.route-note.rail').first().innerText().catch(() => null),
+}));
+if (unmanned.vehicle === 'train') {
+  throw new Error('a railway with no station at either end is already running trains');
+}
+await shot('07y3-no-station');
+
+// Two stations, one at each end of the line, the way pointing at that end and clicking
+// with one in hand does.
+console.log('stations built:', JSON.stringify(await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const q = window.voxelcraft.quest();
+  return [q.origin, q.target].map((id) => {
+    const village = g.villages.get(id);
+    return window.voxelcraft.buildStation(village.x, village.z);
+  });
+})));
 await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'train'`, null, { timeout: 60000 });
+const manned = await evaluate(QUEST_ROUTE);
+if (manned.stationGap) throw new Error('a line with both stations is still asking for one');
+console.log('stations on the line:', JSON.stringify(
+  await evaluate(() => window.voxelcraft.stations())));
 const byTrain = await evaluate(QUEST_ROUTE);
 console.log('after the railway:', JSON.stringify({
   vehicle: byTrain.vehicle, load: byTrain.load, grade: byTrain.grade,
@@ -982,6 +1012,16 @@ if (pulled) {
     throw new Error('a pair with no rails anywhere near it should have nothing to point at');
   }
   console.log('railed back:', await evaluate(() => window.voxelcraft.buildRailway()));
+  // The stations may have been left on a stub the new line does not touch, so they are
+  // asked for again. `buildStation` is idempotent: one that is already there costs nothing.
+  await evaluate(() => {
+    const g = window.voxelcraft.game;
+    const q = window.voxelcraft.quest();
+    for (const id of [q.origin, q.target]) {
+      const village = g.villages.get(id);
+      window.voxelcraft.buildStation(village.x, village.z);
+    }
+  });
   await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'train'`, null, { timeout: 60000 });
   console.log('running again:', await evaluate(QUEST_ROUTE).then((r) => r.vehicle));
 }
@@ -998,6 +1038,31 @@ const riding = await evaluate(() => {
   }));
 });
 console.log('where the freight rides:', JSON.stringify(riding));
+
+// The platform, the pile on it, and the train that is as long as the pile was. This is
+// what "the goods are brought in, coupled up and hauled away" looks like from outside.
+const platform = await evaluate(() => window.voxelcraft.trackView());
+console.log('platforms drawn:', JSON.stringify({
+  stations: platform?.stations ?? 0, waiting: platform?.waiting ?? 0,
+}));
+if (!platform || platform.stations < 1) {
+  throw new Error('a railway with two stations on it drew no platform');
+}
+// Stand where the goods are and watch what is carrying them. A railed trip changes hands
+// twice, so both a walker and a train should turn up over one trip.
+const seen = new Set();
+for (let i = 0; i < 40 && seen.size < 2; i++) {
+  await evaluate(() => {
+    const spot = window.voxelcraft.porterSpots()[0];
+    if (spot) window.voxelcraft.teleport(spot.x, spot.z);
+  });
+  await frame();
+  for (const hauler of await evaluate(() => window.voxelcraft.haulers())) {
+    seen.add(`${hauler.kind}:${hauler.cars}`);
+  }
+}
+console.log('what carried the freight:', JSON.stringify([...seen]));
+await shot('07y5-station');
 
 /** One right click, then two frames before looking.
  *
