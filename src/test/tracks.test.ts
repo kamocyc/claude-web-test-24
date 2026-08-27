@@ -18,6 +18,7 @@ import {
   type TrackAnchor,
   type TrackCurve,
   type TrackEdge,
+  type TrackPoint,
 } from '../game/tracks';
 
 /** An end at (x, y, z) running along the unit heading (hx, hz). */
@@ -956,5 +957,84 @@ describe('cutting a run in two', () => {
     expect(back.edges.size).toBe(2);
     const ids = [...back.edges.values()].sort((x, y) => x.a - y.a).map((edge) => edge.id);
     expect(drift(back, was, ids), 'the run bent on its way through a save').toBeLessThan(0.01);
+  });
+});
+
+describe('finding a way through a switch', () => {
+  /** A trunk running east with a village at each end, and a branch off the middle heading
+   *  south-east to a third. What a triangle of villages looks like once somebody has built
+   *  one railway instead of three.
+   *
+   *  The reach is deliberately small. At the real `STATION_REACH` of 48 these three ends
+   *  are all inside each other's, which is a different thing being tested elsewhere. */
+  const REACH = 10;
+
+  function junction(): { net: TrackNetwork; west: TrackPoint; east: TrackPoint; south: TrackPoint } {
+    const net = new TrackNetwork();
+    const trunk = net.lay(end(0, 64, 0, 1, 0), end(90, 64, 0, 1, 0));
+    if (!trunk.ok) throw new Error('could not lay the trunk');
+    const cut = net.splitEdge(trunk.edge.id, 30);
+    if (!cut.ok) throw new Error(`could not cut the trunk: ${cut.fault}`);
+    // Leaves the switch heading east, so a train running east takes it and one running
+    // west cannot: a facing point one way round is a trailing point the other.
+    const branch = net.lay(end(30, 64, 0, 1, 0), end(66, 64, 34, 1, 1));
+    if (!branch.ok) throw new Error(`could not lay the branch: ${branch.fault}`);
+    for (const at of [{ x: 0, z: 0 }, { x: 90, z: 0 }, { x: 66, z: 34 }]) {
+      const near = net.nodesNear(at.x, at.z, 4);
+      if (near.length === 0) throw new Error(`no end near (${at.x}, ${at.z})`);
+      net.setStation(near[0].id, true);
+    }
+    return {
+      net,
+      west: { x: 0, y: 64, z: 0 },
+      east: { x: 90, y: 64, z: 0 },
+      south: { x: 66, y: 64, z: 34 },
+    };
+  }
+
+  it('serves a third village off the middle of one railway', () => {
+    // The whole point of a branch. Before it, a third village needed its own line.
+    const { net, west, east, south } = junction();
+    expect(net.wayBetween(west, east, REACH), 'the trunk stopped carrying').not.toBeNull();
+    expect(net.wayBetween(west, south, REACH), 'the branch carries nothing').not.toBeNull();
+  });
+
+  it('goes down the branch rather than on along the trunk', () => {
+    const { net, west, south } = junction();
+    const way = net.wayBetween(west, south, REACH)!;
+    const last = way.points[way.points.length - 1];
+    expect(last.x).toBeCloseTo(66, 0);
+    expect(last.z).toBeCloseTo(34, 0);
+  });
+
+  it('will not reverse a train at a point to take a trailing one', () => {
+    // From the east the branch faces the wrong way: taking it means stopping at the switch
+    // and backing down it. A train does not do that, so for this pair there is no railway
+    // and the road carries the goods — which is the honest answer, and the reason a player
+    // laying a branch has to think about which way round they lay it.
+    const { net, east, south } = junction();
+    expect(net.wayBetween(east, south, REACH), 'a train reversed at the point').toBeNull();
+  });
+
+  it('picks the same way after a save, not whichever was laid first', () => {
+    // Edge ids are re-issued on load and the ports are rebuilt in save order, so a search
+    // that settled ties by insertion order would send the freight a different way every
+    // time the world was opened.
+    const { net, west, south } = junction();
+    const before = net.wayBetween(west, south, REACH)!;
+    const back = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(net.toJSON())));
+    const after = back.wayBetween(west, south, REACH)!;
+    expect(after.length).toBeCloseTo(before.length, 6);
+    expect(after.points).toHaveLength(before.points.length);
+  });
+
+  it('points at the open end of a half built branch, not the middle of the main line', () => {
+    const { net } = junction();
+    // Heading for somewhere far to the south east. The switch itself is nearer to it than
+    // the trunk's west end is, and sending the player there would be sending them to lay
+    // track where there already is some.
+    const head = net.railheadTowards({ x: 0, y: 64, z: 0 }, { x: 400, y: 64, z: 400 })!;
+    expect(head.x).toBeCloseTo(66, 0);
+    expect(head.z).toBeCloseTo(34, 0);
   });
 });

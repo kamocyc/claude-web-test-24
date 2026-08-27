@@ -666,6 +666,27 @@ export function freePorts(node: TrackNode): number[] {
 }
 
 
+/** One state of the walk in `wayBetween`: standing at a node, having come in by a port.
+ *
+ *  The port is half the state and not a detail. At a switch, arriving on the branch and
+ *  arriving on the main line are the same place and different situations — one of them can
+ *  take the turn and the other would have to reverse. */
+interface RailStep {
+  node: number;
+  port: number;
+  /** Blocks of rail travelled to get here. */
+  cost: number;
+  /** The edge come in by, and the node it was entered from. */
+  edge: number;
+  from: number;
+  /** The state before this one, or null at a station the walk set out from. */
+  prev: string | null;
+}
+
+function railKey(node: number, port: number): string {
+  return `${node}:${port}`;
+}
+
 /** A line of rails from one place to another: what the freight actually travels along.
  *
  *  Points rather than curves, because the thing that consumes this walks a polyline and
@@ -1284,13 +1305,23 @@ export class TrackNetwork {
     return this.endsNear(place, reach).filter((node) => node.station);
   }
 
-  /** The rails from one place to another, when there are rails the whole way.
+  /** The rails from one place to another, and the shortest way round if there are
+   *  several.
    *
-   *  An end holds at most two curves, so a network is a handful of chains rather than a
-   *  graph with choices in it, and the walk can never arrive at a junction and pick the
-   *  wrong way out of it. It is written as a search anyway: the cost of doing so is a
-   *  queue and a map, and the cost of not doing so is a rewrite on the day this gets
-   *  points and sidings.
+   *  **The state is a node *and the port the train came in by*, not a node.** At a switch
+   *  those are different questions: arriving on the branch and arriving on the main line
+   *  put you at the same place facing different ways, and only one of them can take the
+   *  turn. Which one falls straight out of the geometry — arriving is travelling *against*
+   *  the port you came in by, so a turn wider than `MAX_SWITCH_ANGLE` is refused and a
+   *  reversal is refused hardest of all. That is a trailing point, and nobody had to write
+   *  it down as a rule.
+   *
+   *  **Cheapest by length, not by fewest curves.** On the shapes the solver can build the
+   *  two rules rarely disagree — a port faces outward, so a second way between two ends has
+   *  to loop right round and is longer as well as longer-winded. What counting blocks
+   *  actually buys is the tie-break: counting curves settled ties by the order they
+   *  happened to be laid, and a save preserves neither edge ids nor that order, so the
+   *  freight could take a different route every time the world was opened.
    *
    *  The walk sets out from the *neighbours* of the ends that serve the origin rather
    *  than from those ends themselves, so that whatever it finds is at least one curve
@@ -1302,47 +1333,77 @@ export class TrackNetwork {
   wayBetween(from: TrackPoint, to: TrackPoint, reach = STATION_REACH, spacing = 2): TrackWay | null {
     const goals = new Set(this.stationsFor(to, reach).map((node) => node.id));
     if (goals.size === 0) return null;
-    const parents = new Map<number, { node: number; edge: number }>();
-    const queue: number[] = [];
-    const spread = (node: TrackNode): void => {
-      for (const edgeId of edgesOf(node)) {
-        const edge = this.edges.get(edgeId);
-        if (!edge) continue;
-        const next = edge.a === node.id ? edge.b : edge.a;
-        if (parents.has(next)) continue;
-        parents.set(next, { node: node.id, edge: edgeId });
-        queue.push(next);
-      }
-    };
     // Nearest first, so that where a village has several ends to choose from, the freight
     // sets out from the one it has the shortest walk to.
     const stations = this.stationsFor(from, reach);
-    const seeds = new Set(stations.map((node) => node.id));
-    for (const node of stations) spread(node);
+    if (stations.length === 0) return null;
 
-    let arrived: number | null = null;
-    for (let head = 0; head < queue.length; head++) {
-      const id = queue[head];
-      if (goals.has(id)) {
-        arrived = id;
+    const best = new Map<string, RailStep>();
+    const open: RailStep[] = [];
+    const settled = new Set<string>();
+    const offer = (step: RailStep): void => {
+      const key = railKey(step.node, step.port);
+      const had = best.get(key);
+      if (had && had.cost <= step.cost) return;
+      best.set(key, step);
+      open.push(step);
+    };
+    /** The state on the far side of an edge, entered from `node`. */
+    const across = (node: TrackNode, edgeId: number, cost: number, prev: string | null): void => {
+      const edge = this.edges.get(edgeId);
+      if (!edge) return;
+      const outward = edge.a === node.id;
+      offer({
+        node: outward ? edge.b : edge.a,
+        port: outward ? edge.dirB : edge.dirA,
+        cost: cost + edge.curve.length,
+        edge: edgeId,
+        from: node.id,
+        prev,
+      });
+    };
+
+    for (const station of stations) {
+      for (const port of station.ports) {
+        if (port.edge !== null) across(station, port.edge, 0, null);
+      }
+    }
+
+    let arrived: RailStep | null = null;
+    while (open.length > 0) {
+      let cheapest = 0;
+      for (let i = 1; i < open.length; i++) if (open[i].cost < open[cheapest].cost) cheapest = i;
+      const step = open.splice(cheapest, 1)[0];
+      const key = railKey(step.node, step.port);
+      if (settled.has(key) || best.get(key) !== step) continue;
+      settled.add(key);
+      if (goals.has(step.node)) {
+        arrived = step;
         break;
       }
-      const node = this.nodes.get(id);
-      if (node) spread(node);
+      const node = this.nodes.get(step.node);
+      if (!node) continue;
+      const came = node.ports[step.port];
+      if (!came) continue;
+      const limit = Math.cos(MAX_SWITCH_ANGLE);
+      for (let port = 0; port < node.ports.length; port++) {
+        if (port === step.port) continue;
+        const out = node.ports[port];
+        if (out.edge === null) continue;
+        // The turn, as the angle between the way in and the way out. A plain joint's two
+        // ports are exact opposites, so this is one and every joint is straight through.
+        if (-came.hx * out.hx - came.hz * out.hz < limit) continue;
+        across(node, out.edge, step.cost, key);
+      }
     }
     if (arrived === null) return null;
 
-    // Back down the parents to the first end that serves the origin, then forwards along
-    // what that walked. Stopping at a seed rather than at a node with no parent matters:
-    // a seed reached from another seed has one, and following it would walk in a circle.
     const chain: { edge: number; from: number }[] = [];
-    for (let id = arrived; ; ) {
-      const step = parents.get(id);
-      if (!step) break;
-      chain.unshift({ edge: step.edge, from: step.node });
-      id = step.node;
-      if (seeds.has(id)) break;
+    for (let step: RailStep | null = arrived; step !== null;) {
+      chain.unshift({ edge: step.edge, from: step.from });
+      step = step.prev === null ? null : best.get(step.prev) ?? null;
     }
+
     const points: TrackPoint[] = [];
     let length = 0;
     let climb = 0;
@@ -1383,8 +1444,12 @@ export class TrackNetwork {
    *  village they have not built a station at yet is still shown where their own line
    *  has got to. Null when there is no track near `from` at all: a beacon over every
    *  village in the world would be answering a question nobody asked. Otherwise it is the
-   *  end of the line nearest the far village - which is the place to stand and keep
-   *  laying. */
+   *  open end nearest the far village - which is the place to stand and keep laying.
+   *
+   *  Open, not merely near. A branched network has nodes in the middle of it that are
+   *  nearer the destination than any of its ends, and pointing a player at the middle of
+   *  their own main line and calling it the railhead would be sending them to build track
+   *  where there is already track. */
   railheadTowards(from: TrackPoint, to: TrackPoint, reach = STATION_REACH): TrackPoint | null {
     const seen = new Set<number>();
     const queue: number[] = [];
@@ -1399,7 +1464,7 @@ export class TrackNetwork {
       const node = this.nodes.get(queue[head]);
       if (!node) continue;
       const gap = Math.hypot(node.x - to.x, node.z - to.z);
-      if (gap < bestGap) {
+      if (gap < bestGap && freePorts(node).length > 0) {
         bestGap = gap;
         best = node;
       }
