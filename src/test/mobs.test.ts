@@ -4,6 +4,7 @@ import { CHUNK_SIZE, Chunk } from '../world/chunk';
 import { World } from '../world/world';
 import { WATER_FULL } from '../world/water';
 import { Mob, type MobContext } from '../game/mobs/ai';
+import type { StandingSurface } from '../core/aabb';
 import { Player } from '../game/player';
 import { DayCycle } from '../game/daycycle';
 
@@ -123,5 +124,51 @@ describe('a porter following its shipment', () => {
     cow.onHurt();
     expect(cow.state).toBe('flee');
     expect(world.getBlock(0, 20, 0)).toBe(Block.STONE);
+  });
+});
+
+describe('a train on a deck', () => {
+  /** The deck of a railway, as the movement code sees one: a height over a strip of
+   *  ground, and nothing in the block grid at all. */
+  function deck(top: number, halfWidth = 1): StandingSurface {
+    return {
+      surfaceTopAt: (_x, z, low, high) =>
+        Math.abs(z) <= halfWidth && top >= low && top <= high ? top : null,
+    };
+  }
+
+  it('rides the deck rather than falling through it', () => {
+    // The sweep cannot land anything on a railway: it resolves every contact onto the
+    // nearest whole block, and a deck sits wherever the curve put it.
+    const world = stoneFloor();
+    const ctx = context(world);
+    const train = new Mob('train', 0.5, 26, 0.5);
+    train.surface = deck(24.4);
+    for (let i = 0; i < 120; i++) train.update(1 / 60, ctx);
+    expect(train.y).toBeCloseTo(24.4, 2);
+    expect(train.onGround).toBe(true);
+  });
+
+  it('falls to the ground when it walks off the end of one', () => {
+    const world = stoneFloor();
+    const ctx = context(world);
+    const train = new Mob('train', 0.5, 26, 0.5);
+    train.surface = deck(24.4);
+    for (let i = 0; i < 120; i++) train.update(1 / 60, ctx);
+    // Off the side of the strip, where there is no deck to hold it up.
+    train.z = 6;
+    for (let i = 0; i < 240; i++) train.update(1 / 60, ctx);
+    expect(train.y).toBeLessThan(22);
+    expect(train.onGround).toBe(true);
+  });
+
+  it('leaves everything that was not given a deck on the ground', () => {
+    // A porter has no reason to be up on a viaduct and no way down off one, so it is not
+    // given the deck at all — and without the field nothing about it changes.
+    const world = stoneFloor();
+    const ctx = context(world);
+    const porter = new Mob('porter', 0.5, 26, 0.5);
+    for (let i = 0; i < 120; i++) porter.update(1 / 60, ctx);
+    expect(porter.y).toBeCloseTo(21, 1);
   });
 });

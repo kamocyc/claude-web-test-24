@@ -1,4 +1,4 @@
-import { type EntityBox, stepUpMove, sweepMove } from '../../core/aabb';
+import { boxIntersectsWorld, type EntityBox, type StandingSurface, stepUpMove, sweepMove } from '../../core/aabb';
 import type { Rng } from '../../core/rng';
 import { WATER_FULL } from '../../world/water';
 import type { World } from '../../world/world';
@@ -10,6 +10,14 @@ import { type MobDef, type MobKind, mobDef } from './types';
 
 const GRAVITY = 26;
 const JUMP_SPEED = 7.6;
+
+/** How far a deck reaches from a hauler's feet, up or down.
+ *
+ *  The same idea as the player's, and the same third of a block: it only has to cover one
+ *  frame of a graded deck moving under something walking along it. Unlike the player's it
+ *  is not gated on having been on the ground, because a train is *put* on the rails - the
+ *  shipment decides where it is and the mob is walked after it. */
+const SURFACE_REACH = 0.35;
 /** Water is thick: animals bob rather than sink, and never plummet through it. */
 const SWIM_UP_ACCEL = 14;
 const WATER_VERTICAL_DRAG = 5;
@@ -70,6 +78,11 @@ export class Mob implements Damageable {
   /** Multiplier on this mob's walking speed. A porter on a paved road walks faster than
    *  one on a dirt track, because the shipment it is following does. */
   speedScale = 1;
+  /** Something to stand on that is not made of blocks - the railway deck, and nothing
+   *  else. Only the train is given one: it is the only creature with a reason to be up on
+   *  a viaduct and the only one that could not get down off it by walking. See the same
+   *  field on `Player` for why this cannot be done inside the sweep. */
+  surface: StandingSurface | null = null;
   /** Villager data. */
   profession: string | null = null;
   trades: Trade[] = [];
@@ -327,6 +340,31 @@ export class Mob implements Damageable {
     }
     if (result.collidedX) this.vx = 0;
     if (result.collidedZ) this.vz = 0;
+
+    // Then the deck, if this is something that rides one. Settled after the sweep and not
+    // inside it, because a contact is resolved onto the nearest whole block and a deck
+    // stands wherever the curve put it - and because interpolating the height along the
+    // line is what makes a graded run a ramp rather than a staircase of five centimetre
+    // steps to be climbed one per frame. `wasOnGround` is deliberately not consulted: a
+    // shipment is put down on the rails from above at the start of every trip.
+    if (this.surface && !inWater && this.vy <= 0) {
+      const top = this.surface.surfaceTopAt(
+        this.x,
+        this.z,
+        Math.min(this.y, beforeY) - SURFACE_REACH,
+        Math.max(this.y, beforeY) + SURFACE_REACH,
+      );
+      if (
+        top !== null &&
+        !boxIntersectsWorld(world, {
+          x: this.x, y: top, z: this.z, width: this.def.width, height: this.def.height,
+        })
+      ) {
+        this.y = top;
+        this.vy = 0;
+        this.onGround = true;
+      }
+    }
 
     const travelled = Math.hypot(this.x - beforeX, this.z - beforeZ);
     this.walkPhase += travelled * 4;

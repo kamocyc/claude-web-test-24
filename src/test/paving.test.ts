@@ -285,72 +285,42 @@ describe('running a road wide enough for a cart', () => {
 });
 
 describe('laying a material that is not dirt', () => {
-  /** Rails, and a pile of them to take from. */
-  function rails(count: number): PaveMaterial {
-    let left = count;
-    return {
-      block: Block.RAIL,
-      width: 1,
-      supply: {
-        take: () => {
-          if (left <= 0) return false;
-          left--;
-          return true;
-        },
-      },
-    };
-  }
-
-  const freeRails: PaveMaterial = { block: Block.RAIL, width: 1, supply: null };
+  /** The road blocks are the ones the index knows; anything faster than what is there
+   *  overwrites it, and anything slower leaves it alone. Cobblestone is the one in the
+   *  middle of that table. */
+  const cobbles: PaveMaterial = { block: Block.COBBLESTONE };
 
   it('lays what it is handed rather than dirt', () => {
     const world = new FakeWorld();
-    treadColumn(world, 4, 0, GROUND, freeRails);
-    expect(world.getBlock(4, GROUND, 0)).toBe(Block.RAIL);
-  });
-
-  it('lays a single column when the material asks for one', () => {
-    // A shovel sweeps 3x3 because dirt is free. Every rail was smelted, so a rail sweep
-    // that laid nine of them per step would be spending the player's iron sideways.
-    const world = new FakeWorld();
-    const brush = treadBrush(world, 4, 0, GROUND, freeRails);
-    expect(brush.laid).toBe(1);
-    expect(world.paths()).toHaveLength(1);
+    treadColumn(world, 4, 0, GROUND, cobbles);
+    expect(world.getBlock(4, GROUND, 0)).toBe(Block.COBBLESTONE);
   });
 
   it('upgrades a road that is already there', () => {
-    // This is what makes rail an improvement to a line rather than a second line beside
-    // it: the road the player already walked is the road the rails go on.
+    // The road the player already walked is the road the paving goes on, rather than a
+    // second line beside it.
     const world = new FakeWorld();
     treadColumn(world, 4, 0, GROUND);
     expect(world.getBlock(4, GROUND, 0)).toBe(Block.DIRT_PATH);
-    treadColumn(world, 4, 0, GROUND, freeRails);
-    expect(world.getBlock(4, GROUND, 0)).toBe(Block.RAIL);
+    treadColumn(world, 4, 0, GROUND, cobbles);
+    expect(world.getBlock(4, GROUND, 0)).toBe(Block.COBBLESTONE);
     expect(world.roadLevel(4, 0)).toBe(GROUND);
   });
 
-  it('never treads a rail back into dirt', () => {
-    // Walking home over your own railway with a shovel in hand must not undo it.
+  it('never treads a paved road back into dirt', () => {
+    // Walking home over your own street with a shovel in hand must not undo it.
     const world = new FakeWorld();
-    treadColumn(world, 4, 0, GROUND, freeRails);
+    treadColumn(world, 4, 0, GROUND, cobbles);
     treadBrush(world, 4, 0, GROUND, TREAD_DIRT);
-    expect(world.getBlock(4, GROUND, 0)).toBe(Block.RAIL);
+    expect(world.getBlock(4, GROUND, 0)).toBe(Block.COBBLESTONE);
   });
 
-  it('stops where the pile runs out, and leaves the rest of the ground alone', () => {
-    const world = new FakeWorld();
-    const laid = treadLine(world, { x: 0, z: 0 }, { x: 19, z: 0 }, GROUND, rails(5));
-    expect(laid.laid).toBe(5);
-    expect(world.paths()).toHaveLength(5);
-    expect(world.getBlock(4, GROUND, 0)).toBe(Block.RAIL);
-    expect(world.getBlock(5, GROUND, 0)).toBe(Block.GRASS);
-  });
-
-  it('lays an unbroken line as far as the pile goes', () => {
+  it('carries a paved line over a rise and a fall in one run', () => {
     const world = new FakeWorld();
     for (let x = 0; x < 8; x++) world.setHeight(x, 0, GROUND + (x % 2));
-    treadLine(world, { x: 0, z: 0 }, { x: 7, z: 0 }, GROUND, freeRails);
-    expect(unbroken(world.paths())).toBe(true);
+    treadLine(world, { x: 0, z: 0 }, { x: 7, z: 0 }, GROUND, cobbles);
+    const along = Array.from({ length: 8 }, (_, x) => ({ x, z: 0, y: world.roadLevel(x, 0) ?? -1 }));
+    expect(unbroken(along)).toBe(true);
     expect(oneRun(world)).toBe(true);
   });
 });

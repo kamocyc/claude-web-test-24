@@ -16,8 +16,8 @@
  *  nearest integer plane, so a deck at 64.37 is settled onto afterwards instead - see
  *  `StandingSurface` in `core/aabb.ts` and `TrackNetwork.surfaceTopAt`. The piers are
  *  drawn and nothing more: they hold the deck up to the eye, and the player walks
- *  through them. Mobs and dropped items are not given the deck either, so anything let
- *  go of on a viaduct falls to whatever is under it. */
+ *  through them. The only other thing given the deck is the train, which has freight to
+ *  carry along it; every other mob and every dropped item falls straight through. */
 
 import * as THREE from 'three';
 import { GAUGE, TRACK_WIDTH, type TrackSample } from '../game/tracks';

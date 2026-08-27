@@ -46,6 +46,15 @@ export const MAX_GRADE = 0.2;
 /** How near an existing free end has to be for a click to mean "join onto that". */
 export const SNAP_RADIUS = 2.0;
 
+/** How near a place an end of the line has to be to serve it.
+ *
+ *  A railway is not a road: it does not have to reach the door, and it should not have to,
+ *  because the last thirty blocks of a village are houses. A village is 38 blocks across
+ *  from its middle, so this is anywhere on its own ground and a little way outside it.
+ *  The walk from there to the depot's door is charged to every trip exactly the way the
+ *  walk from a road is - see `doorGap` in `transport.ts`. */
+export const STATION_REACH = 48;
+
 /** Rails consumed per block of track. One rail buys two blocks: this track carries
  *  nothing, so it cannot cost what the freight-carrying kind does — but free track would
  *  be the only thing in the game a player never has to fetch iron for. */
@@ -534,6 +543,20 @@ export function anchorOf(node: TrackNode, dir: TrackDir): TrackAnchor {
   };
 }
 
+
+/** A line of rails from one place to another: what the freight actually travels along.
+ *
+ *  Points rather than curves, because the thing that consumes this walks a polyline and
+ *  has no business knowing what a biarc is. */
+export interface TrackWay {
+  /** From the end serving the origin to the end serving the destination. */
+  points: TrackPoint[];
+  /** Along the rails, horizontal, like every other length in this file. */
+  length: number;
+  /** Blocks of up and down along the way. */
+  climb: number;
+}
+
 export class TrackNetwork {
   readonly nodes = new Map<number, TrackNode>();
   readonly edges = new Map<number, TrackEdge>();
@@ -909,6 +932,133 @@ export class TrackNetwork {
       if (best === null || top > best) best = top;
     }
     return best;
+  }
+
+
+  // --- the railway as a way between two places ----------------------------------
+
+  /** The ends of the line near enough to a place to serve it, nearest first. */
+  private stationsFor(place: TrackPoint, reach: number): TrackNode[] {
+    return this.nodesNear(place.x, place.z, reach).sort(
+      (a, b) =>
+        Math.hypot(a.x - place.x, a.z - place.z) - Math.hypot(b.x - place.x, b.z - place.z),
+    );
+  }
+
+  /** The rails from one place to another, when there are rails the whole way.
+   *
+   *  An end holds at most two curves, so a network is a handful of chains rather than a
+   *  graph with choices in it, and the walk can never arrive at a junction and pick the
+   *  wrong way out of it. It is written as a search anyway: the cost of doing so is a
+   *  queue and a map, and the cost of not doing so is a rewrite on the day this gets
+   *  points and sidings.
+   *
+   *  The walk sets out from the *neighbours* of the ends that serve the origin rather
+   *  than from those ends themselves, so that whatever it finds is at least one curve
+   *  long. Two villages can sit fifty blocks apart with their outskirts overlapping, and
+   *  then every end of every line near them is inside both their reaches; seeded with the
+   *  ends, such a pair would arrive before it set off and read as having no railway at
+   *  all. What they must not have is a railway of no length, and this is that rule stated
+   *  exactly. */
+  wayBetween(from: TrackPoint, to: TrackPoint, reach = STATION_REACH, spacing = 2): TrackWay | null {
+    const goals = new Set(this.stationsFor(to, reach).map((node) => node.id));
+    if (goals.size === 0) return null;
+    const parents = new Map<number, { node: number; edge: number }>();
+    const queue: number[] = [];
+    const spread = (node: TrackNode): void => {
+      for (const edgeId of node.edges) {
+        const edge = this.edges.get(edgeId);
+        if (!edge) continue;
+        const next = edge.a === node.id ? edge.b : edge.a;
+        if (parents.has(next)) continue;
+        parents.set(next, { node: node.id, edge: edgeId });
+        queue.push(next);
+      }
+    };
+    // Nearest first, so that where a village has several ends to choose from, the freight
+    // sets out from the one it has the shortest walk to.
+    const stations = this.stationsFor(from, reach);
+    const seeds = new Set(stations.map((node) => node.id));
+    for (const node of stations) spread(node);
+
+    let arrived: number | null = null;
+    for (let head = 0; head < queue.length; head++) {
+      const id = queue[head];
+      if (goals.has(id)) {
+        arrived = id;
+        break;
+      }
+      const node = this.nodes.get(id);
+      if (node) spread(node);
+    }
+    if (arrived === null) return null;
+
+    // Back down the parents to the first end that serves the origin, then forwards along
+    // what that walked. Stopping at a seed rather than at a node with no parent matters:
+    // a seed reached from another seed has one, and following it would walk in a circle.
+    const chain: { edge: number; from: number }[] = [];
+    for (let id = arrived; ; ) {
+      const step = parents.get(id);
+      if (!step) break;
+      chain.unshift({ edge: step.edge, from: step.node });
+      id = step.node;
+      if (seeds.has(id)) break;
+    }
+    const points: TrackPoint[] = [];
+    let length = 0;
+    let climb = 0;
+    for (const step of chain) {
+      const edge = this.edges.get(step.edge);
+      if (!edge) continue;
+      // A curve runs from its `a` end to its `b` end; walked the other way it is the same
+      // samples backwards.
+      const samples = sampleTrack(edge.curve, spacing);
+      if (edge.a !== step.from) samples.reverse();
+      for (const sample of samples) {
+        const last = points[points.length - 1];
+        if (last && Math.hypot(sample.x - last.x, sample.z - last.z) < 1e-6) continue;
+        if (last) climb += Math.abs(sample.y - last.y);
+        points.push({ x: sample.x, y: sample.y, z: sample.z });
+      }
+      length += edge.curve.length;
+    }
+    return points.length < 2 ? null : { points, length, climb };
+  }
+
+  /** Where a line that sets out from one place towards another runs out.
+   *
+   *  Null when nothing serves `from` at all: a village with no station has no railway to
+   *  report the end of, and a beacon over every village in the world would be answering a
+   *  question nobody asked. Otherwise it is the end of the line nearest the far village -
+   *  which is the place to stand and keep laying. */
+  railheadTowards(from: TrackPoint, to: TrackPoint, reach = STATION_REACH): TrackPoint | null {
+    const seen = new Set<number>();
+    const queue: number[] = [];
+    for (const node of this.stationsFor(from, reach)) {
+      if (seen.has(node.id)) continue;
+      seen.add(node.id);
+      queue.push(node.id);
+    }
+    let best: TrackNode | null = null;
+    let bestGap = Infinity;
+    for (let head = 0; head < queue.length; head++) {
+      const node = this.nodes.get(queue[head]);
+      if (!node) continue;
+      const gap = Math.hypot(node.x - to.x, node.z - to.z);
+      if (gap < bestGap) {
+        bestGap = gap;
+        best = node;
+      }
+      for (const edgeId of node.edges) {
+        const edge = this.edges.get(edgeId);
+        if (!edge) continue;
+        const next = edge.a === node.id ? edge.b : edge.a;
+        if (seen.has(next)) continue;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+    return best ? { x: best.x, y: best.y, z: best.z } : null;
   }
 
   toJSON(): SavedTracks {

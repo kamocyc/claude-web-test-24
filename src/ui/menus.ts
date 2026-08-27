@@ -28,8 +28,9 @@ const TOGGLE_LABELS: [ToggleKey, string][] = [
 export interface TitleActions {
   onNewWorld(seed: string): void;
   onContinue(): void;
-  /** The fixed world, plus a road between two villages to stand on — railed most of
-   *  the way, with the last stretch and the rails for it left to the player. */
+  /** The fixed world, plus a road between two villages to stand on and a railway
+   *  running beside it — laid most of the way, with the last stretch, the tool and the
+   *  rails for it left to the player. */
   onSampleWorld(): void;
 }
 

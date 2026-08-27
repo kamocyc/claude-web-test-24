@@ -522,3 +522,113 @@ describe('the deck as something to stand on', () => {
     expect(net.surfaceTopAt(15, 0, 60, 70)).toBeNull();
   });
 });
+
+describe('the railway as a way between two places', () => {
+  /** Three runs laid end to end, east from the origin: (0,0) to (180,0), through joints
+   *  at 60 and 120. The middle one is deliberately laid from its far end backwards, so
+   *  the walk has to turn a curve round to follow it. */
+  function line(): TrackNetwork {
+    const net = new TrackNetwork();
+    const first = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
+    const last = net.lay(end(180, 64, 0, -1, 0), end(120, 64, 0, -1, 0));
+    const middle = net.lay(end(60, 64, 0, 1, 0), end(120, 64, 0, 1, 0));
+    if (!first.ok || !last.ok || !middle.ok) throw new Error('could not lay the line');
+    return net;
+  }
+
+  const west = { x: 0, y: 64, z: 0 };
+  const east = { x: 180, y: 64, z: 0 };
+
+  it('joins two places the rails reach, and runs from one to the other', () => {
+    const way = line().wayBetween(west, east);
+    expect(way).not.toBeNull();
+    expect(way!.points[0].x).toBeCloseTo(0, 6);
+    expect(way!.points[way!.points.length - 1].x).toBeCloseTo(180, 6);
+    expect(way!.length).toBeCloseTo(180, 6);
+  });
+
+  it('hands the same line back the other way round when it is asked the other way', () => {
+    // The freight sets out from the origin, so the first point has to be the end that
+    // serves it. Get this backwards and every shipment appears at the wrong village.
+    const way = line().wayBetween(east, west);
+    expect(way!.points[0].x).toBeCloseTo(180, 6);
+    expect(way!.points[way!.points.length - 1].x).toBeCloseTo(0, 6);
+  });
+
+  it('walks a run that was laid backwards without doubling back on itself', () => {
+    // The middle run of the fixture was laid from 120 towards 60, so following it from
+    // the west means reading its curve in reverse.
+    const way = line().wayBetween(west, east);
+    for (let i = 1; i < way!.points.length; i++) {
+      expect(way!.points[i].x).toBeGreaterThan(way!.points[i - 1].x);
+    }
+  });
+
+  it('says nothing when the rails do not reach one of the places', () => {
+    const net = line();
+    expect(net.wayBetween(west, { x: 600, y: 64, z: 0 })).toBeNull();
+    expect(net.wayBetween({ x: 600, y: 64, z: 0 }, east)).toBeNull();
+  });
+
+  it('joins two places whose outskirts overlap', () => {
+    // Both ends of this run are inside the reach of both places, which is what two
+    // villages fifty blocks apart look like. The walk has to set out from beyond the ends
+    // that serve the origin, or it arrives before it has left and the pair reads as
+    // having no railway between them at all.
+    const { net } = eastward();
+    const way = net.wayBetween({ x: 0, y: 64, z: 0 }, { x: 26, y: 64, z: 0 });
+    expect(way).not.toBeNull();
+    expect(way!.points[0].x).toBeCloseTo(0, 6);
+    expect(way!.points[way!.points.length - 1].x).toBeCloseTo(30, 6);
+  });
+
+  it('sets out from the end of the line the origin has the shortest walk to', () => {
+    // Two ends inside the reach of both places again, and this time the nearer one to the
+    // origin is the far end of the run. The freight should still start where its own
+    // village would put it on board.
+    const { net } = eastward();
+    const way = net.wayBetween({ x: 28, y: 64, z: 0 }, { x: 2, y: 64, z: 0 });
+    expect(way!.points[0].x).toBeCloseTo(30, 6);
+    expect(way!.points[way!.points.length - 1].x).toBeCloseTo(0, 6);
+  });
+
+  it('counts the up and down along the way rather than the ends of it', () => {
+    const net = new TrackNetwork();
+    const up = net.lay(end(0, 64, 0, 1, 0), end(40, 68, 0, 1, 0));
+    if (!up.ok) throw new Error('could not lay the climb');
+    const down = net.lay(end(40, 68, 0, 1, 0), end(80, 64, 0, 1, 0));
+    if (!down.ok) throw new Error('could not lay the descent');
+    // A reach of five, so that the summit forty blocks along is not itself close enough
+    // to both ends to count as the station for either of them.
+    const way = net.wayBetween({ x: 0, y: 64, z: 0 }, { x: 80, y: 64, z: 0 }, 5);
+    // Four up and four back down: a profile that ends where it started still cost the
+    // climb, and a route that read the two ends alone would call this line flat.
+    expect(way!.climb).toBeGreaterThan(7.5);
+    expect(way!.climb).toBeLessThan(8.5);
+  });
+
+  it('reports the end of a half built line, nearest the place it is heading for', () => {
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the line');
+    const head = net.railheadTowards({ x: 0, y: 64, z: 0 }, { x: 400, y: 64, z: 0 });
+    expect(head?.x).toBeCloseTo(60, 6);
+  });
+
+  it('reports nothing at all where nothing serves the place it sets out from', () => {
+    // A beacon over every village in the world would answer a question nobody asked.
+    const net = line();
+    expect(net.railheadTowards({ x: 900, y: 64, z: 0 }, west)).toBeNull();
+  });
+
+  it('forgets a way once the rails under it are pulled up', () => {
+    const net = line();
+    const middle = [...net.edges.values()].find((edge) => edge.curve.length > 0
+      && pointAt(edge.curve, edge.curve.length / 2).x > 80
+      && pointAt(edge.curve, edge.curve.length / 2).x < 100);
+    expect(middle).toBeDefined();
+    net.remove(middle!.id);
+    expect(net.wayBetween(west, east)).toBeNull();
+    expect(net.railheadTowards(west, east)?.x).toBeCloseTo(60, 6);
+  });
+});

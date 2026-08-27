@@ -32,11 +32,13 @@ export interface RouteView {
   /** True when the far end has asked for what this route carries. */
   wanted: boolean;
   /** What hauls it, and — when a cart or a train cannot — how far away the place to go
-   *  and fix is. Rails run out somewhere; roads pinch somewhere. */
+   *  and fix is. A railway runs out somewhere; a road pinches somewhere. */
   vehicle: 'porter' | 'cart' | 'train';
   cartPinch: { distance: number; bearing: number } | null;
   railPinch: { distance: number; bearing: number } | null;
   /** Blocks of up and down, and how much longer the road is than the straight line. */
+  /** Blocks of up and down along the way. Not a whole number on a railway: the deck is a
+   *  curve and it is measured where it actually runs, not where the blocks under it are. */
   climb: number;
   detour: number;
   /** The walk between a depot's door and the road proper, at whichever end is worse. */
@@ -115,7 +117,7 @@ export class RoutePanel {
       .map((r) => [
         r.from, r.to, r.surveyed, r.connected, Math.round(r.length),
         Math.round(r.missing), r.porters, r.grade, r.load, r.wanted, r.stock,
-        r.fromDepot, r.toDepot, r.vehicle, r.climb, Math.round(r.detour * 20),
+        r.fromDepot, r.toDepot, r.vehicle, Math.round(r.climb), Math.round(r.detour * 20),
         r.idle ? `${r.idle.kind}${r.idle.village}${r.idle.wants ?? ''}` : '',
         Math.round(r.doorGap), r.nearMiss, r.faults.length,
         r.cartPinch ? Math.round(r.cartPinch.distance) : '',
@@ -197,16 +199,17 @@ function notes(route: RouteView): Note[] {
       : '';
     out.push({ text: `荷車: 幅が足りない${where}`, tone: 'narrow' });
   }
-  // And only a line somebody has started railing gets told where the rails stop; a road
-  // with no rail on it at all has no pinch to report.
+  // And only a pair somebody has started laying a railway between gets told where it
+  // stops; two villages with no track near either of them have no railhead to report.
   if (route.vehicle !== 'train' && route.railPinch) {
     const where = `（${heading(route.railPinch.bearing)}へ ${Math.round(route.railPinch.distance)}m）`;
-    out.push({ text: `列車: レールが途切れている${where}`, tone: 'rail' });
+    out.push({ text: `列車: 線路が途切れている${where}`, tone: 'rail' });
   }
   if (route.detour > DETOUR_NOTICE) {
     out.push({ text: `遠回り ×${route.detour.toFixed(2)} — 運賃は直線距離ぶん`, tone: 'cost' });
   }
-  if (route.climb > 0) out.push({ text: `登り ${route.climb} 段`, tone: 'cost' });
+  const climb = Math.round(route.climb);
+  if (climb > 0) out.push({ text: `登り ${climb} 段`, tone: 'cost' });
   if (route.doorGap > DOOR_GAP_NOTICE) {
     out.push({ text: `集荷所の戸口から道まで ${Math.round(route.doorGap)}m`, tone: 'cost' });
   }

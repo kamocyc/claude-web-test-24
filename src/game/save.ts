@@ -4,6 +4,20 @@
 export const SAVE_KEY = 'voxelcraft.save.v1';
 export const SAVE_VERSION = 2;
 
+/** The id the old block railway used, and what a world that still has some in it opens
+ *  with instead.
+ *
+ *  There is no rail block any more: a railway is laid as curves in the open now, and a
+ *  block whose whole job was to be walked over by a train has nothing left to do. Dropping
+ *  the id and leaving it at that would punch holes in every road and bridge somebody
+ *  railed, so the columns become their own ballast. Written here rather than as a version
+ *  bump because a bump throws the world away, and this is one substitution.
+ *
+ *  Ids, not names, so that this does not depend on a block that no longer exists: 59 was
+ *  `RAIL` and 7 is `GRAVEL`. */
+const RETIRED_RAIL = 59;
+const BALLAST = 7;
+
 export interface SavedPlayer {
   x: number;
   y: number;
@@ -179,7 +193,10 @@ export function decodeEdits(text: string): Map<number, number> {
   const bytes = base64ToBytes(text);
   const packed = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
   const map = new Map<number, number>();
-  for (let i = 0; i < packed.length; i += 2) map.set(packed[i], packed[i + 1]);
+  for (let i = 0; i < packed.length; i += 2) {
+    const id = packed[i + 1];
+    map.set(packed[i], id === RETIRED_RAIL ? BALLAST : id);
+  }
   return map;
 }
 

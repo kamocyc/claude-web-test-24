@@ -264,12 +264,12 @@ export const MILESTONES: readonly Milestone[] = [
   },
   // Appended rather than slotted in beside 街道: the claimed index is what a save
   // remembers, so inserting a goal in the middle would move every player's place in the
-  // list. Last also happens to be where it belongs — rails cost iron a new network has
-  // no way to freight yet.
+  // list. Last also happens to be where it belongs — a railway costs iron a new network
+  // has no way to freight yet.
   {
     id: 'railway',
-    title: '鉄道を敷く（全区間レールの路線）',
-    detail: () => '路線ぜんぶをレールにすると列車が走り、速さも一度に運ぶ量も上がる',
+    title: '鉄道を敷く（線路で村と村をつなぐ）',
+    detail: () => '線路が両方の村に届くと列車が走り、速さも一度に運ぶ量も上がる',
     reward: 20,
     done: (s) => linked(s).some((r) => r.vehicle === 'train'),
   },
