@@ -46,6 +46,15 @@ export const MAX_GRADE = 0.2;
 /** How near an existing free end has to be for a click to mean "join onto that". */
 export const SNAP_RADIUS = 2.0;
 
+/** How far off the through line a branch may leave a switch — and, because it is the same
+ *  fact read the other way, how sharply freight may turn at one.
+ *
+ *  Which direction a train may take a branch in falls out of that single number rather
+ *  than being a rule anybody had to write: arriving at a node is travelling *against* the
+ *  port you came in by, so the turn onto a branch is wide from one side of the switch and
+ *  a reversal from the other. That is a trailing point, and the geometry says so. */
+export const MAX_SWITCH_ANGLE = 0.55;
+
 /** How near a place a station has to be to serve it.
  *
  *  A railway is not a road: it does not have to reach the door, and it should not have to,
@@ -801,7 +810,7 @@ export class TrackNetwork {
 
   /** How far along a ray a point sits, and how far off it, or null when it is behind the
    *  eye or beyond the reach. */
-  private static onRay(
+  static onRay(
     origin: TrackPoint, direction: TrackPoint, maxDistance: number, p: TrackPoint,
   ): { along: number; off: number } | null {
     const dx = p.x - origin.x;
@@ -924,13 +933,14 @@ export class TrackNetwork {
     node: TrackNode, asked: number | undefined, want: TrackAnchor, arriving = false,
   ): number | null {
     const free = freePorts(node);
-    if (free.length === 0) return null;
-    if (asked !== undefined) return free.includes(asked) ? asked : null;
-    if (free.length === 1) return free[0];
     // The direction the new curve leaves this node by. A curve that arrives leaves
     // backwards, so what it wants is the reverse of the way it is travelling.
     const wx = arriving ? -want.hx : want.hx;
     const wz = arriving ? -want.hz : want.hz;
+    // Nothing free: this is a line already through, and a track leaving it is a switch.
+    if (free.length === 0) return this.addBranch(node, wx, wz);
+    if (asked !== undefined) return free.includes(asked) ? asked : null;
+    if (free.length === 1) return free[0];
     let best = free[0];
     let bestDot = -Infinity;
     for (const port of free) {
@@ -1006,6 +1016,37 @@ export class TrackNetwork {
     }
     this.revision++;
     return { ok: true, node, edges: [near, far] };
+  }
+
+  /** Opens a third way out of a node that is already a line through: the branch of a
+   *  switch, pointing where the caller asked.
+   *
+   *  Refused when it is further than `MAX_SWITCH_ANGLE` off one of the two ways the line
+   *  already runs — past that it is not a turnout, it is a track crossing another one —
+   *  and refused outright on a node that already has a branch, because a second one is a
+   *  double slip and there is no shape here for that.
+   *
+   *  The branch takes the *through line's* slope rather than the one it was asked for, so
+   *  the point stays smooth in section. A switch is where a train chooses, not where it
+   *  starts climbing. */
+  private addBranch(node: TrackNode, wx: number, wz: number): number | null {
+    if (node.ports.length !== 2) return null;
+    const flat = Math.hypot(wx, wz);
+    if (flat < 1e-9) return null;
+    const hx = wx / flat;
+    const hz = wz / flat;
+    const limit = Math.cos(MAX_SWITCH_ANGLE);
+    let along = -1;
+    let best = -Infinity;
+    for (let i = 0; i < node.ports.length; i++) {
+      const dot = node.ports[i].hx * hx + node.ports[i].hz * hz;
+      if (dot <= best) continue;
+      best = dot;
+      along = i;
+    }
+    if (best < limit) return null;
+    node.ports.push({ hx, hz, grade: node.ports[along].grade, edge: null });
+    return node.ports.length - 1;
   }
 
   /** Drops an edge, and any end left holding nothing.
@@ -1114,6 +1155,13 @@ export class TrackNetwork {
         });
       }
     }
+    // A switch needs nothing extra here, which is worth saying because it looks as though
+    // it should. Three runs meeting at an angle each stop uncapped at the node, and the
+    // fear is a wedge between them that belongs to none — a hole through the middle of
+    // every point. There is not one: a branch may leave at most `MAX_SWITCH_ANGLE`, and at
+    // that angle the three decks are still overlapping well past where they part. Walking
+    // every sample of every curve of a switch, a half width to either side, finds no gap
+    // anywhere except off the open end of a run, which is where a gap belongs.
   }
 
   private addDeckPiece(piece: DeckPiece): void {

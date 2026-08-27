@@ -296,16 +296,93 @@ describe('the track network', () => {
     expect(leaving.z).toBeCloseTo(-forward.z, 9);
   });
 
-  it('refuses a third run into an end that is already full', () => {
+  it('takes a third run onto a line already through, as a switch', () => {
     const { net } = eastward();
     const second = net.lay(end(30, 64, 0, 1, 0), end(70, 64, 14, 1, 0));
     if (!second.ok) throw new Error(`could not join on: ${second.fault}`);
     // Naming the end outright is the path the placement code takes once it has snapped.
     const third = net.lay(end(70, 64, 14, 1, 0), end(110, 64, 26, 1, 0), { fromNode: second.edge.b });
     expect(third.ok).toBe(true);
-    const crowded = net.lay(end(30, 64, 0, 1, 0), end(30, 64, 40, 0, 1));
-    expect(crowded.ok).toBe(false);
-    if (!crowded.ok) expect(crowded.fault).toBe('occupied');
+
+    // The middle node is a line through, and a run leaving it along that line is a
+    // turnout: it diverges from where the two tracks part rather than crossing them.
+    const joint = net.nodes.get(second.edge.a)!;
+    expect(freePorts(joint), 'the joint had a side spare after all').toHaveLength(0);
+    const branch = net.lay(end(30, 64, 0, 1, 0), end(66, 64, -22, 1, 0));
+    expect(branch.ok, 'a turnout off a through line was refused').toBe(true);
+    expect(joint.ports).toHaveLength(3);
+    expect(edgesOf(joint)).toHaveLength(3);
+  });
+
+  it('refuses a branch that is not a turnout but a crossing', () => {
+    const { net } = eastward();
+    const on = net.lay(end(30, 64, 0, 1, 0), end(70, 64, 14, 1, 0));
+    if (!on.ok) throw new Error(`could not join on: ${on.fault}`);
+    // Square across the line it is leaving. A point cannot be that sharp; what this
+    // describes is one railway crossing another, and there is no shape here for that.
+    const across = net.lay(end(30, 64, 0, 0, 1), end(30, 64, 40, 0, 1));
+    expect(across.ok).toBe(false);
+    if (!across.ok) expect(across.fault).toBe('occupied');
+    expect(net.nodes.get(on.edge.a)!.ports, 'a refused branch left a port behind')
+      .toHaveLength(2);
+  });
+
+  it('can be walked over, all three ways', () => {
+    // The thing a switch could plausibly break: three runs meeting at an angle each stop
+    // uncapped at the node, and a wedge between them belonging to none would be a hole
+    // through the middle of every point. The decks overlap far enough past the divergence
+    // that there is not one — but that is a fact about `MAX_SWITCH_ANGLE`, so it is worth
+    // a test that fails if anybody widens it.
+    const net = new TrackNetwork();
+    const west = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
+    if (!west.ok) throw new Error('could not lay the line');
+    const east = net.lay(end(60, 64, 0, 1, 0), end(120, 64, 0, 1, 0));
+    if (!east.ok) throw new Error('could not carry on');
+    const branch = net.lay(end(60, 64, 0, 1, 0), end(100, 64, -24, 1, 0));
+    if (!branch.ok) throw new Error(`could not lay the branch: ${branch.fault}`);
+    for (const edge of net.edges.values()) {
+      for (const at of sampleTrack(edge.curve, 0.25)) {
+        const flat = Math.hypot(at.tx, at.tz) || 1;
+        for (const across of [-0.9, -0.45, 0, 0.45, 0.9]) {
+          // Off the open end of a run there is deliberately no deck; everywhere else on
+          // the track there has to be some.
+          if (Math.hypot(at.x - 60, at.z) > 20) continue;
+          const px = at.x + (at.tz / flat) * across;
+          const pz = at.z - (at.tx / flat) * across;
+          expect(net.surfaceTopAt(px, pz, 60, 70), `a hole at (${px.toFixed(1)}, ${pz.toFixed(1)})`)
+            .not.toBeNull();
+        }
+      }
+    }
+    // And the line the switch was cut into still holds somebody up after it is pulled up.
+    net.remove(branch.edge.id);
+    expect(net.surfaceTopAt(60, 0, 60, 70), 'the line under the old switch went away')
+      .toBe(64);
+  });
+
+  it('refuses a second branch, which would be a double slip', () => {
+    const { net } = eastward();
+    const on = net.lay(end(30, 64, 0, 1, 0), end(70, 64, 14, 1, 0));
+    if (!on.ok) throw new Error(`could not join on: ${on.fault}`);
+    const first = net.lay(end(30, 64, 0, 1, 0), end(66, 64, -22, 1, 0));
+    expect(first.ok).toBe(true);
+    const second = net.lay(end(30, 64, 0, 1, 0), end(60, 64, -30, 1, 0));
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.fault).toBe('occupied');
+  });
+
+  it('gives a branch the through line\'s slope, not the one it was asked for', () => {
+    // A switch is where a train chooses, not where it starts climbing: a branch leaving on
+    // a different gradient would put a kink in the line's section at the point.
+    const net = new TrackNetwork();
+    const flat = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
+    if (!flat.ok) throw new Error('could not lay the line');
+    const on = net.lay(end(60, 64, 0, 1, 0), end(120, 64, 0, 1, 0));
+    if (!on.ok) throw new Error('could not carry on');
+    const climbing = net.lay(end(60, 64, 0, 1, 0, 0.15), end(100, 68, -22, 1, 0));
+    expect(climbing.ok).toBe(true);
+    const joint = net.nodes.get(flat.edge.b)!;
+    expect(joint.ports[2].grade, 'the branch left on its own gradient').toBeCloseTo(0, 9);
   });
 
   it('refuses to join an end to itself', () => {

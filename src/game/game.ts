@@ -118,6 +118,7 @@ import {
   summarise,
   tangentAt,
   type TrackAnchor,
+  type TrackEdge,
   type TrackFault,
   type TrackNode,
   type TrackPoint,
@@ -245,6 +246,8 @@ const TRACK_VIEW_INTERVAL = 1;
  *  second one is how a player finds out that snapping exists at all. */
 const TRACK_START_MARK = 0xffbb33;
 const TRACK_END_MARK = 0x66ccff;
+/** Where a click would cut a laid run and start a branch out of it. */
+const TRACK_SPLIT_MARK = 0xffa0d8;
 /** The length of road the sample world starts with, in blocks. Villages sit on a 320
  *  block grid, so this picks a neighbour rather than the village next door. */
 const SAMPLE_ROAD = 400;
@@ -351,6 +354,8 @@ export class Game {
   private readonly trackRenderer = new TrackRenderer();
   /** The free-form railway. Not readonly: a save replaces it wholesale. */
   private trackNet = new TrackNetwork();
+  /** What the track tool was pointing at this frame, for the markers. */
+  private trackAimCache: TrackAim | null = null;
   /** The tops of the trains that are currently drawn, rebuilt every world step. */
   private readonly rideDecks = new RideDecks();
   /** The deck the player is standing on and whereabouts on it, in the car's own frame.
@@ -375,7 +380,13 @@ export class Game {
    *  caches, and the map asks for it on every frame. */
   private railMap: { key: string; lines: { x: number; z: number }[][] } | null = null;
   /** The start of a curve that has been clicked but not yet finished. */
-  private trackDraft: { anchor: TrackAnchor; node: number | null } | null = null;
+  /** The start of the run being laid: where it is, the end it snapped to if it snapped to
+   *  one, and the run it will cut when the far end goes down if it started on one. */
+  private trackDraft: {
+    anchor: TrackAnchor;
+    node: number | null;
+    split?: { edge: number; at: number };
+  } | null = null;
   private trackGhost: TrackGhostView | null = null;
   /** Why the shape under the crosshair will not be built, for the console and the toast. */
   private trackGhostFault: TrackFault | null = null;
@@ -1753,7 +1764,7 @@ export class Game {
    *  distance is measured along a unit direction, so `eye + look * distance` is the exact
    *  place the line of sight crossed the face. That exactness is the whole point: this
    *  railway is not on the grid, and a click rounded to a block corner would put it back. */
-  private trackAim(): { point: TrackPoint; node: TrackNode | null } {
+  private trackAim(): TrackAim {
     const eye = { x: this.player.x, y: this.player.eyeY, z: this.player.z };
     const look = this.player.lookVector();
     // An end the line of sight passes wins outright, before the ground is consulted at
@@ -1761,7 +1772,7 @@ export class Game {
     // and lands somewhere behind. Without this the one end most worth building on - the
     // far end of a viaduct - is the one that cannot be pointed at.
     const onRay = this.trackNet.nodeAlongRay(eye, look, TRACK_REACH);
-    if (onRay) return { point: { x: onRay.x, y: onRay.y, z: onRay.z }, node: onRay };
+    if (onRay) return { point: { x: onRay.x, y: onRay.y, z: onRay.z }, node: onRay, run: null };
     const hit = raycastVoxels(this.world, eye, look, { maxDistance: TRACK_REACH });
     // A hit at zero distance means the eye is inside a block; there is no face there.
     const point = hit && hit.distance >= 0.5
@@ -1771,7 +1782,31 @@ export class Game {
         z: eye.z + look.z * hit.distance + hit.nz * TRACK_LIFT,
       }
       : this.trackAimInAir(eye, look);
-    return { point, node: this.trackNet.nodeAt(point, SNAP_RADIUS) };
+    const node = this.trackNet.nodeAt(point, SNAP_RADIUS);
+    // The middle of a run somebody is pointing at. It is what makes a switch buildable
+    // anywhere rather than only where the player happened to stop laying, so it is worth
+    // a second pick against the curves — but an end always wins, because an end is the
+    // thing you were more likely aiming at.
+    return { point, node, run: node ? null : this.runUnderCrosshair(eye, look) };
+  }
+
+  /** The laid run the crosshair is on and how far along it, or null. */
+  private runUnderCrosshair(eye: TrackPoint, look: TrackPoint): TrackRun | null {
+    const edge = this.trackNet.edgeAlongRay(eye, look, TRACK_REACH, TRACK_PICK);
+    if (!edge) return null;
+    // Where along it. Sampled rather than solved: the curve is a biarc and inverting one
+    // for the nearest point is a great deal of algebra for a number the player is choosing
+    // by eye anyway.
+    let at = 0;
+    let nearest = Infinity;
+    for (let s = 0; s <= edge.curve.length; s += 0.25) {
+      const p = pointAt(edge.curve, s);
+      const on = TrackNetwork.onRay(eye, look, TRACK_REACH, p);
+      if (!on || on.off >= nearest) continue;
+      nearest = on.off;
+      at = s;
+    }
+    return { edge, at };
   }
 
   /** Aiming at nothing at all is not a mistake here, it is how a gorge gets crossed.
@@ -1805,19 +1840,30 @@ export class Game {
    *  slope all come from the node. That is what "match the angle of the track that is
    *  already there" means, and it is why the joint comes out exactly continuous rather
    *  than nearly. `continuationAt` answers in the direction a curve *leaves* in, so an end
-   *  a curve *arrives* at is the same direction turned round. */
+   *  a curve *arrives* at is the same direction turned round.
+   *
+   *  A node with nothing free is a line already through, and there the yaw is back in
+   *  charge: the only track that can leave one is the branch of a switch, and which way it
+   *  goes is exactly what the player is choosing by turning their head. `lay` decides
+   *  whether that angle is a turnout or a refusal. */
   private trackAnchorAt(
-    aim: { point: TrackPoint; node: TrackNode | null },
+    aim: TrackAim,
     arriving: boolean,
   ): TrackAnchor {
-    if (!aim.node) {
+    const branching = aim.node !== null && freePorts(aim.node).length === 0;
+    if (!aim.node || branching || aim.run) {
       const yaw = this.player.yaw;
+      // The middle of a laid run is a switch waiting to be cut: the place is the point on
+      // the curve, and which way the branch leaves is the player's yaw, exactly as it is
+      // at a switch that already exists.
+      const at = aim.node ?? (aim.run ? pointAt(aim.run.edge.curve, aim.run.at) : aim.point);
+      const sign = (branching || aim.run) && arriving ? -1 : 1;
       return {
-        x: aim.point.x,
-        y: aim.point.y,
-        z: aim.point.z,
-        hx: -Math.sin(yaw),
-        hz: -Math.cos(yaw),
+        x: at.x,
+        y: at.y,
+        z: at.z,
+        hx: -Math.sin(yaw) * sign,
+        hz: -Math.cos(yaw) * sign,
         grade: 0,
       };
     }
@@ -1839,6 +1885,9 @@ export class Game {
     this.faultToastTimer -= dt;
     const input = this.options.input;
     const aim = this.trackAim();
+    // Kept for the renderer, which runs after this and wants to mark what the crosshair is
+    // on without tracing the ray a second time.
+    this.trackAimCache = aim;
     if (input.buttonJustPressed(2)) {
       if (this.trackDraft) this.commitTrack(aim);
       else this.beginTrack(aim);
@@ -1850,15 +1899,51 @@ export class Game {
     this.updateTrackGhost(aim);
   }
 
-  private beginTrack(aim: { point: TrackPoint; node: TrackNode | null }): void {
+  /** Puts the start down.
+   *
+   *  Three places it can go, and the player picks between them by where they point rather
+   *  than by choosing a mode: an open end joins on, the middle of a laid run is cut there
+   *  and the cut becomes a switch, and anywhere else is a fresh start in the open. */
+  private beginTrack(aim: TrackAim): void {
+    if (aim.run) {
+      // The cut itself waits for the second click. Doing it now would mean a player who
+      // pointed at a run, thought better of it and cancelled had silently left the line
+      // in two pieces — the one thing a cancel must never do.
+      this.trackDraft = {
+        anchor: this.trackAnchorAt(aim, false),
+        node: null,
+        split: { edge: aim.run.edge.id, at: aim.run.at },
+      };
+      this.hud.toast('ここで線路を割って分岐する。もう一度右クリックで終点');
+      return;
+    }
     if (aim.node && freePorts(aim.node).length === 0) {
-      this.warn(trackFaultText('occupied', 0));
+      // A line already through. The branch of a switch may still leave it, if the way the
+      // player is facing is near enough to the line to be a turnout — which `lay` decides
+      // when the far end goes down, because until then there is no curve to judge.
+      this.trackDraft = { anchor: this.trackAnchorAt(aim, false), node: aim.node.id };
+      this.hud.toast('本線から分岐する。もう一度右クリックで終点');
       return;
     }
     this.trackDraft = { anchor: this.trackAnchorAt(aim, false), node: aim.node?.id ?? null };
     this.hud.toast(aim.node
       ? '既存の線路の端につないだ。もう一度右クリックで終点'
       : '始点を置いた。もう一度右クリックで終点');
+  }
+
+  /** Cuts the run the draft started on, so the branch has somewhere to leave from.
+   *  Null when the cut was refused, which it says out loud — the commonest reason is
+   *  having pointed too near one end of the run. */
+  private splitForBranch(split: { edge: number; at: number }): TrackNode | null {
+    const cut = this.trackNet.splitEdge(split.edge, split.at);
+    if (!cut.ok) {
+      this.warn(cut.fault === 'short'
+        ? '線路の端に近すぎる — 区間の途中を狙う'
+        : trackFaultText(cut.fault, cut.value));
+      return null;
+    }
+    this.transport.invalidate();
+    return cut.node;
   }
 
   private cancelTrackDraft(announce: boolean): void {
@@ -1869,11 +1954,19 @@ export class Game {
     if (announce) this.hud.toast('敷設をやめた');
   }
 
-  private commitTrack(aim: { point: TrackPoint; node: TrackNode | null }): void {
+  private commitTrack(aim: TrackAim): void {
     const draft = this.trackDraft;
     if (!draft) return;
+    // The cut the start was pointed at, made now that there is going to be a branch to
+    // hang off it. A refusal here says so and leaves the start down, like any other.
+    let from = draft.node;
+    if (draft.split) {
+      const cut = this.splitForBranch(draft.split);
+      if (!cut) return;
+      from = cut.id;
+    }
     const laid = this.trackNet.lay(draft.anchor, this.trackAnchorAt(aim, true), {
-      ...(draft.node !== null ? { fromNode: draft.node } : {}),
+      ...(from !== null ? { fromNode: from } : {}),
       ...(aim.node ? { toNode: aim.node.id } : {}),
     });
     if (!laid.ok) {
@@ -2001,7 +2094,7 @@ export class Game {
    *  follows the player's head with no extra machinery at all - turning on the spot is how
    *  the curve gets chosen. A shape the solver refuses still draws, as a thin line, so the
    *  reason is visible while they are still turning rather than only after they click. */
-  private updateTrackGhost(aim: { point: TrackPoint; node: TrackNode | null }): void {
+  private updateTrackGhost(aim: TrackAim): void {
     const draft = this.trackDraft;
     if (!draft) {
       this.trackGhost = null;
@@ -2075,7 +2168,7 @@ export class Game {
       };
     }
     const view = this.trackViewCache;
-    view.markers = holding ? this.trackMarkers() : [];
+    view.markers = holding ? this.trackMarkers(this.trackAimCache) : [];
     view.ghost = holding ? this.trackGhost : null;
     return view;
   }
@@ -2100,11 +2193,18 @@ export class Game {
 
   /** Every end a new curve could be joined to, plus the start of the one being laid.
    *  Without these, snapping is a rule the player can only find out about by accident. */
-  private trackMarkers(): TrackMarkerView[] {
+  private trackMarkers(aim: TrackAim | null): TrackMarkerView[] {
     const markers: TrackMarkerView[] = [];
     for (const node of this.trackNet.freeEnds()) {
       if (Math.hypot(node.x - this.player.x, node.z - this.player.z) > TRACK_DRAW) continue;
       markers.push({ x: node.x, y: node.y, z: node.z, colour: TRACK_END_MARK });
+    }
+    // And where a click would cut a run in two to make a switch. Its own colour, because
+    // it is a different thing from joining onto an end: this one changes track that is
+    // already there.
+    if (aim?.run && !this.trackDraft) {
+      const at = pointAt(aim.run.edge.curve, aim.run.at);
+      markers.push({ x: at.x, y: at.y, z: at.z, colour: TRACK_SPLIT_MARK });
     }
     const draft = this.trackDraft;
     if (draft) {
@@ -3846,6 +3946,30 @@ export class Game {
       })),
       /** Pulls one curve out of the network, the way a left click on it would. */
       removeTrack: (edgeId: number): boolean => this.trackNet.remove(edgeId),
+      /** Cuts a laid run in two, the way pointing at the middle of one and clicking does.
+       *  The node it leaves behind is where a branch or a signal can go. */
+      splitTrack: (edgeId: number, at: number) => {
+        const cut = this.trackNet.splitEdge(edgeId, at);
+        if (!cut.ok) return { ok: false as const, fault: cut.fault, value: cut.value };
+        this.transport.invalidate();
+        return {
+          ok: true as const,
+          node: cut.node.id,
+          x: Math.round(cut.node.x * 10) / 10,
+          y: Math.round(cut.node.y * 10) / 10,
+          z: Math.round(cut.node.z * 10) / 10,
+          edges: cut.edges.map((edge) => edge.id),
+        };
+      },
+      /** Every switch on the network, and how many ways out each has. */
+      switches: () => [...this.trackNet.nodes.values()]
+        .filter((node) => node.ports.length > 2)
+        .map((node) => ({
+          id: node.id,
+          x: Math.round(node.x), y: Math.round(node.y), z: Math.round(node.z),
+          ways: node.ports.length,
+          taken: node.ports.filter((port) => port.edge !== null).length,
+        })),
       /** Every station on the network, and which village each one is close enough to
        *  serve. A line with no station on it carries nothing, so this is the first thing
        *  to look at when a finished railway is not running trains. */
@@ -4220,7 +4344,7 @@ function trackFaultText(fault: TrackFault, value: number, turn: 'left' | 'right'
     case 'grade':
       return `勾配が急すぎる（${slopeWord(value)} ${Math.round(Math.abs(value) * 100)}%、${Math.round(MAX_GRADE * 100)}% まで）`;
     case 'occupied':
-      return 'その線路の端は両側ともふさがっている';
+      return '本線から分かれるには角度が急すぎる（もっと線路に沿って向く）';
     default:
       return 'この向きではつなげない';
   }
@@ -4230,6 +4354,21 @@ function trackFaultText(fault: TrackFault, value: number, turn: 'left' | 'right'
  *  them. Generous, because the frame this has to survive is the one the browser dropped;
  *  short of a whole storey, because past that the honest answer is that they fell off. */
 const RIDE_LOST = 4;
+
+/** A laid run the crosshair is on, and how far along it. */
+interface TrackRun {
+  edge: TrackEdge;
+  at: number;
+}
+
+/** What the track tool is pointing at: a place, and whichever of an end or the middle of a
+ *  run is under the crosshair. A run is only offered where there is no end, because an end
+ *  is what somebody aiming near one meant. */
+interface TrackAim {
+  point: TrackPoint;
+  node: TrackNode | null;
+  run: TrackRun | null;
+}
 
 /** Anything under half a percent is level, and saying "up 0%" would be worse than
  *  saying nothing. */
