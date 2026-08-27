@@ -13,6 +13,8 @@ import {
   summarise,
   TrackNetwork,
   TRACK_WIDTH,
+  edgesOf,
+  freePorts,
   type TrackAnchor,
   type TrackCurve,
   type TrackEdge,
@@ -717,5 +719,66 @@ describe('the railway as a way between two places', () => {
     net.remove(middle!.id);
     expect(net.wayBetween(west, east)).toBeNull();
     expect(net.railheadTowards(west, east)?.x).toBeCloseTo(60, 6);
+  });
+});
+
+describe('a railway saved before ports existed', () => {
+  /** A network in the shape the old code wrote: one heading per node, and a sign per end
+   *  of each curve — where the sign at a curve's *start* named the side it occupied and
+   *  the sign at its *finish* named the side it left free. Two runs laid end to end, so
+   *  the middle node holds one of each and the asymmetry is what is under test.
+   *
+   *  Written out by hand rather than produced by `toJSON`, because nothing writes this
+   *  shape any more. If the reader ever stops understanding it, every railway anybody
+   *  built before switches existed comes back as a heap of disconnected stubs. */
+  const legacy = {
+    nodes: [
+      { id: 1, x: 0, y: 64, z: 0, hx: 1, hz: 0, grade: 0 },
+      { id: 2, x: 30, y: 64, z: 0, hx: 1, hz: 0, grade: 0 },
+      { id: 3, x: 60, y: 64, z: 0, hx: 1, hz: 0, grade: 0, station: true },
+    ],
+    edges: [
+      { a: 1, b: 2, dirA: 1, dirB: 1 },
+      { a: 2, b: 3, dirA: 1, dirB: 1 },
+    ],
+    nextId: 4,
+  };
+
+  it('comes back as one line rather than two stubs', () => {
+    const net = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(legacy)));
+    expect(net.nodes.size).toBe(3);
+    expect(net.edges.size).toBe(2);
+    // The middle node carries both runs, one per port, which is what makes it a joint.
+    const middle = net.nodes.get(2)!;
+    expect(edgesOf(middle)).toHaveLength(2);
+    expect(freePorts(middle), 'the joint has a side left over').toHaveLength(0);
+    // And the two outer nodes are ends with one side each still open.
+    expect(freePorts(net.nodes.get(1)!)).toHaveLength(1);
+    expect(freePorts(net.nodes.get(3)!)).toHaveLength(1);
+  });
+
+  it('keeps the shape the old numbers described', () => {
+    const net = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(legacy)));
+    for (const edge of net.edges.values()) {
+      // Both runs are the straight line the old file said they were, not a loop back on
+      // itself — which is what a port read the wrong way round would produce.
+      expect(edge.curve.length).toBeCloseTo(30, 6);
+      expect(edge.curve.minRadius).toBe(Infinity);
+    }
+    // The free end at the far side still carries on the way the line was going.
+    const on = net.continuationAt(net.nodes.get(3)!);
+    expect(on.hx).toBeCloseTo(1, 6);
+  });
+
+  it('keeps the station it was saved with', () => {
+    const net = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(legacy)));
+    expect(net.stations().map((node) => node.id)).toEqual([3]);
+  });
+
+  it('and a network saved now says which way its numbers should be read', () => {
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(30, 64, 0, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the run');
+    expect(net.toJSON().ports, 'a new save did not mark itself').toBe(true);
   });
 });

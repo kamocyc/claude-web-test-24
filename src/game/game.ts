@@ -108,6 +108,8 @@ import {
   SNAP_RADIUS,
   STATION_REACH,
   TrackNetwork,
+  freePorts,
+  headingOf,
   pointAt,
   railsFor,
   sampleTrack,
@@ -1849,7 +1851,7 @@ export class Game {
   }
 
   private beginTrack(aim: { point: TrackPoint; node: TrackNode | null }): void {
-    if (aim.node && aim.node.edges.length >= 2) {
+    if (aim.node && freePorts(aim.node).length === 0) {
       this.warn(trackFaultText('occupied', 0));
       return;
     }
@@ -2089,7 +2091,7 @@ export class Game {
     for (const node of this.trackNet.stations()) {
       if (Math.hypot(node.x - this.player.x, node.z - this.player.z) > TRACK_DRAW) continue;
       out.push({
-        x: node.x, y: node.y, z: node.z, hx: node.hx, hz: node.hz,
+        x: node.x, y: node.y, z: node.z, ...headingOf(node),
         waiting: this.villageServedBy(node)?.village.stock ?? 0,
       });
     }
