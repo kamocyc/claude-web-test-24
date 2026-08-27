@@ -980,6 +980,26 @@ if (unrailed) {
 }
 
 
+/** One right click, then two frames before looking.
+ *
+ *  `useUntil` is wrong for a gesture with more than one click in it: when a poll comes
+ *  back late it clicks again, and a second click on the track tool does not repeat the
+ *  first, it finishes the curve. Waiting a couple of frames makes the poll reliable, so
+ *  the retry is only ever a retry of a press that genuinely went nowhere. Returns what
+ *  the tool is doing afterwards, so a failure can say which. */
+const rightClick = async () => {
+  await page.mouse.move(640, 360);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.up({ button: 'right' });
+  await frame();
+  await frame();
+  return evaluate(() => ({
+    pending: window.voxelcraft.trackTool().pending !== null,
+    ghost: window.voxelcraft.trackTool().ghost,
+    edges: window.voxelcraft.tracks().edges,
+  }));
+};
+
 // --- the other railway: curves, not blocks -----------------------------------
 // A rail block is a road surface, so a line of them turns ninety degrees at a time. The
 // track tool is the separate answer: click a start, click an end, and the game works out
@@ -1076,9 +1096,12 @@ await evaluate(() => {
   g.player.pitch = -0.13;
 });
 await settled(60000);
-const startPlaced = await useUntil(() => window.voxelcraft.trackTool().pending !== null);
-if (!startPlaced) throw new Error('right clicking with the track tool did not put a start down');
-console.log('start placed by hand:', JSON.stringify(await evaluate(() => window.voxelcraft.trackTool())));
+let placed = await rightClick();
+for (let attempt = 1; attempt < 5 && !placed.pending && placed.edges === 0; attempt++) placed = await rightClick();
+if (!placed.pending) {
+  throw new Error(`right clicking with the track tool did not leave a start down: ${JSON.stringify(placed)}`);
+}
+console.log('start placed by hand:', JSON.stringify(placed));
 // Turning on the spot is how the curve gets chosen: the far end follows the head.
 await evaluate(() => { window.voxelcraft.game.player.yaw = 0.5; });
 await frame();
@@ -1087,8 +1110,9 @@ const ghost = await evaluate(() => window.voxelcraft.trackView().ghost);
 console.log('the ghost while turning:', JSON.stringify(ghost));
 if (ghost === 'none') throw new Error('a start is down and nothing is being previewed');
 const railsBefore = await evaluate(() => window.voxelcraft.game.player.inventory.count('rail'));
-const laidByHand = await useUntil(() => window.voxelcraft.tracks().edges > 0);
-if (!laidByHand) throw new Error('the second right click did not lay the curve');
+let finished = await rightClick();
+for (let attempt = 1; attempt < 5 && finished.edges === 0; attempt++) finished = await rightClick();
+if (finished.edges === 0) throw new Error(`the second right click did not lay the curve: ${JSON.stringify(finished)}`);
 console.log('laid by hand:', JSON.stringify(await evaluate((before) => ({
   tracks: window.voxelcraft.tracks(),
   railsSpent: before - window.voxelcraft.game.player.inventory.count('rail'),
@@ -1135,6 +1159,144 @@ await evaluate((at) => {
 await settled(60000);
 await frame();
 await shot('07y6-track-piers');
+
+// --- standing on the track ---------------------------------------------------
+// None of this railway is in the block grid, so the sweep that moves the player cannot
+// land anyone on it - it resolves every contact onto the nearest whole block, and a deck
+// sits wherever the curve put it. The deck is settled onto afterwards instead, and this
+// is the check that the wiring for that survived the trip into the real game: the unit
+// tests can all pass with `Game` never handing the player the network at all.
+const onDeck = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const edge = window.voxelcraft.trackEdges()[0];
+  const middle = window.voxelcraft.trackAt(edge.id, edge.length / 2);
+  const deck = window.voxelcraft.trackDeckAt(middle.x, middle.z);
+  g.player.flying = false;
+  // A little above it, so the fall is what puts them on it.
+  g.player.teleportTo(middle.x, middle.y + 2, middle.z);
+  return { deck, middle };
+});
+await until(() => window.voxelcraft.backlog() === 0, null, 60000);
+// Let the fall land and settle.
+await until(() => window.voxelcraft.game.player.onGround === true, null, 10000);
+const landed = await evaluate(() => ({
+  y: window.voxelcraft.game.player.y,
+  onGround: window.voxelcraft.game.player.onGround,
+}));
+console.log('standing on a viaduct:', JSON.stringify({ ...onDeck, landed }));
+if (onDeck.deck === null) throw new Error('the deck should hold a height over its own centreline');
+if (Math.abs(landed.y - onDeck.deck) > 0.05) {
+  throw new Error(`the player should be standing on the deck, not through it: ${JSON.stringify({ landed, deck: onDeck.deck })}`);
+}
+if (!landed.onGround) throw new Error('a player on a deck is standing on something');
+// And it is the deck holding them up, not the ground: the trench under it is five deep.
+if (landed.y < onDeck.middle.y - 0.5) throw new Error('the player fell through the deck to the floor of the trench');
+
+// Walking along it stays on it, gradient and all.
+await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const edge = window.voxelcraft.trackEdges()[0];
+  const a = window.voxelcraft.trackAt(edge.id, edge.length * 0.25);
+  const b = window.voxelcraft.trackAt(edge.id, edge.length * 0.35);
+  g.player.teleportTo(a.x, a.y + 0.2, a.z);
+  g.player.yaw = Math.atan2(-(b.x - a.x), -(b.z - a.z));
+  g.player.pitch = 0;
+});
+await until(() => window.voxelcraft.game.player.onGround === true, null, 10000);
+const startedAt = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  window.__smokeFrom = { x: g.player.x, z: g.player.z };
+  return window.__smokeFrom;
+});
+await page.keyboard.down('KeyW');
+await until(() => {
+  const g = window.voxelcraft.game;
+  return Math.hypot(g.player.x - window.__smokeFrom.x, g.player.z - window.__smokeFrom.z) > 6;
+}, null, 15000).catch(() => {});
+await page.keyboard.up('KeyW');
+const walked = await evaluate((from) => {
+  const g = window.voxelcraft.game;
+  return {
+    moved: Math.hypot(g.player.x - from.x, g.player.z - from.z),
+    y: g.player.y,
+    deck: window.voxelcraft.trackDeckAt(g.player.x, g.player.z),
+    onGround: g.player.onGround,
+  };
+}, startedAt);
+console.log('walking along it:', JSON.stringify(walked));
+if (walked.moved < 4) throw new Error(`the player did not walk along the deck: ${walked.moved}`);
+if (walked.deck === null || Math.abs(walked.y - walked.deck) > 0.05) {
+  throw new Error(`the player left the deck while walking it: ${JSON.stringify(walked)}`);
+}
+await frame();
+await shot('07y7-track-standing');
+
+// --- what the readout says while laying --------------------------------------
+// "Too steep" is not an answer a player can act on until they know it was going up.
+const said = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  window.voxelcraft.clearTracks();
+  g.player.flying = false;
+  const x = Math.round(g.player.x);
+  const z = Math.round(g.player.z);
+  const y = g.world.heightAt(x, z) + 1;
+  return {
+    climb: window.voxelcraft.layTrack({ x, y, z, yaw: 0 }, { x, y: y + 12, z: z - 20, yaw: 0 }),
+    drop: window.voxelcraft.layTrack({ x: x + 40, y, z, yaw: 0 }, { x: x + 40, y: y - 12, z: z - 20, yaw: 0 }),
+    tight: window.voxelcraft.layTrack({ x: x + 80, y, z, yaw: 0 }, { x: x + 84, y, z: z - 4, yaw: -Math.PI / 2 }),
+  };
+});
+console.log('shapes described as they are refused:', JSON.stringify(said));
+if (said.climb.fault !== 'grade' || said.climb.value <= 0) {
+  throw new Error(`a climb refused for its grade should say so with a positive slope: ${JSON.stringify(said.climb)}`);
+}
+if (said.drop.fault !== 'grade' || said.drop.value >= 0) {
+  throw new Error(`a descent should be refused with a negative slope: ${JSON.stringify(said.drop)}`);
+}
+if (said.tight.fault !== 'radius') throw new Error('a four block quarter turn should be refused for its radius');
+
+// And what it puts under the crosshair while a start is down.
+await evaluate(() => {
+  const g = window.voxelcraft.game;
+  window.voxelcraft.clearTracks();
+  const x = Math.round(g.player.x);
+  const z = Math.round(g.player.z);
+  g.player.teleportTo(x + 0.5, g.world.heightAt(x, z) + 1, z + 0.5);
+  g.player.yaw = 0;
+  g.player.pitch = -0.13;
+});
+await settled(60000);
+let forReadout = await rightClick();
+for (let attempt = 1; attempt < 5 && !forReadout.pending && forReadout.edges === 0; attempt++) {
+  forReadout = await rightClick();
+}
+if (!forReadout.pending) {
+  throw new Error(`could not put a start down for the readout: ${JSON.stringify(forReadout)}`);
+}
+await evaluate(() => { window.voxelcraft.game.player.yaw = 0.35; });
+await frame();
+await frame();
+const readout = await evaluate(() => ({
+  tool: window.voxelcraft.trackTool().readout,
+  shown: document.querySelector('.track-readout')?.style.display !== 'none',
+  text: document.querySelector('.track-lines')?.textContent ?? null,
+}));
+console.log('the readout under the crosshair:', JSON.stringify(readout));
+if (!readout.shown) throw new Error('a start is down and nothing is being described');
+for (const word of ['長さ', '勾配', '曲がり']) {
+  if (!readout.text?.includes(word)) throw new Error(`the readout should say ${word}: ${readout.text}`);
+}
+if (readout.tool.lines.length !== 3) throw new Error('the readout is three lines');
+await shot('07y8-track-readout');
+await evaluate(() => {
+  window.voxelcraft.game.debug.game.player.inventory.selected = 0;
+  window.voxelcraft.clearTracks();
+});
+await page.mouse.move(640, 360);
+await page.mouse.down({ button: 'left' });
+await page.mouse.up({ button: 'left' });
+await frame();
+
 await evaluate(() => {
   window.voxelcraft.game.player.flying = false;
   window.voxelcraft.clearTracks();

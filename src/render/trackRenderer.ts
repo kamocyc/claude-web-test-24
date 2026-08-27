@@ -11,10 +11,13 @@
  *  it is something the player built. What does switch off is the ghost and the end markers,
  *  and those are gated on holding the tool, which is the honest gate for them.
  *
- *  The track has no collision. It is geometry, with nothing in the block grid underneath,
- *  so the player walks through it. Giving it a collider means a second list for
- *  `player.update` to consult on every step, which is a change to how movement works
- *  rather than to how track is drawn. */
+ *  The deck can be walked on, but not by anything drawn here. None of this is in the
+ *  block grid, and the sweep that moves the player resolves every contact onto the
+ *  nearest integer plane, so a deck at 64.37 is settled onto afterwards instead - see
+ *  `StandingSurface` in `core/aabb.ts` and `TrackNetwork.surfaceTopAt`. The piers are
+ *  drawn and nothing more: they hold the deck up to the eye, and the player walks
+ *  through them. Mobs and dropped items are not given the deck either, so anything let
+ *  go of on a viaduct falls to whatever is under it. */
 
 import * as THREE from 'three';
 import { GAUGE, TRACK_WIDTH, type TrackSample } from '../game/tracks';

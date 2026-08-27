@@ -41,6 +41,8 @@ export interface NavigationInfo {
   overlay: MinimapOverlay;
   /** The building under the crosshair, when there is one worth naming. */
   building: { title: string; hint: string } | null;
+  /** The shape the track tool is about to build, while a start is down. */
+  track: { lines: string[]; fault: string | null } | null;
 }
 
 /** Health, hunger, hotbar, crosshair and the debug overlay. */
@@ -59,6 +61,11 @@ export class Hud {
   /** What the player is looking at, when it is a building. Sits just under the crosshair
    *  because it is about the thing in the middle of the screen. */
   private readonly building = el('div', 'building-prompt');
+  /** Shares the building prompt's class, and its place under the crosshair: only one of
+   *  the two can be the thing the player is doing. */
+  private readonly track = el('div', 'building-prompt track-readout');
+  private readonly trackLines = el('div', 'track-lines');
+  private readonly trackFault = el('div', 'track-fault');
   private readonly buildingTitle = el('div', 'building-title');
   private readonly buildingHint = el('div', 'building-hint');
   private readonly underwater = el('div', 'underwater');
@@ -104,6 +111,7 @@ export class Hud {
       left,
       this.coords.root,
       this.building,
+      this.track,
       this.speedBadge,
       this.creativeBadge,
       bottom,
@@ -112,6 +120,8 @@ export class Hud {
     );
     this.building.append(this.buildingTitle, this.buildingHint);
     this.building.style.display = 'none';
+    this.track.append(this.trackLines, this.trackFault);
+    this.track.style.display = 'none';
     this.speedBadge.style.display = 'none';
     this.creativeBadge.style.display = 'none';
     this.underwater.style.display = 'none';
@@ -171,7 +181,19 @@ export class Hud {
     if (navigation.showRoutes) this.routes.update(navigation.routes);
     this.coords.setVisible(navigation.showCoords);
     if (navigation.showCoords) this.coords.update(player.x, player.y, player.z, player.yaw);
-    const showBuilding = navigation.building !== null && !this.clickPromptUp;
+    // The readout wins the spot: while a start is down, what the player is doing is
+    // laying track, not looking at a building.
+    const readout = navigation.track;
+    this.track.style.display = readout && !this.clickPromptUp ? '' : 'none';
+    if (readout) {
+      const lines = readout.lines.join('\n');
+      if (this.trackLines.textContent !== lines) this.trackLines.textContent = lines;
+      if (this.trackFault.textContent !== (readout.fault ?? '')) {
+        this.trackFault.textContent = readout.fault ?? '';
+      }
+      this.trackFault.style.display = readout.fault ? '' : 'none';
+    }
+    const showBuilding = navigation.building !== null && readout === null && !this.clickPromptUp;
     this.building.style.display = showBuilding ? '' : 'none';
     if (navigation.building) {
       if (this.buildingTitle.textContent !== navigation.building.title) {

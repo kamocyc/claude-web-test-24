@@ -4,6 +4,7 @@ import { CHUNK_SIZE, Chunk } from '../world/chunk';
 import { World } from '../world/world';
 import { WATER_FULL } from '../world/water';
 import { AUTO_STEP_BLOCKS, MAX_AIR, NO_INPUT, Player, movementDirection } from '../game/player';
+import { TrackNetwork, type TrackAnchor } from '../game/tracks';
 
 function flatWorld(groundY = 20): World {
   const world = new World(1);
@@ -291,5 +292,161 @@ describe('water', () => {
     // The fall carries on past the surface and then settles on the bottom.
     expect(deepest).toBeLessThan(22);
     expect(player.y).toBeCloseTo(21, 1);
+  });
+});
+
+// --- standing on something that is not made of blocks --------------------------
+
+/** One end of a run, at a heading in the XZ plane. */
+function railEnd(x: number, y: number, z: number, hx: number, hz: number): TrackAnchor {
+  const length = Math.hypot(hx, hz);
+  return { x, y, z, hx: hx / length, hz: hz / length, grade: 0 };
+}
+
+/** A network holding one run, or a thrown error saying why not. */
+function railway(from: TrackAnchor, to: TrackAnchor): TrackNetwork {
+  const net = new TrackNetwork();
+  const laid = net.lay(from, to);
+  if (!laid.ok) throw new Error(`could not lay the run: ${laid.fault} (${laid.value})`);
+  return net;
+}
+
+/** Yaw -PI/2 looks towards +X, the same convention the walking tests above use. */
+function standing(x: number, y: number, z: number, yaw = -Math.PI / 2): Player {
+  const player = new Player();
+  player.x = x;
+  player.y = y;
+  player.z = z;
+  player.yaw = yaw;
+  return player;
+}
+
+function run(player: Player, world: World, frames: number, input = NO_INPUT): void {
+  for (let i = 0; i < frames; i++) player.update(1 / 60, world, input);
+}
+
+describe('a surface that is not in the block grid', () => {
+  it('stands the player at a height no block has', () => {
+    const world = flatWorld(20);
+    const player = standing(0.5, 24, 0.5);
+    player.surface = { surfaceTopAt: () => 21.37 };
+    run(player, world, 60);
+    expect(player.y).toBeCloseTo(21.37, 6);
+    expect(player.onGround).toBe(true);
+  });
+
+  it('is not there at all when nothing supplies one', () => {
+    const world = flatWorld(20);
+    const player = standing(0.5, 24, 0.5);
+    run(player, world, 60);
+    expect(player.y).toBeCloseTo(21, 2);
+  });
+
+  it('carries the player along a level viaduct instead of through it', () => {
+    const world = flatWorld(20);
+    const net = railway(railEnd(0, 26, 0, 1, 0), railEnd(40, 26, 0, 1, 0));
+    const player = standing(0.5, 26, 0.5);
+    player.surface = net;
+    run(player, world, 120, { ...NO_INPUT, forward: true });
+    expect(player.y).toBeCloseTo(26, 6);
+    expect(player.onGround).toBe(true);
+    expect(player.x).toBeGreaterThan(12);
+  });
+
+  it('walks up its gradient', () => {
+    const world = flatWorld(20);
+    const net = railway(railEnd(0, 21, 0, 1, 0), railEnd(40, 25, 0, 1, 0));
+    const player = standing(0.5, 21, 0.5);
+    player.surface = net;
+    run(player, world, 240, { ...NO_INPUT, forward: true });
+    expect(player.x).toBeGreaterThan(30);
+    expect(player.y).toBeGreaterThan(24);
+    expect(player.onGround).toBe(true);
+  });
+
+  it('walks up its gradient with auto stepping turned off', () => {
+    // The reason the deck is settled after the sweep rather than swept against: as boxes
+    // it would be a staircase of five-centimetre rises, and with this setting off the
+    // step-up path is not even reached.
+    const world = flatWorld(20);
+    const net = railway(railEnd(0, 21, 0, 1, 0), railEnd(40, 25, 0, 1, 0));
+    const player = standing(0.5, 21, 0.5);
+    player.autoStep = false;
+    player.surface = net;
+    run(player, world, 240, { ...NO_INPUT, forward: true });
+    expect(player.y).toBeGreaterThan(24);
+  });
+
+  it('walks down its gradient without falling off it', () => {
+    // A viaduct has nothing solid under it, so the sweep reports no ground every frame.
+    // Reaching for the deck on `onGround` rather than on where the frame started would
+    // drop the player on the very first step of the descent.
+    const world = flatWorld(20);
+    const net = railway(railEnd(0, 30, 0, 1, 0), railEnd(40, 26, 0, 1, 0));
+    const player = standing(0.5, 30, 0.5);
+    player.surface = net;
+    let lowest = 30;
+    for (let i = 0; i < 240; i++) {
+      player.update(1 / 60, world, { ...NO_INPUT, forward: true });
+      if (player.x < 39) {
+        expect(player.onGround).toBe(true);
+        lowest = Math.min(lowest, player.y);
+      }
+    }
+    expect(player.x).toBeGreaterThan(30);
+    expect(lowest).toBeGreaterThan(25.9);
+  });
+
+  it('falls off the end of a run rather than walking on air past it', () => {
+    const world = flatWorld(20);
+    const net = railway(railEnd(0, 26, 0, 1, 0), railEnd(30, 26, 0, 1, 0));
+    const player = standing(0.5, 26, 0.5);
+    player.surface = net;
+    run(player, world, 300, { ...NO_INPUT, forward: true });
+    expect(player.x).toBeGreaterThan(30);
+    expect(player.y).toBeCloseTo(21, 1);
+  });
+
+  it('falls off the side of one', () => {
+    const world = flatWorld(20);
+    const net = railway(railEnd(0, 26, 0, 1, 0), railEnd(30, 26, 0, 1, 0));
+    // Facing -Z, straight off the sleeper ends a metre away.
+    const player = standing(15, 26, 0, 0);
+    player.surface = net;
+    run(player, world, 120, { ...NO_INPUT, forward: true });
+    expect(player.y).toBeCloseTo(21, 1);
+  });
+
+  it('jumps onto a deck from underneath, and is not dragged onto one out of reach', () => {
+    const world = flatWorld(20);
+    const net = railway(railEnd(0, 22, 0, 1, 0), railEnd(30, 22, 0, 1, 0));
+    const player = standing(15, 21, 0.5);
+    player.surface = net;
+    run(player, world, 30);
+    // The sweep rests a thousandth of a block clear of the ground it landed on.
+    expect(player.y).toBeCloseTo(21, 2);
+    run(player, world, 60, { ...NO_INPUT, jump: true });
+    expect(player.y).toBeCloseTo(22, 6);
+    expect(player.onGround).toBe(true);
+  });
+
+  it('hurts to land on from a height, the same as any other floor', () => {
+    const world = flatWorld(20);
+    const net = railway(railEnd(0, 26, 0, 1, 0), railEnd(30, 26, 0, 1, 0));
+    const player = standing(15, 45, 0.5);
+    player.surface = net;
+    run(player, world, 120);
+    expect(player.y).toBeCloseTo(26, 6);
+    expect(player.health).toBeLessThan(player.maxHealth);
+  });
+
+  it('does not glue a flying player to it', () => {
+    const world = flatWorld(20);
+    const net = railway(railEnd(0, 26, 0, 1, 0), railEnd(30, 26, 0, 1, 0));
+    const player = standing(15, 26, 0.5);
+    player.surface = net;
+    player.flying = true;
+    run(player, world, 60, { ...NO_INPUT, jump: true });
+    expect(player.y).toBeGreaterThan(28);
   });
 });

@@ -96,7 +96,11 @@ export interface TrackCurve {
   m1: number;
   /** Infinity for a curve that is entirely straight. */
   minRadius: number;
-  maxGrade: number;
+  /** The steepest slope anywhere on the profile, **signed**: positive climbs.
+   *
+   *  Signed because the limit is on the magnitude but the player needs the direction:
+   *  "too steep" is not an answer they can act on until they know which way. */
+  steepest: number;
 }
 
 export interface TrackSample extends TrackPoint {
@@ -115,9 +119,17 @@ export type TrackFault =
   | 'degenerate'
   | 'occupied';
 
-export type TrackSolve =
-  | { ok: true; curve: TrackCurve }
-  | { ok: false; fault: TrackFault; value: number };
+/** Why a shape was refused, and - when there was a shape at all - the shape itself, so
+ *  that the readout and the toast can still describe what the player was pointing at.
+ *  `behind` and `degenerate` have no curve: the solver stopped before there was one. */
+export interface TrackRefusal {
+  ok: false;
+  fault: TrackFault;
+  value: number;
+  curve?: TrackCurve;
+}
+
+export type TrackSolve = { ok: true; curve: TrackCurve } | TrackRefusal;
 
 // --- the solver ---------------------------------------------------------------
 
@@ -193,9 +205,10 @@ function collapse(first: PlanSegment, second: PlanSegment): PlanSegment[] {
   return [first, second];
 }
 
-/** Steepest |dy/ds| anywhere on the profile. The derivative of a cubic Hermite is a
- *  quadratic, so three evaluations settle it exactly rather than by sampling. */
-function profileMaxGrade(curve: Omit<TrackCurve, 'maxGrade' | 'minRadius'>): number {
+/** The steepest dy/ds anywhere on the profile, keeping its sign. The derivative of a
+ *  cubic Hermite is a quadratic, so three evaluations settle it exactly rather than by
+ *  sampling: the two ends and the one turning point. */
+function profileSteepest(curve: Omit<TrackCurve, 'steepest' | 'minRadius'>): number {
   const { y0, y1, m0, m1, length } = curve;
   if (length < EPS) return 0;
   const delta = (y0 - y1) / length;
@@ -203,11 +216,10 @@ function profileMaxGrade(curve: Omit<TrackCurve, 'maxGrade' | 'minRadius'>): num
   const b = -6 * delta - 4 * m0 - 2 * m1;
   const c = m0;
   const at = (t: number): number => a * t * t + b * t + c;
-  let worst = Math.max(Math.abs(at(0)), Math.abs(at(1)));
-  if (Math.abs(a) > EPS) {
-    const t = clamp(-b / (2 * a), 0, 1);
-    worst = Math.max(worst, Math.abs(at(t)));
-  }
+  const candidates = [at(0), at(1)];
+  if (Math.abs(a) > EPS) candidates.push(at(clamp(-b / (2 * a), 0, 1)));
+  let worst = 0;
+  for (const value of candidates) if (Math.abs(value) > Math.abs(worst)) worst = value;
   return worst;
 }
 
@@ -264,15 +276,18 @@ export function solveTrack(from: TrackAnchor, to: TrackAnchor): TrackSolve {
   }
 
   const partial = { plan, length, y0: from.y, y1: to.y, m0: from.grade, m1: to.grade };
-  const maxGrade = profileMaxGrade(partial);
-  const curve: TrackCurve = { ...partial, minRadius, maxGrade };
+  const curve: TrackCurve = { ...partial, minRadius, steepest: profileSteepest(partial) };
 
   // Ordered so the first complaint is the most useful one: length before shape, shape
-  // before slope.
-  if (length < MIN_SPAN) return { ok: false, fault: 'short', value: length };
-  if (length > MAX_SPAN) return { ok: false, fault: 'long', value: length };
-  if (minRadius < MIN_RADIUS) return { ok: false, fault: 'radius', value: minRadius };
-  if (maxGrade > MAX_GRADE) return { ok: false, fault: 'grade', value: maxGrade };
+  // before slope. The curve rides along on every one of them: a shape that will not be
+  // built is still a shape the player is owed a description of.
+  if (length < MIN_SPAN) return { ok: false, fault: 'short', value: length, curve };
+  if (length > MAX_SPAN) return { ok: false, fault: 'long', value: length, curve };
+  if (minRadius < MIN_RADIUS) return { ok: false, fault: 'radius', value: minRadius, curve };
+  if (Math.abs(curve.steepest) > MAX_GRADE) {
+    // Signed, so the toast can say which way. The limit is on the magnitude.
+    return { ok: false, fault: 'grade', value: curve.steepest, curve };
+  }
   return { ok: true, curve };
 }
 
@@ -378,6 +393,61 @@ export function sampleTrack(curve: TrackCurve, spacing: number): TrackSample[] {
   return samples;
 }
 
+// --- describing a curve -------------------------------------------------------
+
+/** Below this an arc is not something anyone would call a bend. A hundred blocks of track
+ *  that wanders fifteen centimetres off its own chord is a straight, and an angle
+ *  threshold cannot say so - it would call a gentle ninety-block sweep a bend and a tight
+ *  six-block one straight. The sagitta is the number that matches the eye. */
+const STRAIGHT_BOW = 0.15;
+
+export type TrackBend = 'straight' | 'left' | 'right' | 's';
+
+export interface TrackSummary {
+  /** Horizontal, as everywhere else in this file. */
+  length: number;
+  /** End height less start height. A different question from `steepest`: a profile can
+   *  climb in the middle and come back down, and a readout that showed only one of the
+   *  two would be telling a player 12% about a run that ends where it started. */
+  rise: number;
+  /** Signed; positive climbs. */
+  steepest: number;
+  bend: TrackBend;
+  /** The tightest arc, and which way it goes. Infinity and null with no arc at all.
+   *  Deliberately *not* filtered by `STRAIGHT_BOW`: a tight little arc that reads as
+   *  straight is exactly the shape the radius limit refuses, and the refusal has to be
+   *  able to say which way it was turning. */
+  radius: number;
+  turn: 'left' | 'right' | null;
+}
+
+/** What a curve is, in the words the game says out loud.
+ *
+ *  Which way it bends comes from the sign of an arc's `sweep`, and **positive is right**.
+ *  Three ways to see it, all agreeing: `arcThrough` puts the centre at
+ *  `A + side * radius * (-tz, tx)`, and `(-tz, tx)` is what `movementDirection` returns
+ *  for a strafe to the right; `sweep` carries the sign of `cross`, which is positive when
+ *  the target lies to that side; and a circle bends towards its own centre. */
+export function summarise(curve: TrackCurve): TrackSummary {
+  let radius = Infinity;
+  let turn: 'left' | 'right' | null = null;
+  let left = false;
+  let right = false;
+  for (const piece of curve.plan) {
+    if (piece.kind !== 'arc') continue;
+    if (piece.radius < radius) {
+      radius = piece.radius;
+      turn = piece.sweep > 0 ? 'right' : 'left';
+    }
+    // The sagitta of a circular arc, near enough for the angles track uses.
+    if ((piece.length * Math.abs(piece.sweep)) / 8 < STRAIGHT_BOW) continue;
+    if (piece.sweep > 0) right = true;
+    else left = true;
+  }
+  const bend: TrackBend = left && right ? 's' : right ? 'right' : left ? 'left' : 'straight';
+  return { length: curve.length, rise: curve.y1 - curve.y0, steepest: curve.steepest, bend, radius, turn };
+}
+
 // --- the network --------------------------------------------------------------
 
 /** Which way round a node an edge runs: +1 along the node's stored heading, -1 against. */
@@ -416,13 +486,36 @@ export interface TrackSnap {
   grade: number;
 }
 
-export type TrackLay =
-  | { ok: true; edge: TrackEdge }
-  | { ok: false; fault: TrackFault; value: number };
+export type TrackLay = { ok: true; edge: TrackEdge } | TrackRefusal;
 
 /** How wide a cell of the node index is. Sixteen matches a chunk, which is the size
  *  everything else in the game already thinks in. */
 const CELL = 16;
+
+/** How finely the deck is cut up for standing on. One block is plenty: the height is
+ *  interpolated along each piece, so the only error is the sag between a chord and its
+ *  arc, and on the tightest curve the solver allows that is 1 / (8 * 6) = 0.02 blocks. */
+const DECK_STEP = 1;
+/** Cell width of the deck index. A query is a single point, so it touches exactly one
+ *  cell; four blocks keeps a handful of pieces in each without duplicating them widely. */
+const DECK_CELL = 4;
+
+/** One short length of deck: a segment with a half width, not a box.
+ *
+ *  A box would have to be axis-aligned, and an axis-aligned box around a piece of track
+ *  running at forty-five degrees is a third wider than the track. A segment is exact, and
+ *  it lets the height be interpolated along its length. */
+interface DeckPiece {
+  edge: number;
+  ax: number; ay: number; az: number;
+  bx: number; by: number; bz: number;
+  /** Whether each end abuts another piece. The projection is clamped, which gives every
+   *  piece a round cap of half the track's width - right at an interior joint, where it
+   *  fills the outside of a bend, and quite wrong at the end of a run, where it would
+   *  hang a metre of invisible floor past the last sleeper. */
+  capA: boolean;
+  capB: boolean;
+}
 
 function cellKey(x: number, z: number): string {
   return `${Math.floor(x / CELL)},${Math.floor(z / CELL)}`;
@@ -449,6 +542,12 @@ export class TrackNetwork {
   revision = 0;
   private nextId = 1;
   private readonly cells = new Map<string, number[]>();
+  /** The deck, indexed for the movement code to ask about sixty times a second. Kept
+   *  apart from `cells` because that one indexes ends and widens its search by MAX_SPAN
+   *  to find the curves between them - fine once a second, far too much per frame. */
+  private readonly deckCells = new Map<string, DeckPiece[]>();
+  private readonly deckIndexed = new Set<number>();
+  private deckRevision = -1;
 
   /** Open ends, which are the only places a new track may join. */
   freeEnds(): TrackNode[] {
@@ -669,6 +768,13 @@ export class TrackNetwork {
     this.edges.clear();
     this.nodes.clear();
     this.cells.clear();
+    // The deck index too, and not by letting the diff in `refreshDeck` notice: this is the
+    // one place ids go backwards, so the next run laid takes an id the index still lists
+    // as already built, and would be skipped while its stale pieces held the player up
+    // over wherever the old track used to be.
+    this.deckCells.clear();
+    this.deckIndexed.clear();
+    this.deckRevision = -1;
     this.nextId = 1;
     this.revision++;
     return removed;
@@ -701,6 +807,108 @@ export class TrackNetwork {
     const at = cell.indexOf(node.id);
     if (at >= 0) cell.splice(at, 1);
     if (cell.length === 0) this.cells.delete(key);
+  }
+
+
+  // --- the deck, as something to stand on --------------------------------------
+
+  /** Rebuilds whatever the last change to the network invalidated.
+   *
+   *  Only `lay`, `remove` and `clear` move `revision`, and an edge's curve never changes
+   *  after it is made, so the diff against what is already indexed is exact. The sentinel
+   *  starts below zero on purpose: `fromJSON` fills `edges` directly without touching
+   *  `revision`, so a network read off a save arrives holding track at revision zero, and
+   *  a sentinel of zero would leave every bit of it walk-through. */
+  private refreshDeck(): void {
+    if (this.deckRevision === this.revision) return;
+    this.deckRevision = this.revision;
+    for (const id of this.deckIndexed) {
+      if (this.edges.has(id)) continue;
+      this.deckIndexed.delete(id);
+      for (const [key, pieces] of this.deckCells) {
+        const kept = pieces.filter((piece) => piece.edge !== id);
+        if (kept.length === 0) this.deckCells.delete(key);
+        else if (kept.length !== pieces.length) this.deckCells.set(key, kept);
+      }
+    }
+    for (const edge of this.edges.values()) {
+      if (this.deckIndexed.has(edge.id)) continue;
+      this.deckIndexed.add(edge.id);
+      const samples = sampleTrack(edge.curve, DECK_STEP);
+      for (let i = 1; i < samples.length; i++) {
+        const a = samples[i - 1];
+        const b = samples[i];
+        this.addDeckPiece({
+          edge: edge.id,
+          ax: a.x, ay: a.y, az: a.z,
+          bx: b.x, by: b.y, bz: b.z,
+          // Only the two ends of a run are ends. Everywhere else the round cap that
+          // clamping the projection gives is what keeps the outside of a bend from
+          // opening up between pieces.
+          capA: i > 1,
+          capB: i < samples.length - 1,
+        });
+      }
+    }
+  }
+
+  private addDeckPiece(piece: DeckPiece): void {
+    // Inflated by the half width, or a query standing a metre off the centreline in the
+    // next cell along would miss the piece holding them up - holes on a four-block lattice.
+    const half = TRACK_WIDTH / 2;
+    const x0 = Math.floor((Math.min(piece.ax, piece.bx) - half) / DECK_CELL);
+    const x1 = Math.floor((Math.max(piece.ax, piece.bx) + half) / DECK_CELL);
+    const z0 = Math.floor((Math.min(piece.az, piece.bz) - half) / DECK_CELL);
+    const z1 = Math.floor((Math.max(piece.az, piece.bz) + half) / DECK_CELL);
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cz = z0; cz <= z1; cz++) {
+        const key = `${cx},${cz}`;
+        const cell = this.deckCells.get(key);
+        if (cell) cell.push(piece);
+        else this.deckCells.set(key, [piece]);
+      }
+    }
+  }
+
+  /** The deck's height over a point, when there is deck over it between `low` and `high`.
+   *
+   *  This is `StandingSurface`. The height is interpolated along the piece rather than
+   *  read off a box, which is what makes a graded run a ramp the player walks up instead
+   *  of a flight of five-centimetre steps. What is tested is the player's centre, not
+   *  their whole footprint: you walk off when your middle passes the end of the sleepers,
+   *  which is both the simplest rule and the one that looks right. */
+  surfaceTopAt(x: number, z: number, low: number, high: number): number | null {
+    if (this.edges.size === 0) return null;
+    this.refreshDeck();
+    const cell = this.deckCells.get(`${Math.floor(x / DECK_CELL)},${Math.floor(z / DECK_CELL)}`);
+    if (!cell) return null;
+    const half = TRACK_WIDTH / 2;
+    let best: number | null = null;
+    for (const piece of cell) {
+      const dx = piece.bx - piece.ax;
+      const dz = piece.bz - piece.az;
+      const span = dx * dx + dz * dz;
+      const raw = span < 1e-12 ? 0 : ((x - piece.ax) * dx + (z - piece.az) * dz) / span;
+      let t = raw;
+      if (t < 0) {
+        if (!piece.capA) continue;
+        t = 0;
+      } else if (t > 1) {
+        if (!piece.capB) continue;
+        t = 1;
+      }
+      const offX = x - (piece.ax + dx * t);
+      const offZ = z - (piece.az + dz * t);
+      if (offX * offX + offZ * offZ > half * half) continue;
+      // Along the piece's own line rather than at the cap. A piece reaches past its end
+      // to fill the outside of a bend, and if it reported its end's height while doing so
+      // it would also lift the deck by a whole step of the gradient - the highest answer
+      // wins here, so every piece would hand back the height of the one above it.
+      const top = piece.ay + (piece.by - piece.ay) * raw;
+      if (top < low || top > high) continue;
+      if (best === null || top > best) best = top;
+    }
+    return best;
   }
 
   toJSON(): SavedTracks {

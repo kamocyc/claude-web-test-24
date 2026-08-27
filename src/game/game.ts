@@ -96,11 +96,13 @@ import {
   sampleTrack,
   solveTrack,
   straightSamples,
+  summarise,
   tangentAt,
   type TrackAnchor,
   type TrackFault,
   type TrackNode,
   type TrackPoint,
+  type TrackSummary,
   type TrackSample,
 } from './tracks';
 import { runRoad, treadBrush, treadLine, TREAD_DIRT, type PaveMaterial, type PaveTarget } from './paving';
@@ -297,6 +299,8 @@ export class Game {
   private trackGhost: TrackGhostView | null = null;
   /** Why the shape under the crosshair will not be built, for the console and the toast. */
   private trackGhostFault: TrackFault | null = null;
+  /** What the shape under the crosshair is, for the readout under the crosshair. */
+  private trackReadout: { lines: string[]; fault: string | null } | null = null;
   private trackViewCache: TrackView | null = null;
   private trackViewKey = '';
   private trackViewTimer = 0;
@@ -556,6 +560,10 @@ export class Game {
     }
 
     this.player.autoStep = this.options.settings.autoStep;
+    // Assigned every frame rather than once, because loading a save replaces the network
+    // wholesale. Mobs and dropped items are deliberately not given it: nothing else has a
+    // reason to be up on a viaduct, and a porter that wandered onto one could not get off.
+    this.player.surface = this.trackNet;
     this.applyDifficulty();
     if (this.settlePending && this.settlePlayerOnGround()) this.settlePending = false;
     this.water.setCenter(this.player.x, this.player.z);
@@ -745,6 +753,7 @@ export class Game {
       showRoutes: this.options.settings.routes,
       showCoords: this.options.settings.coords,
       building: this.buildingPrompt(),
+      track: this.heldTrackTool() ? this.trackReadout : null,
       overlay: {
         markers,
         // Only the roads that could be on screen: the index holds every column the player
@@ -1744,6 +1753,7 @@ export class Game {
     this.trackDraft = null;
     this.trackGhost = null;
     this.trackGhostFault = null;
+    this.trackReadout = null;
     if (announce) this.hud.toast('敷設をやめた');
   }
 
@@ -1758,7 +1768,7 @@ export class Game {
       // The start stays where it was put. The fix for almost every refusal is to turn a
       // little and click again, and making the player set the start down a second time
       // would charge them for the game's opinion.
-      this.warn(trackFaultText(laid.fault, laid.value));
+      this.warn(trackFaultText(laid.fault, laid.value, laid.curve ? summarise(laid.curve).turn : null));
       return;
     }
     const cost = railsFor(laid.edge.curve.length);
@@ -1772,10 +1782,25 @@ export class Game {
     this.trackDraft = null;
     this.trackGhost = null;
     this.trackGhostFault = null;
-    // In the debug mode nothing was actually spent, and a toast that said otherwise would
-    // be the one line on screen quietly lying about what just happened.
-    const bill = this.player.inventory.unlimited ? '' : `（レール ${spent} 本）`;
-    this.hud.toast(`線路を ${Math.round(laid.edge.curve.length)} マスのばした${bill}`);
+    this.trackReadout = null;
+    const built = summarise(laid.edge.curve);
+    // Everything the run turned out to be, in one bracket: what it does, and what it cost
+    // when it cost anything. In the debug mode nothing was spent, and a toast that said
+    // otherwise would be the one line on screen quietly lying about what just happened.
+    const parts = [
+      Math.abs(built.steepest) < LEVEL
+        ? null
+        : `${slopeWord(built.steepest)} ${Math.round(Math.abs(built.steepest) * 100)}%`,
+      built.bend === 'straight'
+        ? null
+        : built.bend === 's'
+          ? `S字 半径 ${built.radius.toFixed(0)} マス`
+          : `${bendWord(built.bend)} 半径 ${built.radius.toFixed(0)} マス`,
+      this.player.inventory.unlimited ? null : `レール ${spent} 本`,
+    ].filter((part) => part !== null);
+    this.hud.toast(
+      `線路を ${Math.round(built.length)} マスのばした${parts.length > 0 ? `（${parts.join(' / ')}）` : ''}`,
+    );
   }
 
   /** Takes out the run under the crosshair. Picked against the curve rather than against
@@ -1805,6 +1830,7 @@ export class Game {
     const draft = this.trackDraft;
     if (!draft) {
       this.trackGhost = null;
+      this.trackReadout = null;
       return;
     }
     const to = this.trackAnchorAt(aim, true);
@@ -1817,6 +1843,15 @@ export class Game {
       this.trackNet.revision, solved.ok ? 1 : 0,
     ].join(',');
     this.trackGhostFault = solved.ok ? null : solved.fault;
+    // Described whether or not it will be built. "Too steep" is not an answer a player can
+    // act on until they know it was 45% and going up.
+    const summary = solved.ok ? summarise(solved.curve) : solved.curve ? summarise(solved.curve) : null;
+    this.trackReadout = {
+      lines: summary ? trackLines(summary) : [],
+      fault: solved.ok
+        ? null
+        : trackFaultText(solved.fault, solved.value, summary?.turn ?? null),
+    };
     this.trackGhost = solved.ok
       ? { samples: sampleTrack(solved.curve, SAMPLE_STEP), valid: true, key }
       : { samples: straightSamples(draft.anchor, to), valid: false, key };
@@ -3349,9 +3384,12 @@ export class Game {
         b: edge.b,
         length: edge.curve.length,
         minRadius: edge.curve.minRadius,
-        maxGrade: edge.curve.maxGrade,
+        steepest: edge.curve.steepest,
         segments: edge.curve.plan.map((piece) => piece.kind),
       })),
+      /** The height of the deck over a point, or null where there is none to stand on. */
+      trackDeckAt: (x: number, z: number, low = -64, high = 320): number | null =>
+        this.trackNet.surfaceTopAt(x, z, low, high),
       /** A point on a laid curve, so a test can check the shape rather than a vertex count. */
       trackAt: (edgeId: number, s: number): TrackPoint | null => {
         const edge = this.trackNet.edges.get(edgeId);
@@ -3367,6 +3405,7 @@ export class Game {
         pending: this.trackDraft?.anchor ?? null,
         ghost: this.trackGhost ? (this.trackGhost.valid ? 'valid' : 'invalid') : 'none',
         fault: this.trackGhostFault,
+        readout: this.trackReadout,
         aim: this.trackAim().point,
       }),
       /** What the renderer is being handed right now. */
@@ -3651,7 +3690,7 @@ function springRate(wetness: number): number {
 
 /** Why a curve was refused, in a sentence the player can act on. The numbers come from
  *  `tracks.ts` rather than being typed out again here. */
-function trackFaultText(fault: TrackFault, value: number): string {
+function trackFaultText(fault: TrackFault, value: number, turn: 'left' | 'right' | null = null): string {
   switch (fault) {
     case 'short':
       return `始点に近すぎる（${MIN_SPAN} マス以上はなれた所を指す）`;
@@ -3660,12 +3699,44 @@ function trackFaultText(fault: TrackFault, value: number): string {
     case 'behind':
       return '始点の向きの後ろへはつなげない';
     case 'radius':
-      return `曲がりが急すぎる（半径 ${MIN_RADIUS} マス以上、今 ${value.toFixed(1)} マス）`;
+      // Which way it was turning, because "too tight" is not something a player can act
+      // on until they know which way to turn their head to loosen it.
+      return `曲がりが急すぎる（${turn ? `${bendWord(turn)} ` : ''}半径 ${value.toFixed(1)} マス、${MIN_RADIUS} マス以上必要）`;
     case 'grade':
-      return `勾配が急すぎる（${Math.round(MAX_GRADE * 100)}% まで、今 ${Math.round(value * 100)}%）`;
+      return `勾配が急すぎる（${slopeWord(value)} ${Math.round(Math.abs(value) * 100)}%、${Math.round(MAX_GRADE * 100)}% まで）`;
     case 'occupied':
       return 'その線路の端は両側ともふさがっている';
     default:
       return 'この向きではつなげない';
   }
+}
+
+/** Anything under half a percent is level, and saying "up 0%" would be worse than
+ *  saying nothing. */
+const LEVEL = 0.005;
+
+function slopeWord(grade: number): string {
+  return Math.abs(grade) < LEVEL ? '水平' : grade > 0 ? '上り' : '下り';
+}
+
+function bendWord(turn: 'left' | 'right'): string {
+  return turn === 'right' ? '右' : '左';
+}
+
+/** The shape under the crosshair, in the three lines the readout shows and the toast
+ *  borrows. Horizontal length, because that is what everything in `tracks.ts` measures. */
+function trackLines(summary: TrackSummary): string[] {
+  // Signed off the rounded number, not the raw one: a run that drops four centimetres
+  // should not be labelled "-0.0".
+  const climbed = Math.abs(summary.rise).toFixed(1);
+  const rise = climbed === '0.0' ? '±0.0' : `${summary.rise > 0 ? '+' : '-'}${climbed}`;
+  const slope = Math.abs(summary.steepest) < LEVEL
+    ? '勾配 なし（水平）'
+    : `勾配 ${slopeWord(summary.steepest)} ${Math.round(Math.abs(summary.steepest) * 100)}%（高低差 ${rise} マス）`;
+  const bend = summary.bend === 'straight'
+    ? '曲がり なし（直線）'
+    : summary.bend === 's'
+      ? `曲がり S字 半径 ${summary.radius.toFixed(1)} マス`
+      : `曲がり ${bendWord(summary.bend)} 半径 ${summary.radius.toFixed(1)} マス`;
+  return [`長さ ${summary.length.toFixed(1)} マス`, slope, bend];
 }

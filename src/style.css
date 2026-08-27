@@ -1012,6 +1012,19 @@ body.screen-open #viewport {
   pointer-events: none;
 }
 
+/* The same box under the crosshair as the building prompt, but three lines of numbers
+   rather than a sentence, so it keeps its own line breaks. */
+.track-readout {
+  white-space: pre-line;
+  font-variant-numeric: tabular-nums;
+}
+
+.track-fault {
+  margin-top: 3px;
+  color: #ff9c9c;
+}
+
+
 .building-title {
   color: rgba(255, 255, 255, 0.92);
 }

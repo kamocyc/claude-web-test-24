@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { movementDirection } from '../game/player';
 import {
   MAX_GRADE,
   MAX_SPAN,
@@ -9,7 +10,9 @@ import {
   SNAP_RADIUS,
   solveTrack,
   tangentAt,
+  summarise,
   TrackNetwork,
+  TRACK_WIDTH,
   type TrackAnchor,
   type TrackCurve,
   type TrackEdge,
@@ -159,7 +162,8 @@ describe('the track curve', () => {
     expect(tangentAt(curve, 0).y).toBeCloseTo(0, 9);
     expect(tangentAt(curve, curve.length).y).toBeCloseTo(0, 9);
     // 1.5 · Δy / L is where a Hermite with level ends peaks.
-    expect(curve.maxGrade).toBeCloseTo((1.5 * 4) / curve.length, 6);
+    // Positive because it climbs: the sign is the whole point of the field.
+    expect(curve.steepest).toBeCloseTo((1.5 * 4) / curve.length, 6);
     let previous = -Infinity;
     for (let i = 0; i <= 40; i++) {
       const y = pointAt(curve, (curve.length * i) / 40).y;
@@ -176,7 +180,7 @@ describe('the track curve', () => {
   it('survives parallel ends with the chord square across them', () => {
     const result = solveTrack(end(0, 64, 0, 1, 0), end(0, 64, 8, 1, 0));
     if (result.ok) {
-      for (const value of [result.curve.length, result.curve.minRadius, result.curve.maxGrade]) {
+      for (const value of [result.curve.length, result.curve.minRadius, result.curve.steepest]) {
         expect(Number.isFinite(value)).toBe(true);
       }
     } else {
@@ -380,5 +384,141 @@ describe('the track network', () => {
     const { net, edge } = eastward();
     expect(net.totalLength()).toBeCloseTo(30, 9);
     expect(sampleTrack(edge.curve, 0.5).length).toBeGreaterThan(55);
+  });
+});
+
+// --- describing a curve --------------------------------------------------------
+
+describe('saying what a curve is', () => {
+  it('calls a bend left or right the way the player would, not the way the maths does', () => {
+    // Leaving +x is yaw -PI/2, so the player's own strafe-right vector is what the curve
+    // has to agree with. Asserting against `movementDirection` rather than against a
+    // hand-written (0, 1) is the point: if either convention ever moves, this fails.
+    const yaw = -Math.PI / 2;
+    const right = movementDirection(yaw, 1, 0);
+    const rightward = solved(end(0, 64, 0, 1, 0), end(10, 64, 10, 0, 1));
+    const mid = pointAt(rightward, rightward.length / 2);
+    expect(mid.x * right.x + mid.z * right.z).toBeGreaterThan(0);
+    expect(summarise(rightward).bend).toBe('right');
+    expect(summarise(rightward).turn).toBe('right');
+
+    const leftward = solved(end(0, 64, 0, 1, 0), end(10, 64, -10, 0, -1));
+    const otherMid = pointAt(leftward, leftward.length / 2);
+    expect(otherMid.x * right.x + otherMid.z * right.z).toBeLessThan(0);
+    expect(summarise(leftward).bend).toBe('left');
+  });
+
+  it('calls a straight straight and an S an S', () => {
+    const straight = summarise(solved(end(0, 64, 0, 1, 0), end(30, 64, 0, 1, 0)));
+    expect(straight.bend).toBe('straight');
+    expect(straight.radius).toBe(Infinity);
+    expect(straight.turn).toBeNull();
+    expect(straight.rise).toBe(0);
+    expect(straight.steepest).toBe(0);
+    expect(summarise(solved(end(0, 64, 0, 1, 0), end(20, 64, 8, 1, 0))).bend).toBe('s');
+  });
+
+  it('keeps the direction of a bend too tight to be built, which is when it matters most', () => {
+    const refused = solveTrack(end(0, 64, 0, 1, 0), end(4, 64, 4, 0, 1));
+    if (refused.ok) throw new Error('expected a refusal');
+    expect(refused.fault).toBe('radius');
+    expect(refused.curve).toBeDefined();
+    expect(summarise(refused.curve!).turn).toBe('right');
+  });
+
+  it('says which way a slope goes, and how far it actually gets', () => {
+    const up = summarise(solved(end(0, 64, 0, 1, 0), end(40, 68, 0, 1, 0)));
+    expect(up.steepest).toBeGreaterThan(0);
+    expect(up.rise).toBeCloseTo(4, 9);
+    const down = summarise(solved(end(0, 68, 0, 1, 0), end(40, 64, 0, 1, 0)));
+    expect(down.steepest).toBeCloseTo(-up.steepest, 9);
+    expect(down.rise).toBeCloseTo(-4, 9);
+  });
+
+  it('hands the curve back with a refusal so a slope that will not be built can still be described', () => {
+    const refused = solveTrack(end(0, 64, 0, 1, 0), end(20, 52, 0, 1, 0));
+    if (refused.ok) throw new Error('expected a refusal');
+    expect(refused.fault).toBe('grade');
+    expect(refused.value).toBeLessThan(0);
+    expect(summarise(refused.curve!).rise).toBeCloseTo(-12, 9);
+  });
+});
+
+// --- standing on it ------------------------------------------------------------
+
+describe('the deck as something to stand on', () => {
+  it('holds up a point over it and nothing beside it', () => {
+    const { net } = eastward();
+    expect(net.surfaceTopAt(15, 0, 60, 70)).toBe(64);
+    expect(net.surfaceTopAt(15, TRACK_WIDTH / 2 - 0.01, 60, 70)).toBe(64);
+    expect(net.surfaceTopAt(15, TRACK_WIDTH / 2 + 0.01, 60, 70)).toBeNull();
+  });
+
+  it('stops at the end of the run rather than hanging a metre of floor past it', () => {
+    const { net } = eastward();
+    expect(net.surfaceTopAt(29.9, 0, 60, 70)).toBe(64);
+    expect(net.surfaceTopAt(30.5, 0, 60, 70)).toBeNull();
+    expect(net.surfaceTopAt(-0.5, 0, 60, 70)).toBeNull();
+  });
+
+  it('answers only within the band it was asked about', () => {
+    const { net } = eastward();
+    expect(net.surfaceTopAt(15, 0, 64.1, 70)).toBeNull();
+    expect(net.surfaceTopAt(15, 0, 60, 63.9)).toBeNull();
+  });
+
+  it('follows the shape of a run that climbs and turns', () => {
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(35, 68, 20, 0, 1));
+    if (!laid.ok) throw new Error(`could not lay the run: ${laid.fault}`);
+    for (let i = 0; i <= 20; i++) {
+      const p = pointAt(laid.edge.curve, (laid.edge.curve.length * i) / 20);
+      const top = net.surfaceTopAt(p.x, p.z, p.y - 1, p.y + 1);
+      expect(top).not.toBeNull();
+      // Chords, not arcs - but chords whose height is read off their own line, so what
+      // is left is second order and two centimetres covers it. The number that matters is
+      // that it is far under SURFACE_REACH, which is what the player is stood on by.
+      expect(Math.abs(top! - p.y)).toBeLessThan(0.02);
+    }
+  });
+
+  it('appears when track is laid and goes when it is taken away', () => {
+    const net = new TrackNetwork();
+    expect(net.surfaceTopAt(15, 0, 60, 70)).toBeNull();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(30, 64, 0, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the run');
+    expect(net.surfaceTopAt(15, 0, 60, 70)).toBe(64);
+    net.remove(laid.edge.id);
+    expect(net.surfaceTopAt(15, 0, 60, 70)).toBeNull();
+  });
+
+  it('holds nothing up far away from any of it', () => {
+    const { net } = eastward();
+    expect(net.surfaceTopAt(900, -900, 0, 200)).toBeNull();
+  });
+
+  it('is there straight off a save, which arrives holding track at revision zero', () => {
+    const { net } = eastward();
+    const reloaded = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(net.toJSON())));
+    expect(reloaded.revision).toBe(0);
+    expect(reloaded.surfaceTopAt(15, 0, 60, 70)).toBe(64);
+  });
+
+  it('clears away with the network', () => {
+    const { net } = eastward();
+    net.clear();
+    expect(net.surfaceTopAt(15, 0, 60, 70)).toBeNull();
+  });
+
+  it('is rebuilt where the new track is after a clear, not left where the old one was', () => {
+    // `clear` is the one place edge ids go backwards, so the run laid next takes an id the
+    // deck index still lists as built. Left alone it would skip the new track and go on
+    // holding the player up over the old one.
+    const { net } = eastward();
+    net.clear();
+    const again = net.lay(end(200, 80, 200, 1, 0), end(230, 80, 200, 1, 0));
+    if (!again.ok) throw new Error(`could not lay the second run: ${again.fault}`);
+    expect(net.surfaceTopAt(215, 200, 70, 90)).toBe(80);
+    expect(net.surfaceTopAt(15, 0, 60, 70)).toBeNull();
   });
 });
