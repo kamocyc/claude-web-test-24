@@ -1140,6 +1140,103 @@ await evaluate(() => {
   window.voxelcraft.clearTracks();
 });
 
+// --- the debug mode where nothing runs out -----------------------------------
+// Trying a curve out should not begin with an afternoon of smelting iron. The mode
+// promises two things: a shelf with one of everything on it, and pockets that never
+// empty. Checked here: that both hold, that the shelf cannot be emptied either, and -
+// the part that matters most - that switching it off puts the cost straight back, so it
+// cannot leak into the rest of this run.
+await evaluate(() => {
+  window.voxelcraft.clearTracks();
+  // Empty of rails while the cost still applies, so "laid it carrying none" means it.
+  window.voxelcraft.game.player.inventory.remove('rail', 9999);
+  window.voxelcraft.creative(true);
+});
+await frame();
+await page.keyboard.press('KeyC');
+await until(() => window.voxelcraft.game.screens.kind === 'creative');
+const shelf = await evaluate(() => ({
+  slots: document.querySelectorAll('.creative-grid .slot').length,
+  filled: document.querySelectorAll('.creative-grid .slot-icon').length,
+  badge: document.querySelector('.creative-badge')?.style.display === '',
+}));
+console.log('the shelf:', JSON.stringify(shelf));
+if (shelf.slots === 0 || shelf.slots !== shelf.filled) {
+  throw new Error(`the shelf should hold one of everything: ${JSON.stringify(shelf)}`);
+}
+if (!shelf.badge) throw new Error('a mode that makes everything free has to be visible');
+
+// Take the track tool off the shelf and watch the shelf not notice. Shift-click, because
+// by this point in the run the hotbar is full and where it lands is not the point.
+const moved = await evaluate(() => {
+  const slots = [...document.querySelectorAll('.creative-grid .slot')];
+  const at = slots.findIndex((slot) => slot.title.startsWith('線路敷設ツール'));
+  if (at < 0) return null;
+  slots[at].dispatchEvent(
+    new MouseEvent('mousedown', { button: 0, shiftKey: true, bubbles: true, cancelable: true }),
+  );
+  const inv = window.voxelcraft.game.player.inventory;
+  const landed = inv.find('track_tool');
+  return {
+    landed,
+    held: landed >= 0 ? inv.get(landed) : null,
+    stillFilled: document.querySelectorAll('.creative-grid .slot-icon').length,
+  };
+});
+console.log('taking one off the shelf:', JSON.stringify(moved));
+if (moved?.held?.id !== 'track_tool') throw new Error('could not take the track tool off the shelf');
+if (moved.stillFilled !== shelf.filled) throw new Error('the endless shelf ran out');
+await closeScreen();
+
+// Lay a curve carrying no rails at all: this is the whole reason the mode exists.
+const free = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const x = Math.round(g.player.x);
+  const z = Math.round(g.player.z);
+  const y = g.world.heightAt(x, z) + 4;
+  const laid = window.voxelcraft.layTrack({ x, y, z, yaw: 0 }, { x: x + 16, y, z: z - 20, yaw: -0.6 });
+  return { laid, rails: g.player.inventory.count('rail'), edges: window.voxelcraft.tracks().edges };
+});
+console.log('a curve laid out of nothing:', JSON.stringify(free));
+if (free.rails !== 0 || free.edges === 0) {
+  throw new Error(`the debug mode should lay track for free: ${JSON.stringify(free)}`);
+}
+
+// Spending out of a slot does not empty it either. Straight at the choke point rather
+// than through the hotbar, which by now has nothing free in it.
+const spare = await evaluate(() => window.voxelcraft.game.player.inventory.firstEmpty());
+if (spare < 0) throw new Error('no free slot to test spending with');
+const kept = await evaluate((at) => {
+  const inv = window.voxelcraft.game.player.inventory;
+  inv.set(at, { id: 'stone', count: 3 });
+  inv.consumeAt(at);
+  return inv.get(at)?.count ?? 0;
+}, spare);
+if (kept !== 3) throw new Error(`a spent block should not leave the slot in the debug mode: ${kept}`);
+
+// And off again.
+await evaluate(() => {
+  window.voxelcraft.creative(false);
+  window.voxelcraft.clearTracks();
+});
+await frame();
+const back = await evaluate((at) => {
+  const inv = window.voxelcraft.game.player.inventory;
+  inv.consumeAt(at);
+  const left = inv.get(at)?.count ?? 0;
+  inv.set(at, null);
+  return {
+    left,
+    unlimited: inv.unlimited,
+    badge: document.querySelector('.creative-badge')?.style.display,
+  };
+}, spare);
+console.log('turned back off:', JSON.stringify(back));
+if (back.left !== 2 || back.unlimited !== false || back.badge !== 'none') {
+  throw new Error(`the debug mode did not switch off cleanly: ${JSON.stringify(back)}`);
+}
+
+
 
 // A route runs between two doorways, not two map pins: the shipment leaves the building
 // the player picked and arrives at the other village's.

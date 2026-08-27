@@ -10,7 +10,8 @@ import { KEYS } from './help';
 import { el, show } from './dom';
 
 type ToggleKey =
-  | 'compass' | 'minimap' | 'forecast' | 'routes' | 'guide' | 'coords' | 'autoTool' | 'autoStep';
+  | 'compass' | 'minimap' | 'forecast' | 'routes' | 'guide' | 'coords' | 'autoTool'
+  | 'autoStep' | 'creative';
 
 const TOGGLE_LABELS: [ToggleKey, string][] = [
   ['compass', '方角コンパス'],
@@ -21,6 +22,7 @@ const TOGGLE_LABELS: [ToggleKey, string][] = [
   ['coords', '座標の表示'],
   ['autoTool', '道具の自動切り替え'],
   ['autoStep', '段差を自動で登る（3 段まで）'],
+  ['creative', 'デバッグ: 全アイテム無限（C で一覧）'],
 ];
 
 export interface TitleActions {

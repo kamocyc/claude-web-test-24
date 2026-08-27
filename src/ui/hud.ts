@@ -23,6 +23,8 @@ export interface DebugInfo {
   /** The world's clock speed, and how much of it the frame actually managed. */
   speed: number;
   effectiveSpeed: number;
+  /** Debug: nothing is used up and every item is on tap. */
+  creative: boolean;
 }
 
 /** Everything the navigation aids need, gathered once per frame by the game. */
@@ -63,6 +65,9 @@ export class Hud {
   /** Shown only while the world is running fast, because a game that is quietly sixteen
    *  times faster than the player expects is a game that has lied to them. */
   private readonly speedBadge = el('div', 'speed-badge');
+  /** A mode that makes everything free has to be visible, or a world it was left on in
+   *  looks like one where the rules simply stopped applying. */
+  private readonly creativeBadge = el('div', 'creative-badge', 'デバッグ: 全アイテム無限（C）');
   readonly compass = new Compass();
   readonly minimap: Minimap;
   readonly forecast = new ForecastPanel();
@@ -100,6 +105,7 @@ export class Hud {
       this.coords.root,
       this.building,
       this.speedBadge,
+      this.creativeBadge,
       bottom,
       this.toasts,
       this.clickPrompt,
@@ -107,6 +113,7 @@ export class Hud {
     this.building.append(this.buildingTitle, this.buildingHint);
     this.building.style.display = 'none';
     this.speedBadge.style.display = 'none';
+    this.creativeBadge.style.display = 'none';
     this.underwater.style.display = 'none';
     this.clickPrompt.style.display = 'none';
     this.debug.style.display = 'none';
@@ -185,6 +192,8 @@ export class Hud {
       if (this.speedBadge.textContent !== text) this.speedBadge.textContent = text;
     }
 
+    this.creativeBadge.style.display = info.creative ? '' : 'none';
+
     this.renderBar(this.hearts, player.health, player.maxHealth, 'heart');
     this.renderBar(this.food, player.hunger.food, 20, 'drumstick');
     // The breath meter only appears once the player is actually holding their breath.
@@ -216,6 +225,7 @@ export class Hud {
         `水深 ${info.waterDepth.toFixed(2)}`,
         `シード ${info.seed}`,
         `手持ち ${held ? `${itemDef(held.id)?.label ?? held.id} x${held.count}` : 'なし'}`,
+        `デバッグモード ${info.creative ? '入（消費なし）' : '切'}`,
       ].join('\n');
     }
   }

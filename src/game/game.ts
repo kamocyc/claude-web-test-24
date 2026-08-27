@@ -54,7 +54,7 @@ import { DayCycle } from './daycycle';
 import { DropManager } from './drops';
 import { EXHAUSTION } from './hunger';
 import { HOTBAR_SIZE, Inventory, type ItemStack } from './inventory';
-import { itemDef, itemLabel } from './items';
+import { allItems, itemDef, itemLabel } from './items';
 import { fillVillageChest } from './loot';
 import { bestToolSlot, blockDrops, heldTool, miningTime } from './mining';
 import { Mob } from './mobs/ai';
@@ -295,6 +295,8 @@ export class Game {
   /** The start of a curve that has been clicked but not yet finished. */
   private trackDraft: { anchor: TrackAnchor; node: number | null } | null = null;
   private trackGhost: TrackGhostView | null = null;
+  /** Why the shape under the crosshair will not be built, for the console and the toast. */
+  private trackGhostFault: TrackFault | null = null;
   private trackViewCache: TrackView | null = null;
   private trackViewKey = '';
   private trackViewTimer = 0;
@@ -507,6 +509,10 @@ export class Game {
   };
 
   private update(dt: number): void {
+    // Read rather than pushed: the setting can be flipped from the pause menu, from the
+    // console, or by a preferences file loaded at boot, and one assignment a frame is
+    // cheaper than three places remembering to call a setter.
+    this.player.inventory.unlimited = this.options.settings.creative;
     this.streamChunks();
     this.light.update(20000);
     this.chunkRenderer.processDirty(MESH_BUDGET, this.player.x, this.player.z);
@@ -819,6 +825,7 @@ export class Game {
       mobs: this.mobs.mobs.length,
       speed: this.options.settings.speed,
       effectiveSpeed: this.effectiveSpeed,
+      creative: this.options.settings.creative,
       waterDepth: this.water.depthAt(
         Math.floor(this.player.x),
         Math.floor(this.player.y + 0.4),
@@ -923,6 +930,13 @@ export class Game {
         case 'F3':
           event.preventDefault();
           this.hud.toggleDebug();
+          break;
+        case 'KeyC':
+          if (this.paused || this.player.isDead) break;
+          if (this.screens.kind === 'creative') this.closeScreen();
+          else if (!this.options.settings.creative) {
+            this.hud.toast('デバッグモードが切になっている（Esc のポーズ画面で入れる）');
+          } else this.openScreen(() => this.screens.openCreative());
           break;
         case 'KeyL':
           if (this.paused || this.player.isDead) break;
@@ -1729,6 +1743,7 @@ export class Game {
   private cancelTrackDraft(announce: boolean): void {
     this.trackDraft = null;
     this.trackGhost = null;
+    this.trackGhostFault = null;
     if (announce) this.hud.toast('敷設をやめた');
   }
 
@@ -1753,10 +1768,14 @@ export class Game {
       this.warn(`レールが足りない（あと ${short} 本）`);
       return;
     }
-    this.player.inventory.remove('rail', cost);
+    const spent = this.player.inventory.remove('rail', cost);
     this.trackDraft = null;
     this.trackGhost = null;
-    this.hud.toast(`線路を ${Math.round(laid.edge.curve.length)} マスのばした（レール ${cost} 本）`);
+    this.trackGhostFault = null;
+    // In the debug mode nothing was actually spent, and a toast that said otherwise would
+    // be the one line on screen quietly lying about what just happened.
+    const bill = this.player.inventory.unlimited ? '' : `（レール ${spent} 本）`;
+    this.hud.toast(`線路を ${Math.round(laid.edge.curve.length)} マスのばした${bill}`);
   }
 
   /** Takes out the run under the crosshair. Picked against the curve rather than against
@@ -1768,11 +1787,12 @@ export class Game {
     // Half back, the way a pickaxe gives back less than a furnace cost.
     const refund = Math.floor(railsFor(edge.curve.length) / 2);
     this.trackNet.remove(edge.id);
-    if (refund > 0) {
-      const left = this.player.inventory.add({ id: 'rail', count: refund });
+    const paid = this.player.inventory.unlimited ? 0 : refund;
+    if (paid > 0) {
+      const left = this.player.inventory.add({ id: 'rail', count: paid });
       if (left > 0) this.dropAtPlayer({ id: 'rail', count: left });
     }
-    this.hud.toast(`線路を撤去した（レール ${refund} 本）`);
+    this.hud.toast(paid > 0 ? `線路を撤去した（レール ${paid} 本）` : '線路を撤去した');
   }
 
   /** The curve as it would be if the player clicked now.
@@ -1796,6 +1816,7 @@ export class Game {
       Math.round(this.player.yaw * 64), aim.node?.id ?? 0,
       this.trackNet.revision, solved.ok ? 1 : 0,
     ].join(',');
+    this.trackGhostFault = solved.ok ? null : solved.fault;
     this.trackGhost = solved.ok
       ? { samples: sampleTrack(solved.curve, SAMPLE_STEP), valid: true, key }
       : { samples: straightSamples(draft.anchor, to), valid: false, key };
@@ -3345,6 +3366,8 @@ export class Game {
         held: this.heldTrackTool(),
         pending: this.trackDraft?.anchor ?? null,
         ghost: this.trackGhost ? (this.trackGhost.valid ? 'valid' : 'invalid') : 'none',
+        fault: this.trackGhostFault,
+        aim: this.trackAim().point,
       }),
       /** What the renderer is being handed right now. */
       trackView: () => {
@@ -3357,6 +3380,24 @@ export class Game {
           markers: view.markers.length,
           ghost: view.ghost ? (view.ghost.valid ? 'valid' : 'invalid') : 'none',
         };
+      },
+      /** The debug mode itself: nothing is used up, and `C` opens a shelf of everything. */
+      creative: (on?: boolean): boolean => {
+        const next = on ?? !this.options.settings.creative;
+        this.options.settings.creative = next;
+        this.player.inventory.unlimited = next;
+        if (!next && this.screens.kind === 'creative') this.closeScreen();
+        this.hud.toast(next ? 'デバッグ: 全アイテム無限（C で一覧）' : 'デバッグモードを切にした');
+        return next;
+      },
+      /** Fills the hotbar and pockets with as much of the game as will fit. The shelf
+       *  behind `C` holds the rest; this is for a console one-liner. */
+      giveAll: (): number => {
+        let given = 0;
+        for (const def of allItems()) {
+          if (this.player.inventory.add({ id: def.id, count: def.maxStack }) === 0) given++;
+        }
+        return given;
       },
       clearTracks: (): number => {
         this.cancelTrackDraft(false);

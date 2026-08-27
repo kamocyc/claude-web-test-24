@@ -1,6 +1,6 @@
 import type { Recipe } from '../game/crafting';
 import { Inventory, type ItemStack } from '../game/inventory';
-import { ARMOR_SLOTS, itemDef, itemLabel } from '../game/items';
+import { ARMOR_SLOTS, allItems, itemDef, itemLabel, type ItemDef } from '../game/items';
 import type { Player } from '../game/player';
 import {
   FURNACE_FUEL,
@@ -12,13 +12,37 @@ import {
 import { canAfford, performTrade, professionLabel, tradeAvailable, type Trade } from '../game/trading';
 import type { Mob } from '../game/mobs/ai';
 import type { Atlas } from '../render/textures';
-import { Container, renderSlot } from './containers';
+import { Container, renderSlot, type SlotSource } from './containers';
 import { RecipePanel } from './recipePanel';
 import { refreshLedger, type LedgerView } from './ledger';
 import { refreshHelp, type HelpView } from './help';
 import { clear, el } from './dom';
 
-export type ScreenKind = 'inventory' | 'crafting' | 'furnace' | 'chest' | 'trade' | 'ledger' | 'help';
+export type ScreenKind =
+  | 'inventory' | 'crafting' | 'furnace' | 'chest' | 'trade' | 'ledger' | 'help' | 'creative';
+
+/** Every item in the game, one full stack of each, endlessly.
+ *
+ *  Nothing is stored: `get` builds the stack on the spot so the shelf cannot run out, and
+ *  `set` throws away whatever it is handed so putting something back is how it is
+ *  discarded. Because it satisfies the same `SlotSource` the chests and the furnace do,
+ *  the whole pick-up, put-down and shift-click machinery works on it unchanged. */
+class CreativePalette implements SlotSource {
+  private readonly items: ItemDef[] = allItems();
+
+  get size(): number {
+    return this.items.length;
+  }
+
+  get(index: number): ItemStack | null {
+    const def = this.items[index];
+    return def ? { id: def.id, count: def.maxStack } : null;
+  }
+
+  set(): void {
+    // Deliberately nothing.
+  }
+}
 
 /** One tutorial step, rendered above a villager's offers. */
 export interface QuestRow {
@@ -120,6 +144,24 @@ export class ScreenManager {
         panel.refresh();
       },
     });
+  }
+
+  /** The debug shelf. Only reachable while the creative setting is on, which is what
+   *  stops an ordinary world being emptied of its difficulty by one stray keypress. */
+  openCreative(): void {
+    const palette = new CreativePalette();
+    const container = new Container({
+      title: 'デバッグ: 全アイテム',
+      atlas: this.atlas,
+      playerInventory: this.player.inventory,
+      onChanged: () => container.refresh(),
+    });
+    container.addGrid(palette, 0, palette.size, 9, {
+      label: '取り出しても減らない。ここへ戻すと捨てられる',
+      className: 'creative-grid',
+    });
+    this.addPlayerInventory(container);
+    this.mount({ kind: 'creative', container, refresh: () => container.refresh() });
   }
 
   openCraftingTable(): void {
