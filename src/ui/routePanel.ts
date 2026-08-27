@@ -31,9 +31,11 @@ export interface RouteView {
   load: number;
   /** True when the far end has asked for what this route carries. */
   wanted: boolean;
-  /** What hauls it, and — when a cart cannot — how far away the place to widen is. */
-  vehicle: 'porter' | 'cart';
+  /** What hauls it, and — when a cart or a train cannot — how far away the place to go
+   *  and fix is. Rails run out somewhere; roads pinch somewhere. */
+  vehicle: 'porter' | 'cart' | 'train';
   cartPinch: { distance: number; bearing: number } | null;
+  railPinch: { distance: number; bearing: number } | null;
   /** Blocks of up and down, and how much longer the road is than the straight line. */
   climb: number;
   detour: number;
@@ -117,6 +119,7 @@ export class RoutePanel {
         r.idle ? `${r.idle.kind}${r.idle.village}${r.idle.wants ?? ''}` : '',
         Math.round(r.doorGap), r.nearMiss, r.faults.length,
         r.cartPinch ? Math.round(r.cartPinch.distance) : '',
+        r.railPinch ? Math.round(r.railPinch.distance) : '',
         r.nearest ? `${Math.round(r.nearest.distance)},${Math.round(r.nearest.bearing / 45)}` : '',
       ].join(':'))
       .join('|');
@@ -132,8 +135,9 @@ export class RoutePanel {
       let status: string;
       if (!route.surveyed) status = '調べています...';
       else if (route.connected) {
-        const cart = route.vehicle === 'cart' ? ' / 荷車' : '';
-        status = `接続済み ${Math.round(route.length)}m / ${route.grade}${cart} / 荷 ${route.load}`;
+        const haul =
+          route.vehicle === 'train' ? ' / 列車' : route.vehicle === 'cart' ? ' / 荷車' : '';
+        status = `接続済み ${Math.round(route.length)}m / ${route.grade}${haul} / 荷 ${route.load}`;
       } else status = `未接続 / ${gapText(route.missing)}`;
       row.appendChild(el('div', 'route-status', status));
       for (const note of notes(route)) {
@@ -171,7 +175,7 @@ function idleText(route: RouteView): string {
 
 interface Note {
   text: string;
-  tone: 'fault' | 'narrow' | 'cost';
+  tone: 'fault' | 'narrow' | 'rail' | 'cost';
 }
 
 /** Everything about a route that is not "how long is it": what is stopping it, what is
@@ -185,11 +189,19 @@ function notes(route: RouteView): Note[] {
     if (faults) out.push({ text: `敷いたのに数えられていない: ${faults}`, tone: 'fault' });
     return out;
   }
-  if (route.vehicle !== 'cart') {
+  // Only a route down to walking pace is short of width: a train has already stopped
+  // caring how wide the road is, so telling its driver to widen it would be noise.
+  if (route.vehicle === 'porter') {
     const where = route.cartPinch
       ? `（${heading(route.cartPinch.bearing)}へ ${Math.round(route.cartPinch.distance)}m）`
       : '';
     out.push({ text: `荷車: 幅が足りない${where}`, tone: 'narrow' });
+  }
+  // And only a line somebody has started railing gets told where the rails stop; a road
+  // with no rail on it at all has no pinch to report.
+  if (route.vehicle !== 'train' && route.railPinch) {
+    const where = `（${heading(route.railPinch.bearing)}へ ${Math.round(route.railPinch.distance)}m）`;
+    out.push({ text: `列車: レールが途切れている${where}`, tone: 'rail' });
   }
   if (route.detour > DETOUR_NOTICE) {
     out.push({ text: `遠回り ×${route.detour.toFixed(2)} — 運賃は直線距離ぶん`, tone: 'cost' });

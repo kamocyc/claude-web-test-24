@@ -262,6 +262,17 @@ export const MILESTONES: readonly Milestone[] = [
     done: (s) => s.villages.some((v) => v.stage >= MAX_STAGE),
     marker: (s) => nearest(s, (v) => v.stage === best(s, (w) => w.stage)),
   },
+  // Appended rather than slotted in beside 街道: the claimed index is what a save
+  // remembers, so inserting a goal in the middle would move every player's place in the
+  // list. Last also happens to be where it belongs — rails cost iron a new network has
+  // no way to freight yet.
+  {
+    id: 'railway',
+    title: '鉄道を敷く（全区間レールの路線）',
+    detail: () => '路線ぜんぶをレールにすると列車が走り、速さも一度に運ぶ量も上がる',
+    reward: 20,
+    done: (s) => linked(s).some((r) => r.vehicle === 'train'),
+  },
 ];
 
 const STEPS: readonly QuestStep[] = [

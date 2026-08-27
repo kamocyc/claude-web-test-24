@@ -26,6 +26,10 @@ import { CHUNK_SIZE, blockIndex, parseChunkKey, toChunkCoord, toLocalCoord } fro
 import { VILLAGE_RADIUS } from '../world/generation/village';
 import type { VillageRecord } from './villages';
 
+/** What a rail column is worth. The top of the table on purpose: rail is the one surface
+ *  a player pays iron for, so it has to be the fastest thing there is. */
+export const RAIL_SPEED = 2.2;
+
 /** Blocks a player lays to make a road, and how fast a porter walks on each. Bare stone
  *  and dirt are deliberately absent: they are what the world is already made of, so they
  *  could not be told apart from it.
@@ -40,9 +44,14 @@ export const ROAD_SPEED: ReadonlyMap<BlockId, number> = new Map<BlockId, number>
   [Block.MOSSY_COBBLESTONE, 1.45],
   [Block.OAK_PLANKS, 1.45],
   [Block.STONE_BRICKS, 1.7],
+  [Block.RAIL, RAIL_SPEED],
 ]);
 
 export const ROAD_BLOCKS: ReadonlySet<BlockId> = new Set<BlockId>(ROAD_SPEED.keys());
+
+/** The surfaces a train runs on. A set rather than the single id so that a second kind of
+ *  rail would never have to visit every call site. */
+export const RAIL_BLOCKS: ReadonlySet<BlockId> = new Set<BlockId>([Block.RAIL]);
 
 /** What to call a road of a given quality, for the panel and the ledger. */
 export function roadGrade(quality: number): string {
@@ -50,7 +59,8 @@ export function roadGrade(quality: number): string {
   if (quality < 1.12) return '土の道';
   if (quality < 1.34) return '砂利道';
   if (quality < 1.58) return '石畳';
-  return '街道';
+  if (quality < 1.95) return '街道';
+  return '鉄路';
 }
 
 /** Why a stretch of laid road does not count, in the fewest words that still say what to
@@ -130,10 +140,18 @@ export interface RoadPoint {
   b?: BlockId;
 }
 
-/** Whether a cart can be pulled the whole way, and if not, where the road pinches. */
-export type CartResult =
+/** Whether one kind of vehicle can be run the whole way, and if not, where the way stops
+ *  being good enough for it. Width is what stops a cart and surface is what stops a train,
+ *  but the answer the player needs has the same shape either way: no, and go there. */
+export type WayResult =
   | { ok: true; length: number; quality: number }
   | { ok: false; pinch: RoadPoint | null };
+
+/** Whether a cart can be pulled the whole way, and if not, where the road pinches. */
+export type CartResult = WayResult;
+
+/** Whether a train can be run the whole way, and if not, where the rails run out. */
+export type RailResult = WayResult;
 
 export type SurveyResult =
   | {
@@ -149,6 +167,7 @@ export type SurveyResult =
       /** Straight line between the two ends. The road divided by this is the detour. */
       direct: number;
       cart: CartResult;
+      rail: RailResult;
     }
   /** Where each side's road runs out, and how far apart those two ends are. This is what
    *  the HUD points the player at: "the gap is here", not "walk that way". */
@@ -182,6 +201,17 @@ interface Reached {
   parent: string | null;
   /** Seconds of walking from the origin village's streets. */
   cost: number;
+}
+
+/** What a vehicle needs of the road, as restrictions on the same search. Absent means a
+ *  porter, who needs nothing beyond a road that is there. */
+interface WalkLimits {
+  /** Columns exempt from the width test: the ones touching a village's streets, which are
+   *  generated three across and so are never in the index to be counted. */
+  cartEnds?: ReadonlySet<string>;
+  /** The surfaces the vehicle runs on. There is no exemption for this one — see
+   *  `railSeeds`. */
+  surfaces?: ReadonlySet<BlockId>;
 }
 
 function key(x: number, z: number): string {
@@ -268,6 +298,9 @@ export class RoadNetwork {
   private readonly seedCache = new Map<string, string[]>();
   private readonly reachCache = new Map<string, Map<string, Reached>>();
   private readonly cartCache = new Map<string, Map<string, Reached>>();
+  /** Trains get theirs per village rather than per pair: what a train may cross is a
+   *  property of the surface alone, so it does not matter who is being asked about. */
+  private readonly railCache = new Map<string, Map<string, Reached>>();
   private cacheRevision = -1;
 
   constructor(private readonly world: RoadWorld) {}
@@ -469,6 +502,7 @@ export class RoadNetwork {
     this.seedCache.clear();
     this.reachCache.clear();
     this.cartCache.clear();
+    this.railCache.clear();
   }
 
   /** The columns that touch a village's own streets: where its road starts, and equally
@@ -528,20 +562,42 @@ export class RoadNetwork {
     const cached = this.cartCache.get(pair);
     if (cached) return cached;
     const ends = new Set([...this.seedsFor(from), ...this.seedsFor(to)]);
-    const reached = this.walk(this.seedsFor(from), ends);
+    const reached = this.walk(this.seedsFor(from), { cartEnds: ends });
     this.cartCache.set(pair, reached);
     return reached;
   }
 
-  /** Dijkstra over the road columns. `cartEnds`, when given, restricts the walk to what a
-   *  cart fits down — both ends of every step, plus the named village ends.
+  /** The columns touching a village's streets that are themselves rail.
+   *
+   *  The cart exempts these columns because a village's streets really are three across.
+   *  A train has no such excuse: the streets are cobblestone, and calling the last column
+   *  of a line rail because it stands near a village would be calling ground nobody
+   *  railed a railway. The search trusts its seeds — it inserts them at no cost without
+   *  testing them, and arrival is looked up among the far village's seeds — so filtering
+   *  here is what keeps a dirt column out of both ends of a line. */
+  private railSeeds(village: VillageRecord): string[] {
+    return this.seedsFor(village).filter((k) => RAIL_BLOCKS.has(this.surfaces.get(k) ?? Block.AIR));
+  }
+
+  /** The same search over the columns a train runs on. */
+  private railReachFrom(village: VillageRecord): Map<string, Reached> {
+    this.freshen();
+    const cached = this.railCache.get(village.id);
+    if (cached) return cached;
+    const reached = this.walk(this.railSeeds(village), { surfaces: RAIL_BLOCKS });
+    this.railCache.set(village.id, reached);
+    return reached;
+  }
+
+  /** Dijkstra over the road columns. `limits`, when given, restricts the walk to what one
+   *  kind of vehicle can use — both ends of every step, in every test.
    *
    *  Testing only where the step *lands* was not enough. A cart met a three wide band with
    *  one column missing, came at that column diagonally, found two other columns either
    *  side of that heading, and squeezed past. Requiring the column it is *leaving* to be
    *  wide the same way closes it: the diagonal that dodges the hole is not wide where it
-   *  starts either. */
-  private walk(seeds: readonly string[], cartEnds: ReadonlySet<string> | null): Map<string, Reached> {
+   *  starts either. The surface test is written the same way for the same reason. */
+  private walk(seeds: readonly string[], limits: WalkLimits | null): Map<string, Reached> {
     const seen = new Map<string, Reached>();
     const settled = new Set<string>();
     const queue = new Frontier();
@@ -559,11 +615,17 @@ export class RoadNetwork {
         const nk = key(here.x + dx, here.z + dz);
         const y = this.columns.get(nk);
         if (y === undefined || Math.abs(y - here.y) > MAX_STEP) continue;
+        const cartEnds = limits?.cartEnds;
         if (cartEnds) {
           const room = (at: string, ax: number, az: number): boolean =>
             cartEnds.has(at) || this.wideAcross(ax, az, dx, dz);
           if (!room(k, here.x, here.z)) continue;
           if (!room(nk, here.x + dx, here.z + dz)) continue;
+        }
+        const surfaces = limits?.surfaces;
+        if (surfaces) {
+          if (!surfaces.has(this.surfaces.get(k) ?? Block.AIR)) continue;
+          if (!surfaces.has(this.surfaces.get(nk) ?? Block.AIR)) continue;
         }
         const next = cost + this.stepCost(here, { x: here.x + dx, z: here.z + dz, y });
         const known = seen.get(nk);
@@ -654,6 +716,7 @@ export class RoadNetwork {
         climb: this.climbOf(waypoints),
         direct: Math.hypot(tail.x - head.x, tail.z - head.z),
         cart: this.surveyCart(from, to),
+        rail: this.surveyRail(from, to),
       };
     }
 
@@ -686,6 +749,24 @@ export class RoadNetwork {
     }
     // Where the wide network stops on its way to the far village — and, when none of the
     // road is wide at all, the village's own street end, which is where to start.
+    return { ok: false, pinch: this.frontier(reached, from, to) };
+  }
+
+  /** Whether a train can be run the whole way, over the same search restricted to rail.
+   *
+   *  A line with no rail on it at all gets no pinch. A beacon on every dirt road in the
+   *  world, pointing at a village gate, would be an answer to a question nobody asked;
+   *  the pinch is for a player who has started laying and wants to know where they got
+   *  to. */
+  private surveyRail(from: VillageRecord, to: VillageRecord): RailResult {
+    const ends = this.railSeeds(to);
+    if (this.railSeeds(from).length === 0 && ends.length === 0) return { ok: false, pinch: null };
+    const reached = this.railReachFrom(from);
+    const arrival = this.arrivalIn(reached, ends);
+    if (arrival !== null) {
+      const chain = this.chainTo(reached, arrival);
+      return { ok: true, length: this.lengthOf(chain), quality: this.qualityOf(chain) };
+    }
     return { ok: false, pinch: this.frontier(reached, from, to) };
   }
 

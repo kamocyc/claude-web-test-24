@@ -1,5 +1,5 @@
 import { Block, blockDef } from '../world/blocks';
-import { ROAD_SPEED } from '../game/roads';
+import { RAIL_BLOCKS, ROAD_SPEED } from '../game/roads';
 import { WATER_FULL } from '../world/water';
 import type { World } from '../world/world';
 import type { Atlas } from '../render/textures';
@@ -38,8 +38,10 @@ const MARKER_COLORS: Record<string, string> = {
   porter: '#8ef0b8',
 };
 
-/** Trodden dirt through to stone brick, as a colour. */
+/** Trodden dirt through to stone brick, as a colour — and steel for rail, which is off
+ *  the end of that ramp and would otherwise be drawn as stone brick. */
 function roadColour(block: number | undefined): string {
+  if (block !== undefined && RAIL_BLOCKS.has(block)) return 'rgba(150, 196, 236, 0.95)';
   const speed = block === undefined ? 1 : ROAD_SPEED.get(block) ?? 1;
   const paved = Math.max(0, Math.min(1, (speed - 1) / 0.7));
   const mix = (from: number, to: number): number => Math.round(from + (to - from) * paved);

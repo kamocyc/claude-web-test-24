@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { CLEARABLE, PAVABLE, runRoad, treadBrush, treadColumn, treadLine, type PaveTarget } from '../game/paving';
-import { HEADROOM, MAX_STEP } from '../game/roads';
+import { CLEARABLE, PAVABLE, runRoad, treadBrush, treadColumn, treadLine, TREAD_DIRT, type PaveMaterial, type PaveTarget } from '../game/paving';
+import { HEADROOM, MAX_STEP, ROAD_BLOCKS } from '../game/roads';
 import { Block, type BlockId } from '../world/blocks';
 
 const GROUND = 60;
@@ -32,7 +32,7 @@ class FakeWorld implements PaveTarget {
 
   setBlock(x: number, y: number, z: number, id: BlockId): void {
     this.put(x, y, z, id);
-    if (id === Block.DIRT_PATH) this.roads.set(`${x},${z}`, y);
+    if (ROAD_BLOCKS.has(id)) this.roads.set(`${x},${z}`, y);
   }
 
   roadLevel(x: number, z: number): number | undefined {
@@ -281,5 +281,76 @@ describe('running a road wide enough for a cart', () => {
     // Whether the width survived the staircase is the road index's question, and
     // `roads.test.ts` asks it of a road this same builder laid on an angle.
     expect(world.paths().length).toBeGreaterThan(length * 2);
+  });
+});
+
+describe('laying a material that is not dirt', () => {
+  /** Rails, and a pile of them to take from. */
+  function rails(count: number): PaveMaterial {
+    let left = count;
+    return {
+      block: Block.RAIL,
+      width: 1,
+      supply: {
+        take: () => {
+          if (left <= 0) return false;
+          left--;
+          return true;
+        },
+      },
+    };
+  }
+
+  const freeRails: PaveMaterial = { block: Block.RAIL, width: 1, supply: null };
+
+  it('lays what it is handed rather than dirt', () => {
+    const world = new FakeWorld();
+    treadColumn(world, 4, 0, GROUND, freeRails);
+    expect(world.getBlock(4, GROUND, 0)).toBe(Block.RAIL);
+  });
+
+  it('lays a single column when the material asks for one', () => {
+    // A shovel sweeps 3x3 because dirt is free. Every rail was smelted, so a rail sweep
+    // that laid nine of them per step would be spending the player's iron sideways.
+    const world = new FakeWorld();
+    const brush = treadBrush(world, 4, 0, GROUND, freeRails);
+    expect(brush.laid).toBe(1);
+    expect(world.paths()).toHaveLength(1);
+  });
+
+  it('upgrades a road that is already there', () => {
+    // This is what makes rail an improvement to a line rather than a second line beside
+    // it: the road the player already walked is the road the rails go on.
+    const world = new FakeWorld();
+    treadColumn(world, 4, 0, GROUND);
+    expect(world.getBlock(4, GROUND, 0)).toBe(Block.DIRT_PATH);
+    treadColumn(world, 4, 0, GROUND, freeRails);
+    expect(world.getBlock(4, GROUND, 0)).toBe(Block.RAIL);
+    expect(world.roadLevel(4, 0)).toBe(GROUND);
+  });
+
+  it('never treads a rail back into dirt', () => {
+    // Walking home over your own railway with a shovel in hand must not undo it.
+    const world = new FakeWorld();
+    treadColumn(world, 4, 0, GROUND, freeRails);
+    treadBrush(world, 4, 0, GROUND, TREAD_DIRT);
+    expect(world.getBlock(4, GROUND, 0)).toBe(Block.RAIL);
+  });
+
+  it('stops where the pile runs out, and leaves the rest of the ground alone', () => {
+    const world = new FakeWorld();
+    const laid = treadLine(world, { x: 0, z: 0 }, { x: 19, z: 0 }, GROUND, rails(5));
+    expect(laid.laid).toBe(5);
+    expect(world.paths()).toHaveLength(5);
+    expect(world.getBlock(4, GROUND, 0)).toBe(Block.RAIL);
+    expect(world.getBlock(5, GROUND, 0)).toBe(Block.GRASS);
+  });
+
+  it('lays an unbroken line as far as the pile goes', () => {
+    const world = new FakeWorld();
+    for (let x = 0; x < 8; x++) world.setHeight(x, 0, GROUND + (x % 2));
+    treadLine(world, { x: 0, z: 0 }, { x: 7, z: 0 }, GROUND, freeRails);
+    expect(unbroken(world.paths())).toBe(true);
+    expect(oneRun(world)).toBe(true);
   });
 });

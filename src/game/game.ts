@@ -49,7 +49,7 @@ import { fillVillageChest } from './loot';
 import { bestToolSlot, blockDrops, heldTool, miningTime } from './mining';
 import { Mob } from './mobs/ai';
 import { MobManager, type MobUpdateContext } from './mobs/spawner';
-import type { MobKind } from './mobs/types';
+import { HAULING_KINDS, type MobKind } from './mobs/types';
 import { NO_INPUT, Player, type PlayerInput } from './player';
 import {
   type SaveData,
@@ -74,7 +74,7 @@ import {
   type RoadFault,
   type RoadPoint,
 } from './roads';
-import { runRoad, treadBrush, treadLine, type PaveTarget } from './paving';
+import { runRoad, treadBrush, treadLine, TREAD_DIRT, type PaveMaterial, type PaveTarget } from './paving';
 import {
   CATCH_UP,
   PORTER_LEASH,
@@ -150,6 +150,9 @@ const GUIDE_PORTER = 0x8ef0b8;
  *  it does not count", which is the one thing the world itself has to say out loud. */
 const GUIDE_FAULT = 0xff5a5a;
 const GUIDE_NARROW = 0xffc457;
+/** Where the rails run out. Violet, because amber already means "too narrow" and red
+ *  already means "does not count" — three different jobs need three different colours. */
+const GUIDE_RAILGAP = 0xb08cff;
 /** The doorway a route loads and unloads at. */
 const GUIDE_DEPOT = 0xffd479;
 /** Blocks of height a laid road may gain or lose per column — deliberately gentler than
@@ -177,6 +180,16 @@ const PAVE_BRIDGE = 12;
 /** Width of the road the sample world is built with. Three columns is what a cart needs,
  *  and a sample road nobody can run a cart down teaches the wrong half of the lesson. */
 const SAMPLE_WIDTH = 3;
+/** Columns of the sample road left unrailed, at the end the player starts on.
+ *
+ *  A railway handed over finished shows the train and nothing else: not the tools, not
+ *  the violet beacon over the break, not what a line looks like while it is half done.
+ *  Leaving the near end bare puts all three in front of the player at once, and the walk
+ *  to close it is three presses of `[R]` rather than an afternoon. */
+const SAMPLE_RAIL_GAP = 60;
+/** Rails the sample world hands over: enough for the gap, and enough over it that a
+ *  wandering line or a second thought does not strand the player halfway. */
+const SAMPLE_RAIL_SPARE = 24;
 /** Seconds between two complaints about a road that will not take. Often enough to catch
  *  the branch the player is standing under, rarely enough to stay out of the way. */
 const FAULT_TOAST_INTERVAL = 4;
@@ -268,6 +281,9 @@ export class Game {
   /** Held until the world is ready, because a toast raised during construction would be
    *  shown to a screen that is still saying "generating terrain". */
   private sampleToast: string | null = null;
+  /** The same, for the sample world's half-built railway. Two toasts rather than one
+   *  sentence: what is there and what is missing are two different things to read. */
+  private railToast: string | null = null;
   /** World steps the last frame actually managed, which is what the HUD reports. */
   private effectiveSpeed = 1;
   private openContainerPos: { x: number; y: number; z: number } | null = null;
@@ -445,6 +461,10 @@ export class Game {
         if (this.sampleToast) {
           this.hud.toast(this.sampleToast);
           this.sampleToast = null;
+        }
+        if (this.railToast) {
+          this.hud.toast(this.railToast);
+          this.railToast = null;
         }
         // Pointer lock can only be requested from a real user gesture, so the player
         // clicks once to start looking around.
@@ -699,6 +719,7 @@ export class Game {
             wanted: this.villages.get(route.to)?.needs.includes(route.good) ?? false,
             vehicle: route.vehicle,
             cartPinch: route.cartPinch ? this.bearingTo(route.cartPinch) : null,
+            railPinch: route.railPinch ? this.bearingTo(route.railPinch) : null,
             climb: route.climb,
             detour: route.detour,
             doorGap: route.doorGap,
@@ -1007,8 +1028,8 @@ export class Game {
    *  that jumped, which happens every time the player turns their head. What comes out is
    *  a road wide enough to see and continuous enough to carry. */
   private updatePaving(dt: number, hit: RaycastHit | null): void {
-    const shovel = heldTool(this.player.inventory.held)?.tool?.kind === 'shovel';
-    if (!shovel || !this.options.input.buttons[2] || !hit || this.uiOpen) {
+    const material = this.heldPaving();
+    if (!material || !this.options.input.buttons[2] || !hit || this.uiOpen) {
       this.paveFrom = null;
       return;
     }
@@ -1018,10 +1039,43 @@ export class Game {
 
     const from = this.paveFrom;
     const span = from ? Math.max(Math.abs(hit.x - from.x), Math.abs(hit.z - from.z)) : 0;
-    if (from && span > 1 && span <= PAVE_BRIDGE) treadLine(this.paveTarget, from, hit, from.y);
-    else treadBrush(this.paveTarget, hit.x, hit.z, hit.y);
+    const laid =
+      from && span > 1 && span <= PAVE_BRIDGE
+        ? treadLine(this.paveTarget, from, hit, from.y, material).laid
+        : treadBrush(this.paveTarget, hit.x, hit.z, hit.y, material).laid;
     this.paveFrom = { x: hit.x, y: hit.y, z: hit.z };
+    if (laid === 0 && material.supply && !this.player.inventory.has('rail')) {
+      this.warn('レールが尽きた');
+      return;
+    }
     this.reportPavingFaults(PAVE_INTERVAL, hit.x, hit.z);
+  }
+
+  /** What the held item lays while the right button is down, and what it costs.
+   *
+   *  This is the whole of "rail laying is a build mode": there is no mode, only what is
+   *  in the player's hand, exactly as the shovel has always worked. Dirt is free and
+   *  sweeps three columns across because a wide road is what buys a cart; rails go down
+   *  single file out of the pack, because a train needs one column and every one of them
+   *  was smelted. */
+  private heldPaving(): PaveMaterial | null {
+    const held = this.player.inventory.held;
+    if (held?.id === 'rail') {
+      return {
+        block: Block.RAIL,
+        width: 1,
+        supply: { take: () => this.player.inventory.remove('rail', 1) > 0 },
+      };
+    }
+    return heldTool(held)?.tool?.kind === 'shovel' ? TREAD_DIRT : null;
+  }
+
+  /** A toast that cannot repeat itself into a wall. Shares the fault timer, because both
+   *  are the same sentence — "the thing you are doing right now is not working". */
+  private warn(message: string): void {
+    if (this.faultToastTimer > 0) return;
+    this.faultToastTimer = FAULT_TOAST_INTERVAL;
+    this.hud.toast(message);
   }
 
   /** Says why the road that was just laid does not count, where it does not.
@@ -1063,13 +1117,26 @@ export class Game {
       this.hud.toast(`${ROAD_REACH} マス以内の地面に狙いをつけて [R]`);
       return;
     }
-    const laid = this.runRoad(
+    // Whatever is in hand decides what the line is made of, the same as the sweep.
+    const material = this.heldPaving() ?? TREAD_DIRT;
+    const rails = material.block === Block.RAIL;
+    const held = rails ? this.player.inventory.count('rail') : 0;
+    const spine = this.runRoad(
       { x: hit.x, z: hit.z },
       { x: Math.floor(this.player.x), z: Math.floor(this.player.z) },
-      Block.DIRT_PATH,
+      material.block,
       hit.y,
+      undefined,
+      1,
+      material.supply,
     );
-    this.hud.toast(laid > 0 ? `道を ${laid} マスのばした` : '道をのばせる地面がない');
+    // What the pile paid for is the honest length of a rail run: the spine is how far the
+    // line was planned, and the two part company exactly when the rails ran out.
+    const laid = rails ? held - this.player.inventory.count('rail') : spine;
+    const what = rails ? 'レール' : '道';
+    if (laid === 0) this.hud.toast(`${what}をのばせる地面がない`);
+    else if (rails && laid < spine) this.hud.toast(`レールが ${laid} マスで尽きた`);
+    else this.hud.toast(`${what}を ${laid} マスのばした`);
     this.faultToastTimer = 0;
     this.reportPavingFaults(0, hit.x, hit.z);
   }
@@ -1205,8 +1272,12 @@ export class Game {
     // Paving a road with a shovel. Same gesture as tilling soil, and it is what makes a
     // road between two villages something a player will actually finish. Holding the
     // button down keeps it going: see `updatePaving`.
-    if (def.tool?.kind === 'shovel') {
-      if (treadBrush(this.paveTarget, hit.x, hit.z, hit.y).laid > 0) {
+    // Rails lay the same way, which is why this asks the material rather than the tool.
+    // Falling through when nothing was laid is deliberate: a rail aimed at a wall is a
+    // block being placed, and only a rail aimed at the ground is track being laid.
+    const material = this.heldPaving();
+    if (material) {
+      if (treadBrush(this.paveTarget, hit.x, hit.z, hit.y, material).laid > 0) {
         this.paveFrom = { x: hit.x, y: hit.y, z: hit.z };
         return;
       }
@@ -1627,6 +1698,13 @@ export class Game {
       if (route !== questRoute && !this.nearPlayer(route.cartPinch, FAULT_REACH * 2)) continue;
       beams.push({ ...route.cartPinch, colour: GUIDE_NARROW, height: 10 });
     }
+    // Where the rails run out. Only on lines somebody has started railing: `surveyRail`
+    // hands back no pinch at all for a road with not one rail on it.
+    for (const route of this.transport.routes) {
+      if (!route.connected || !route.railPinch) continue;
+      if (route !== questRoute && !this.nearPlayer(route.railPinch, FAULT_REACH * 2)) continue;
+      beams.push({ ...route.railPinch, colour: GUIDE_RAILGAP, height: 12 });
+    }
     const tiles = this.roads.columnsIn(
       this.player.x - GUIDE_TILE_REACH,
       this.player.z - GUIDE_TILE_REACH,
@@ -2001,7 +2079,7 @@ export class Game {
         load: this.transport.loadOf(route),
         porters: route.porters.length,
         delivered: route.delivered,
-        vehicle: route.vehicle === 'cart' ? '荷車' : '荷運び',
+        vehicle: route.vehicle === 'train' ? '列車' : route.vehicle === 'cart' ? '荷車' : '荷運び',
         climb: route.climb,
         detour: route.detour,
       })),
@@ -2010,7 +2088,7 @@ export class Game {
 
   private spawnPorter(point: RoadPoint, vehicle: Vehicle): number | null {
     if (!this.world.hasChunk(toChunkCoord(point.x), toChunkCoord(point.z))) return null;
-    const mob = new Mob(vehicle === 'cart' ? 'cart' : 'porter', point.x + 0.5, point.y + 1, point.z + 0.5);
+    const mob = new Mob(vehicle, point.x + 0.5, point.y + 1, point.z + 0.5);
     mob.follow = { x: mob.x, z: mob.z };
     this.mobs.add(mob);
     this.porterMobs.set(mob.id, mob);
@@ -2143,11 +2221,12 @@ export class Game {
     startY: number,
     endY?: number,
     width = 1,
+    supply: { take(): boolean } | null = null,
   ): number {
     return runRoad(
       {
         ground: (x, z) => this.groundHeightAt(x, z),
-        lay: (x, y, z) => this.layRoadColumn(x, y, z, block),
+        lay: (x, y, z) => this.layRoadColumn(x, y, z, block, supply),
       },
       from,
       to,
@@ -2171,8 +2250,19 @@ export class Game {
    *  edit recorded directly — which is what a shovel would have left behind anyway, and
    *  what the road index reads, so a road can be run through country the player has never
    *  stood in and still be there when they arrive. */
-  private layRoadColumn(x: number, y: number, z: number, block: BlockId = Block.DIRT_PATH): void {
+  private layRoadColumn(
+    x: number,
+    y: number,
+    z: number,
+    block: BlockId = Block.DIRT_PATH,
+    supply: { take(): boolean } | null = null,
+  ): void {
     const surface = this.betterOf(x, y, z, block);
+    // Nothing to do, and so nothing to pay for: running rails back along rails that are
+    // already there should cost the player no iron at all.
+    const here = `${x},${z}`;
+    if (this.roads.columns.get(here) === y && this.roads.surfaces.get(here) === surface) return;
+    if (supply && !supply.take()) return;
     if (this.world.hasChunk(toChunkCoord(x), toChunkCoord(z))) {
       this.world.setBlock(x, y, z, surface);
       // Headroom, and then whatever falls into it. Cutting under a dune drops the entire
@@ -2381,6 +2471,18 @@ export class Game {
     const start = this.roads.streetPoint(from, to.x, to.z);
     const end = this.roads.streetPoint(to, from.x, from.z);
     const blocks = this.runRoad(start, end, Block.DIRT_PATH, start.y, end.y, SAMPLE_WIDTH);
+    // Then the same line again in rail, one column wide, skipping the stretch nearest the
+    // player. The spine is worked out from `start` and `end` alone and is laid in order,
+    // so this second pass lands on exactly the centre of the band the first one put down,
+    // at the same heights — and `betterOf` keeps rail over dirt, so the road underneath
+    // is not disturbed. What comes out is a road three across with rails down the middle
+    // of all but its first `SAMPLE_RAIL_GAP` columns.
+    let reached = 0;
+    this.runRoad(start, end, Block.RAIL, start.y, end.y, 1, {
+      take: () => ++reached > SAMPLE_RAIL_GAP,
+    });
+    const gap = Math.min(SAMPLE_RAIL_GAP, reached);
+    this.player.inventory.add({ id: 'rail', count: gap + SAMPLE_RAIL_SPARE });
     this.villages.discover(from.id);
     this.villages.discover(to.id);
     this.transport.requestRoute(from.id, to.id);
@@ -2393,6 +2495,11 @@ export class Game {
     this.player.teleportTo(stand.x + 0.5, stand.y + 1, stand.z + 0.5);
     this.player.yaw = Math.atan2(-(end.x - start.x), -(end.z - start.z));
     this.sampleToast = `見本: ${from.name}と${to.name}を結ぶ ${blocks} マスの道（幅 ${SAMPLE_WIDTH}・荷車が通れる）`;
+    // The second line is the invitation. The first says what is already there; this says
+    // what is missing, where, and that the answer is in the player's hands.
+    this.railToast =
+      `この先はレールが敷いてある。足もとの ${gap} マスだけ空いているので、` +
+      `持っているレールで埋めれば列車が走る（紫の光の柱がその場所）`;
     return { from: from.name, to: to.name, blocks };
   }
 
@@ -2655,7 +2762,7 @@ export class Game {
           vehicle: route.vehicle, climb: route.climb,
           detour: Math.round(route.detour * 100) / 100,
           direct: Math.round(route.direct), doorGap: Math.round(route.doorGap),
-          cartPinch: route.cartPinch, nearMiss: route.nearMiss,
+          cartPinch: route.cartPinch, railPinch: route.railPinch, nearMiss: route.nearMiss,
         })),
       /** Everything the L screen shows, without opening it. */
       ledger: (): LedgerView => this.ledgerView(),
@@ -2667,7 +2774,7 @@ export class Game {
         all: MILESTONES.map((m) => m.title),
       }),
       porters: () =>
-        this.mobs.mobs.filter((mob) => mob.kind === 'porter' || mob.kind === 'cart').length,
+        this.mobs.mobs.filter((mob) => HAULING_KINDS.includes(mob.kind)).length,
       /** Where every shipment currently is, whether or not anybody can see it. Standing
        *  at one of these is what makes a porter appear. */
       porterSpots: () =>
@@ -2766,6 +2873,10 @@ export class Game {
        *  is the player's job, not the smoke test's. */
       buildRoad: (fromId?: string, toId?: string, surface?: string): number =>
         this.debugBuildRoad(fromId, toId, surface),
+      /** Rails the quest route from end to end, which is what puts a train on it. Single
+       *  track, because that is all a train asks for. */
+      buildRailway: (fromId?: string, toId?: string): number =>
+        this.debugBuildRoad(fromId, toId, 'rail', 1),
       /** Builds the sample world's road here and now, and stands the player on it. */
       sampleRoad: (): { from: string; to: string; blocks: number } | null =>
         this.buildSampleRoad(),

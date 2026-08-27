@@ -118,6 +118,25 @@ const MODELS: Record<MobKind, ModelPart[]> = {
     { size: [0.14, 0.66, 0.66], offset: [-0.65, 0.62, 0.95], color: 0x4a3423, role: 'body' },
     { size: [0.14, 0.66, 0.66], offset: [0.65, 0.62, 0.95], color: 0x4a3423, role: 'body' },
   ],
+  // A little locomotive with one wagon. Nothing here has a leg or an arm role: the
+  // renderer swings those from the walk phase, and a train that walked would be telling
+  // the player the wrong thing about what is moving the goods.
+  train: [
+    // boiler, cab and chimney
+    { size: [0.72, 0.6, 1.3], offset: [0, 0.62, -0.42], color: 0x2f3438, role: 'body' },
+    { size: [0.78, 0.66, 0.62], offset: [0, 0.92, 0.28], color: 0x39424a, role: 'body' },
+    { size: [0.26, 0.4, 0.26], offset: [0, 1.12, -0.92], color: 0x22282c, role: 'body' },
+    // the open firebox, which is what makes it read as a train and not a black box
+    { size: [0.4, 0.26, 0.06], offset: [0, 0.66, 0.6], color: 0xd4762a, role: 'body' },
+    // wheels
+    { size: [0.86, 0.34, 0.34], offset: [0, 0.24, -0.72], color: 0x1c2023, role: 'body' },
+    { size: [0.86, 0.34, 0.34], offset: [0, 0.24, 0.1], color: 0x1c2023, role: 'body' },
+    // the wagon behind, borrowing the cart's crate so the freight reads the same
+    { size: [0.66, 0.34, 0.86], offset: [0, 0.5, 1.15], color: 0x8a6a3a, role: 'body' },
+    { size: [0.7, 0.08, 0.9], offset: [0, 0.69, 1.15], color: 0x5f4826, role: 'body' },
+    { size: [0.5, 0.3, 0.6], offset: [0, 0.81, 1.15], color: 0xb99a5e, role: 'body' },
+    { size: [0.74, 0.28, 0.28], offset: [0, 0.22, 1.15], color: 0x1c2023, role: 'body' },
+  ],
 };
 
 export function modelFor(kind: MobKind): ModelPart[] {

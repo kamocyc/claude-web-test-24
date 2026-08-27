@@ -362,6 +362,39 @@ tile('dirt_path_top', (ctx, rng) => {
   rect(ctx, 0, TILE - 1, TILE, 1, shade(DIRT, -20));
 });
 
+// Rail is drawn as a crossing in both axes, because the road index it joins runs up,
+// down, left and right: a single pair of rails would have to pick one and be wrong
+// about it wherever the line turns.
+const RAIL_STEEL: Color = [176, 180, 188];
+const RAIL_TIE: Color = [96, 72, 46];
+
+tile('rail_top', (ctx, rng) => {
+  drawings.get('gravel')!(ctx, rng);
+  // Sleepers first, both ways, and thin: at two pixels they cover half the tile and the
+  // block reads as a boardwalk with the track lost somewhere in it.
+  for (let i = 2; i < TILE; i += 4) {
+    rect(ctx, i, 0, 1, TILE, shade(RAIL_TIE, (rng() - 0.5) * 20));
+    rect(ctx, 0, i, TILE, 1, shade(RAIL_TIE, (rng() - 0.5) * 20));
+  }
+  // Then the steel over the top of them, wide enough and bright enough to be what the
+  // eye lands on.
+  for (const at of [3, TILE - 5]) {
+    rect(ctx, at, 0, 2, TILE, RAIL_STEEL);
+    rect(ctx, 0, at, TILE, 2, RAIL_STEEL);
+    rect(ctx, at, 0, 1, TILE, shade(RAIL_STEEL, 34));
+    rect(ctx, 0, at, TILE, 1, shade(RAIL_STEEL, 34));
+  }
+});
+
+tile('rail_side', (ctx, rng) => {
+  drawings.get('gravel')!(ctx, rng);
+  speckle(ctx, rng, shade(STONE, -30), 12);
+  // The ballast fills the block; only the sleeper ends and one rail head show.
+  rect(ctx, 0, 2, TILE, 2, shade(RAIL_TIE, -10));
+  rect(ctx, 0, 0, TILE, 2, RAIL_STEEL);
+  rect(ctx, 0, 0, TILE, 1, shade(RAIL_STEEL, 26));
+});
+
 tile('cactus_top', (ctx, rng) => {
   grain(ctx, rng, [70, 132, 62], 12);
   blob(ctx, rng, 8, 8, 4, [92, 160, 78]);

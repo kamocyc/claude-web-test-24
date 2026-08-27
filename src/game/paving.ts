@@ -10,7 +10,7 @@
  *  a two-method interface, which is what lets a road be tested without a renderer. */
 
 import { Block, blockDef, type BlockId } from '../world/blocks';
-import { HEADROOM, MAX_STEP, ROAD_BLOCKS } from './roads';
+import { HEADROOM, MAX_STEP, ROAD_BLOCKS, ROAD_SPEED } from './roads';
 
 /** Ground a shovel treads into a path. Gravel is in the list because a natural bank of
  *  it is not a road until somebody records it as one; bare stone is not, because a road
@@ -38,6 +38,25 @@ export const CLEARABLE: ReadonlySet<BlockId> = new Set<BlockId>([
  *  index will accept as continuous. Walking off a two block drop lays nothing now, which
  *  is honest: that is a cutting to dig, and `runRoad` is the tool that digs it. */
 export const TREAD_REACH = MAX_STEP;
+
+/** What a laying tool puts down, how wide, and what it costs.
+ *
+ *  A shovel treads dirt: free, and three columns across, because dirt costs nothing and a
+ *  wide road is what buys a cart. Rails come out of the player's pack one at a time and
+ *  go down single file, because a train needs one column and every one of them is iron.
+ *  Keeping the three apart in one record is what stops the second material from becoming
+ *  a second copy of the sweep. */
+export interface PaveMaterial {
+  block: BlockId;
+  /** Columns across a sweep lays. */
+  width: 1 | 3;
+  /** Takes one block out of the player's pile and says whether there was one. Null when
+   *  the material is free, which is the shovel and every test that does not care. */
+  supply: { take(): boolean } | null;
+}
+
+/** What the shovel lays, and the default everywhere a material is not named. */
+export const TREAD_DIRT: PaveMaterial = { block: Block.DIRT_PATH, width: 3, supply: null };
 
 export interface PaveTarget {
   getBlock(x: number, y: number, z: number): BlockId;
@@ -72,18 +91,28 @@ export function treadColumn(
   x: number,
   z: number,
   aroundY: number,
+  material: PaveMaterial = TREAD_DIRT,
 ): number | null {
   for (let y = aroundY + TREAD_REACH; y >= aroundY - TREAD_REACH; y--) {
     const id = target.getBlock(x, y, z);
     if (id === Block.AIR) continue;
     // Tall grass and flowers are not the ground; keep looking underneath them.
     if (!blockDef(id).solid) continue;
-    // A road somebody already laid is left exactly as it is. Treading a paved street back
-    // into dirt would undo the work rather than continue it.
-    if (ROAD_BLOCKS.has(id) && target.roadLevel(x, z) === y) return y;
+    // A road somebody already laid is only ever improved. Treading a paved street back
+    // into dirt would undo the work rather than continue it, so a material is written
+    // over an existing road when it is the faster of the two and never otherwise — which
+    // is what lets rails be laid along a road that is already there, and what stops a
+    // shovel from scraping them off again on the way back.
+    if (ROAD_BLOCKS.has(id) && target.roadLevel(x, z) === y) {
+      if ((ROAD_SPEED.get(material.block) ?? 0) <= (ROAD_SPEED.get(id) ?? 0)) return y;
+      if (material.supply && !material.supply.take()) return null;
+      target.setBlock(x, y, z, material.block);
+      return y;
+    }
     if (!PAVABLE.has(id)) return null;
     if (!clearAbove(target, x, y, z)) return null;
-    target.setBlock(x, y, z, Block.DIRT_PATH);
+    if (material.supply && !material.supply.take()) return null;
+    target.setBlock(x, y, z, material.block);
     return y;
   }
   return null;
@@ -98,15 +127,17 @@ export function treadBrush(
   x: number,
   z: number,
   aroundY: number,
+  material: PaveMaterial = TREAD_DIRT,
 ): { laid: number; level: number } {
   let laid = 0;
-  const middle = treadColumn(target, x, z, aroundY);
+  const middle = treadColumn(target, x, z, aroundY, material);
   if (middle !== null) laid++;
   const level = middle ?? aroundY;
+  if (material.width === 1) return { laid, level };
   for (let dz = -1; dz <= 1; dz++) {
     for (let dx = -1; dx <= 1; dx++) {
       if (dx === 0 && dz === 0) continue;
-      if (treadColumn(target, x + dx, z + dz, level) !== null) laid++;
+      if (treadColumn(target, x + dx, z + dz, level, material) !== null) laid++;
     }
   }
   return { laid, level };
@@ -120,6 +151,7 @@ export function treadLine(
   from: { x: number; z: number },
   to: { x: number; z: number },
   startY: number,
+  material: PaveMaterial = TREAD_DIRT,
 ): { laid: number; level: number } {
   const steps = Math.max(Math.abs(to.x - from.x), Math.abs(to.z - from.z));
   let laid = 0;
@@ -127,7 +159,7 @@ export function treadLine(
   for (let i = 0; i <= steps; i++) {
     const x = steps === 0 ? from.x : Math.round(from.x + ((to.x - from.x) * i) / steps);
     const z = steps === 0 ? from.z : Math.round(from.z + ((to.z - from.z) * i) / steps);
-    const brush = treadBrush(target, x, z, level);
+    const brush = treadBrush(target, x, z, level, material);
     laid += brush.laid;
     level = brush.level;
   }

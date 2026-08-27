@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { KEYS, helpView } from '../ui/help';
 import { MILESTONES, QUEST_STEPS } from '../game/questline';
-import { BLOCKS_PER_PORTER, CART_LOAD, MAX_PORTERS } from '../game/transport';
+import { BLOCKS_PER_PORTER, CART_LOAD, MAX_PORTERS, TRAIN_LOAD } from '../game/transport';
 import { MAX_STOCK, PRODUCE_SECONDS, RANKS, STAGE_POINTS } from '../game/villages';
 import { HEADROOM, MAX_STEP, ROAD_SPEED } from '../game/roads';
 
@@ -54,6 +54,7 @@ describe('the 遊びかた screen', () => {
     expect(body).toContain(`${HEADROOM} マス空いている`);
     expect(body).toContain(`${MAX_STEP} マス以内`);
     expect(body).toContain(`${CART_LOAD} 倍`);
+    expect(body).toContain(`${TRAIN_LOAD} 倍`);
     for (const rank of RANKS) expect(body).toContain(rank);
     for (const points of STAGE_POINTS) expect(body).toContain(`発展度 ${points}`);
     for (const speed of new Set(ROAD_SPEED.values())) expect(body).toContain(`${speed.toFixed(2)} 倍`);
