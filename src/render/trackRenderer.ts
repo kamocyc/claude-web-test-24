@@ -20,7 +20,15 @@
  *  carry along it; every other mob and every dropped item falls straight through. */
 
 import * as THREE from 'three';
-import { GAUGE, TRACK_WIDTH, type TrackSample } from '../game/tracks';
+import {
+  GAUGE,
+  PLATFORM_GAP,
+  PLATFORM_LONG,
+  PLATFORM_TOP,
+  PLATFORM_WIDE,
+  TRACK_WIDTH,
+  type TrackSample,
+} from '../game/tracks';
 
 /** Rail head, in blocks. */
 const RAIL_WIDTH = 0.16;
@@ -42,17 +50,13 @@ const CAP_LONG = 0.5;
  *  the crates that are waiting to be loaded standing on it.
  *
  *  Down one side rather than both: a single platform is what a light railway has, and two
- *  would hide the track between them from anybody standing beside the line. The length is
- *  a train's — a locomotive and four wagons is about six blocks — so a train that stops
- *  here looks like it fits. */
-const PLATFORM_LONG = 7;
-const PLATFORM_WIDE = 2.4;
-const PLATFORM_THICK = 0.5;
-/** Gap between the edge of the track and the edge of the platform. Enough that the
- *  platform is not a thing the train drives through, little enough to read as loading. */
-const PLATFORM_GAP = 0.15;
-const ROOF_LONG = 4.2;
-const ROOF_HEIGHT = 2.5;
+ *  would hide the track between them from anybody standing beside the line. How long, how
+ *  wide, how far out and how high all come from `tracks.ts`, because the player stands on
+ *  this and a platform drawn anywhere other than where their feet are held up would be
+ *  the worst kind of wrong. */
+const PLATFORM_THICK = 0.9;
+const ROOF_LONG = 4.4;
+const ROOF_HEIGHT = 2.6;
 const POST_SIZE = 0.16;
 const CRATE = 0.52;
 /** Crates on the platform, at most. Past this the pile stops growing and starts meaning
@@ -377,10 +381,11 @@ function emitStation(positions: number[], colours: number[], station: TrackStati
   const across = TRACK_WIDTH / 2 + PLATFORM_GAP + PLATFORM_WIDE / 2;
   const centre = {
     x: station.x + s[0] * across,
-    y: station.y,
+    y: station.y + PLATFORM_TOP,
     z: station.z + s[2] * across,
   };
-  // The deck is the top, so the slab hangs below the line rather than standing on it.
+  // The surface is the top, so the slab hangs below it rather than standing on it — and
+  // the top is a carriage floor's height, which is the whole point of a platform.
   box(
     positions, colours, PLATFORM_COLOUR, centre, f, s, u,
     PLATFORM_LONG / 2, PLATFORM_WIDE / 2, PLATFORM_THICK / 2, -PLATFORM_THICK / 2,
@@ -389,7 +394,7 @@ function emitStation(positions: number[], colours: number[], station: TrackStati
   // at rather than as a slab somebody left there.
   const lip = {
     x: station.x + s[0] * (TRACK_WIDTH / 2 + PLATFORM_GAP + 0.15),
-    y: station.y,
+    y: station.y + PLATFORM_TOP,
     z: station.z + s[2] * (TRACK_WIDTH / 2 + PLATFORM_GAP + 0.15),
   };
   box(positions, colours, PLATFORM_EDGE, lip, f, s, u, PLATFORM_LONG / 2, 0.15, 0.04, -0.04);

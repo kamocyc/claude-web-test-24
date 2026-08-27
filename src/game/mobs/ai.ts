@@ -3,6 +3,7 @@ import type { Rng } from '../../core/rng';
 import { WATER_FULL } from '../../world/water';
 import type { World } from '../../world/world';
 import { type Damageable, applyDamage } from '../combat';
+import type { CarPose, TrailPoint } from '../consist';
 import type { DayCycle } from '../daycycle';
 import type { Player } from '../player';
 import type { Trade } from '../trading';
@@ -96,6 +97,13 @@ export class Mob implements Damageable {
    *  is as long as the load actually is — and a locomotive on its own is a line that is
    *  only paying one way. */
   cars = 0;
+  /** Where the head of the train has been, newest first, and where each car behind it
+   *  therefore is. Both are filled by whoever drives the mob — see `Game.updateTrains` —
+   *  because a car is a picture of a shipment exactly as the engine is, and the mob itself
+   *  has no more business knowing what it is pulling than it has knowing what it is
+   *  carrying. Empty for everything that is not a train. */
+  trail: TrailPoint[] = [];
+  consist: CarPose[] = [];
   /** Animation phase, advanced by how far the mob has walked. */
   walkPhase = 0;
 

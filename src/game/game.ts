@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { boxIntersectsWorld } from '../core/aabb';
+import { boxIntersectsWorld, type StandingSurface } from '../core/aabb';
 import { mulberry32 } from '../core/rng';
 import { ChunkRenderer } from '../render/chunkRenderer';
 import { Effects } from '../render/effects';
@@ -20,6 +20,20 @@ import { createChunkMaterials, type ChunkMaterials } from '../render/materials';
 import { Sky } from '../render/sky';
 import { Rain } from '../render/rain';
 import { buildAtlas, type Atlas } from '../render/textures';
+import {
+  RideDecks,
+  TRAIL_STEP,
+  consistLength,
+  consistOf,
+  decksOf,
+  offDeck,
+  onDeck,
+  posesAlong,
+  pushTrail,
+  seedTrail,
+  type CarDeck,
+  type CarPose,
+} from './consist';
 import { Block, type BlockId, blockDef, isFarmland, isReplaceable, supportsPlant } from '../world/blocks';
 import {
   CHUNK_HEIGHT,
@@ -42,6 +56,7 @@ import { World } from '../world/world';
 import { ChunkWorkerPool } from '../workers/pool';
 import type { ChunkReadyMessage } from '../workers/chunkMessages';
 import { Hud, type NavigationInfo } from '../ui/hud';
+import { WorldMap } from '../ui/worldMap';
 import type { CompassMarker } from '../ui/compass';
 import type { Input } from '../ui/input';
 import type { Menus } from '../ui/menus';
@@ -61,7 +76,7 @@ import { bestToolSlot, blockDrops, heldTool, miningTime } from './mining';
 import { Mob } from './mobs/ai';
 import { MobManager, type MobUpdateContext } from './mobs/spawner';
 import { HAULING_KINDS, type MobKind } from './mobs/types';
-import { NO_INPUT, Player, type PlayerInput } from './player';
+import { NO_INPUT, PLAYER_HEIGHT, PLAYER_WIDTH, Player, type PlayerInput } from './player';
 import {
   type SaveData,
   SAVE_VERSION,
@@ -334,6 +349,25 @@ export class Game {
   private readonly trackRenderer = new TrackRenderer();
   /** The free-form railway. Not readonly: a save replaces it wholesale. */
   private trackNet = new TrackNetwork();
+  /** The tops of the trains that are currently drawn, rebuilt every world step. */
+  private readonly rideDecks = new RideDecks();
+  /** The deck the player is standing on and whereabouts on it, in the car's own frame.
+   *  Null when they are on solid ground. */
+  private riding: { id: string; along: number; across: number } | null = null;
+  /** Frames a carriage would have carried the player into a wall and did not. */
+  private rideRefused = 0;
+  /** Everything under the player's feet that the block grid does not know about: the
+   *  railway's decks and platforms, and the carriages running along them. Held as one
+   *  object rather than assigned per frame because the player keeps a reference to it, and
+   *  because which of the two answers is the higher one is nobody else's business. */
+  private readonly playerSurface: StandingSurface = {
+    surfaceTopAt: (x, z, low, high) => {
+      const rails = this.trackNet.surfaceTopAt(x, z, low, high);
+      const car = this.rideDecks.surfaceTopAt(x, z, low, high);
+      if (rails === null) return car;
+      return car === null ? rails : Math.max(rails, car);
+    },
+  };
   /** The railway as the map draws it, kept until the track or the player moves far
    *  enough to matter. Sampling every curve in range is the same work the world renderer
    *  caches, and the map asks for it on every frame. */
@@ -368,6 +402,8 @@ export class Game {
   private readonly mobs: MobManager;
   private readonly drops: DropManager;
   private readonly hud: Hud;
+  /** The big map, on M. Same map as the corner one, at any size the player asks for. */
+  private readonly worldMap: WorldMap;
   private readonly screens: ScreenManager;
   /** Debug jump box, opened with G. */
   private readonly warpDialog = new WarpDialog();
@@ -493,6 +529,7 @@ export class Game {
       },
     );
     this.hud = new Hud(this.atlas);
+    this.worldMap = new WorldMap(this.atlas, () => this.toggleWorldMap());
     this.screens = new ScreenManager(
       this.player,
       this.atlas,
@@ -500,7 +537,7 @@ export class Game {
       (recipe, made) => this.hud.toast(`${itemLabel(recipe.result.id)} を ${made * recipe.result.count} 個作った`),
     );
 
-    document.body.append(this.hud.root, this.screens.layer, this.warpDialog.root);
+    document.body.append(this.hud.root, this.worldMap.root, this.screens.layer, this.warpDialog.root);
     this.warpDialog.bind(
       (target) => this.warpTo(target),
       () => this.closeWarpDialog(),
@@ -541,6 +578,7 @@ export class Game {
     this.chunkRenderer.dispose();
     this.trackRenderer.dispose();
     this.hud.root.remove();
+    this.worldMap.root.remove();
     this.screens.close();
     this.screens.layer.remove();
     this.warpDialog.root.remove();
@@ -615,14 +653,19 @@ export class Game {
 
     this.player.autoStep = this.options.settings.autoStep;
     // Assigned every frame rather than once, because loading a save replaces the network
-    // wholesale. The only other thing given it is the train, in `spawnPorter`: it has
-    // freight to carry along the deck. A porter or a cart has no reason to be up on a
-    // viaduct and no way down off one, and a dropped item has neither.
-    this.player.surface = this.trackNet;
+    // wholesale. The only other thing given a surface is the train, in `spawnPorter`: it
+    // has freight to carry along the deck. A porter or a cart has no reason to be up on a
+    // viaduct and no way down off one, and a dropped item has neither — and none of them
+    // has any business standing on a moving carriage, which is why they get the rails and
+    // the player gets the rails and the trains on them.
+    this.player.surface = this.playerSurface;
     this.applyDifficulty();
     if (this.settlePending && this.settlePlayerOnGround()) this.settlePending = false;
     this.water.setCenter(this.player.x, this.player.z);
     this.runWorld(dt);
+    // The trains have moved; anybody standing on one goes with it, before their own move
+    // is worked out from where they now are.
+    this.carryRider();
     this.materials.setSun(Math.max(0.06, this.day.sunLight));
 
     // Only mouse look needs pointer lock; keyboard and clicks keep working without it
@@ -638,6 +681,7 @@ export class Game {
     );
     const events = this.player.update(dt, this.world, input, current);
     this.unstick();
+    this.recordRide();
     if (events.tookDamage > 0) this.hud.flashDamage();
 
     if (!screenOpen) this.updateInteraction(dt);
@@ -652,7 +696,9 @@ export class Game {
     this.effects.update(dt);
     this.entityRenderer.sync(this.mobs.mobs, this.drops.drops, this.mobs.arrows, performance.now() / 1000);
     this.screens.refresh();
-    this.hud.update(dt, this.player, this.debugInfo(), this.navigationInfo());
+    const navigation = this.navigationInfo();
+    this.hud.update(dt, this.player, this.debugInfo(), navigation);
+    this.worldMap.update(this.world, this.player.x, this.player.z, this.player.yaw, navigation.overlay);
 
     this.villageSearchTimer -= dt;
     if (this.villageSearchTimer <= 0) {
@@ -708,6 +754,10 @@ export class Game {
     this.updateTicks(dt);
     this.updateFurnaces(dt);
     this.updateVillages(dt);
+    // Last, so the cars are placed from where the engines finished this step rather than
+    // from where they started it. At more than single speed the world takes several steps
+    // a frame, and a trail that only saw the last of them would be a train that jumped.
+    this.updateTrains();
   }
 
   /** Sets the world's clock speed, and says so. */
@@ -775,6 +825,12 @@ export class Game {
   /** Places worth walking back to, refreshed at most once a second because finding
    *  the nearest village walks the village grid. */
   private navigationInfo(): NavigationInfo {
+    // How far out the overlays have to reach. The corner map's own span while it is the
+    // only map up; the big one's while that is open, or a road two villages away would be
+    // missing from the very view somebody opened the map to see it in.
+    const mapReach = this.worldMap.isOpen
+      ? Math.max(MINIMAP_REACH, this.worldMap.reach)
+      : MINIMAP_REACH;
     const markers: CompassMarker[] = [{ kind: 'spawn', x: this.spawnPoint.x, z: this.spawnPoint.z }];
     if (this.deathPoint) markers.push({ kind: 'death', x: this.deathPoint.x, z: this.deathPoint.z });
     const found = this.villages.discovered();
@@ -811,13 +867,13 @@ export class Game {
       track: this.heldTrackTool() ? this.trackReadout : null,
       overlay: {
         markers,
-        // Only the roads that could be on screen: the index holds every column the player
-        // ever laid, and the map covers a couple of hundred blocks.
+        // Only the roads that could be on screen: the index holds every column the
+        // player ever laid, and even the big map at its widest is a fraction of that.
         roads: this.roads.columnsIn(
-          this.player.x - MINIMAP_REACH,
-          this.player.z - MINIMAP_REACH,
-          this.player.x + MINIMAP_REACH,
-          this.player.z + MINIMAP_REACH,
+          this.player.x - mapReach,
+          this.player.z - mapReach,
+          this.player.x + mapReach,
+          this.player.z + mapReach,
         ),
         rails: this.railOverlay(),
         gap:
@@ -971,7 +1027,8 @@ export class Game {
       if (!this.ready) return;
       switch (event.code) {
         case 'Escape':
-          if (this.screens.isOpen) this.closeScreen();
+          if (this.worldMap.isOpen) this.toggleWorldMap();
+          else if (this.screens.isOpen) this.closeScreen();
           else if (this.warpDialog.isOpen) this.closeWarpDialog();
           else this.togglePause();
           break;
@@ -992,6 +1049,19 @@ export class Game {
         case 'KeyH':
           if (this.player.isDead) break;
           this.openHelp();
+          break;
+        case 'KeyM':
+          if (this.paused || this.player.isDead) break;
+          if (this.screens.isOpen || this.warpDialog.isOpen) break;
+          this.toggleWorldMap();
+          break;
+        case 'Equal':
+        case 'NumpadAdd':
+          if (this.worldMap.isOpen) this.worldMap.zoom(-1);
+          break;
+        case 'Minus':
+        case 'NumpadSubtract':
+          if (this.worldMap.isOpen) this.worldMap.zoom(1);
           break;
         case 'F3':
           event.preventDefault();
@@ -2685,6 +2755,111 @@ export class Game {
     };
   }
 
+  /** Where every train's cars are, and what there is to stand on because of them.
+   *
+   *  The engine is the mob and nothing here moves it; the cars are placed behind it from
+   *  where it has been, and every flat top on the train goes into one index the player's
+   *  feet can ask a single question of. */
+  private updateTrains(): void {
+    const decks: CarDeck[] = [];
+    for (const mob of this.mobs.mobs) {
+      if (mob.kind !== 'train') continue;
+      const kinds = consistOf(mob.cars);
+      const keep = consistLength(kinds) + TRAIL_STEP * 2;
+      const head = { x: mob.x, y: mob.y, z: mob.z };
+      // A train that has only just been drawn has been nowhere, and there is no honest way
+      // to say which side of it the cars are on. So it waits: one breadcrumb's worth of
+      // movement tells it which way it is going, and then the whole trail is laid out
+      // straight behind it at once — which is what a train that has been running out of
+      // sight has in fact been doing. The alternative, guessing from the mob's yaw, is a
+      // train that reverses into the scenery whenever the guess is wrong.
+      if (mob.trail.length < 2) {
+        const from = mob.trail[0];
+        if (!from) {
+          mob.trail.push({ ...head });
+          continue;
+        }
+        if (Math.hypot(head.x - from.x, head.z - from.z) < TRAIL_STEP) continue;
+        mob.trail = seedTrail(head, head.x - from.x, head.z - from.z, keep);
+      } else {
+        pushTrail(mob.trail, head, keep);
+      }
+      const poses = posesAlong(mob.trail, kinds);
+      mob.consist = poses.slice(1);
+      // The engine takes its pose from the mob rather than from the trail: the mob is the
+      // shipment, and a head drawn a breadcrumb behind where the goods are would be a
+      // train arriving after its own cargo.
+      const engine: CarPose = { kind: 'loco', x: mob.x, y: mob.y, z: mob.z, yaw: mob.yaw };
+      const cars = [engine, ...mob.consist];
+      for (let i = 0; i < cars.length; i++) decks.push(...decksOf(`${mob.id}:${i}`, cars[i]));
+    }
+    this.rideDecks.update(decks);
+  }
+
+  /** Moves whoever is standing on a carriage along with it.
+   *
+   *  Done before the player's own move rather than after, so their walking is worked out
+   *  from where the train has already put them — step off a moving train and you carry on
+   *  from beside it, not from where it was when the frame began. The move is refused when
+   *  it would post them into a wall: a train passing a cutting must not push a passenger
+   *  into the rock, and the honest answer there is that they stay where they are and the
+   *  carriage leaves without them. */
+  private carryRider(): void {
+    const riding = this.riding;
+    if (riding === null) return;
+    const deck = this.rideDecks.byId(riding.id);
+    if (!deck) {
+      this.riding = null;
+      return;
+    }
+    const at = offDeck(deck, riding.along, riding.across);
+    // Vertically as well as horizontally. The player's own settle would find the deck
+    // again on a level run, but only within a third of a block: a train doing seven blocks
+    // a second up a one-in-five bank lifts its floor further than that in a single frame,
+    // and further still on a frame the browser dropped or at sixteen times speed. A rider
+    // is pinned to the carriage they are standing in, not merely put down near it.
+    const lift = deck.top - this.player.y;
+    // Except for somebody who has just jumped: pinning them back down would swallow the
+    // jump, and jumping is how anybody gets off a train.
+    const carried = {
+      x: at.x,
+      y: this.player.vy > 0 ? this.player.y : deck.top,
+      z: at.z,
+      width: PLAYER_WIDTH,
+      height: PLAYER_HEIGHT,
+    };
+    // A carriage passing a cutting must not post its passenger into the rock. It leaves
+    // without them instead, which is the honest thing for it to do and visibly a thing
+    // that happened rather than a thing that glitched.
+    if (Math.abs(lift) > RIDE_LOST || boxIntersectsWorld(this.world, carried)) {
+      this.rideRefused++;
+      this.riding = null;
+      return;
+    }
+    this.player.x = carried.x;
+    this.player.z = carried.z;
+    if (carried.y !== this.player.y) {
+      this.player.y = carried.y;
+      this.player.vy = 0;
+      this.player.onGround = true;
+    }
+  }
+
+  /** Remembers where on the carriage the player is standing, once they have moved.
+   *
+   *  Two numbers in the car's own frame rather than a world position, because a train
+   *  turns as well as travels: a rider held on by translation alone slides off the outside
+   *  of every bend, and one held on by their place on the floor walks round the curve with
+   *  the carriage exactly as they would with a room. */
+  private recordRide(): void {
+    const deck = this.player.onGround
+      ? this.rideDecks.deckAt(this.player.x, this.player.z, this.player.y - 0.05, this.player.y + 0.05)
+      : null;
+    this.riding = deck
+      ? { id: deck.id, ...onDeck(deck, this.player.x, this.player.z) }
+      : null;
+  }
+
   private spawnPorter(point: RoadPoint, vehicle: Vehicle, cargo: number): number | null {
     if (!this.world.hasChunk(toChunkCoord(point.x), toChunkCoord(point.z))) return null;
     const middle = centreOf(vehicle);
@@ -2924,7 +3099,23 @@ export class Game {
 
   /** Anything that takes the mouse away from the world: a container, or the warp box. */
   private get uiOpen(): boolean {
-    return this.screens.isOpen || this.warpDialog.isOpen;
+    return this.screens.isOpen || this.warpDialog.isOpen || this.worldMap.isOpen;
+  }
+
+  /** Opens or closes the big map. It takes the pointer the way any other screen does:
+   *  reading a map and steering are not things anybody does at the same time. */
+  private toggleWorldMap(): void {
+    const open = !this.worldMap.isOpen;
+    this.worldMap.show(open);
+    if (open) {
+      this.screens.close();
+      this.warpDialog.hide();
+      this.options.input.releaseLock();
+      document.body.classList.add('screen-open');
+    } else {
+      document.body.classList.remove('screen-open');
+    }
+    this.hud.setClickPrompt(!open && this.ready && !this.paused && !this.player.isDead);
   }
 
   private openScreen(open: () => void): void {
@@ -3673,6 +3864,40 @@ export class Game {
         if (removed) this.transport.invalidate();
         return removed;
       },
+      /** Every train currently drawn, and what it is made of. The engine is the mob; the
+       *  cars behind it are placed from where it has been, so this is also how to see
+       *  whether a long train is following the rails round a bend or cutting across it. */
+      trains: () => this.mobs.mobs
+        .filter((mob) => mob.kind === 'train')
+        .map((mob) => ({
+          id: mob.id,
+          load: mob.cars,
+          x: Math.round(mob.x), y: Math.round(mob.y), z: Math.round(mob.z),
+          cars: mob.consist.map((car) => ({
+            kind: car.kind,
+            x: Math.round(car.x * 10) / 10,
+            y: Math.round(car.y * 10) / 10,
+            z: Math.round(car.z * 10) / 10,
+          })),
+        })),
+      /** What the player is standing on that the block grid knows nothing about: a
+       *  carriage floor, a wagon load, a cab roof — or nothing, on solid ground. `refused`
+       *  counts the frames a carriage tried to carry them into a wall and left without
+       *  them, which is the one way a ride ends that looks like a bug from outside. */
+      riding: () => {
+        const deck = this.rideDecks.deckAt(
+          this.player.x, this.player.z, this.player.y - 0.05, this.player.y + 0.05,
+        );
+        return {
+          on: this.riding?.id ?? null,
+          along: this.riding ? Math.round(this.riding.along * 100) / 100 : null,
+          across: this.riding ? Math.round(this.riding.across * 100) / 100 : null,
+          deck: deck ? { id: deck.id, top: Math.round(deck.top * 100) / 100 } : null,
+          refused: this.rideRefused,
+        };
+      },
+      /** Flat tops on moving vehicles anywhere near the player right now. */
+      rideDecks: (): number => this.rideDecks.count,
       /** The height of the deck over a point, or null where there is none to stand on. */
       trackDeckAt: (x: number, z: number, low = -64, high = 320): number | null =>
         this.trackNet.surfaceTopAt(x, z, low, high),
@@ -3998,6 +4223,11 @@ function trackFaultText(fault: TrackFault, value: number, turn: 'left' | 'right'
       return 'この向きではつなげない';
   }
 }
+
+/** How far a carriage may move under its passenger in one frame and still be carrying
+ *  them. Generous, because the frame this has to survive is the one the browser dropped;
+ *  short of a whole storey, because past that the honest answer is that they fell off. */
+const RIDE_LOST = 4;
 
 /** Anything under half a percent is level, and saying "up 0%" would be worse than
  *  saying nothing. */

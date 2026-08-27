@@ -1048,6 +1048,13 @@ console.log('platforms drawn:', JSON.stringify({
 if (!platform || platform.stations < 1) {
   throw new Error('a railway with two stations on it drew no platform');
 }
+// Where the player was standing before the railway sections start walking them about, so
+// that what comes after them begins where it always did.
+const beforeBoarding = await evaluate(() => {
+  const p = window.voxelcraft.game.player;
+  return { x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch };
+});
+
 // Stand where the goods are and watch what is carrying them. A railed trip changes hands
 // twice, so both a walker and a train should turn up over one trip.
 const seen = new Set();
@@ -1063,6 +1070,96 @@ for (let i = 0; i < 40 && seen.size < 2; i++) {
 }
 console.log('what carried the freight:', JSON.stringify([...seen]));
 await shot('07y5-station');
+
+// And the train is something you can get on. The coach is always there — it is the one
+// car that carries nothing — and its floor is the same height as the platform, so the way
+// in is a step across rather than a climb.
+const aboard = await evaluate(() => {
+  const train = window.voxelcraft.trains()[0];
+  const coach = train && train.cars.find((car) => car.kind === 'coach');
+  if (!coach) return null;
+  const game = window.voxelcraft.game;
+  game.player.teleportTo(coach.x, coach.y + 1, coach.z);
+  game.player.vy = 0;
+  return { train: train.id, coach };
+});
+if (!aboard) {
+  console.log('nothing to board: NO TRAIN DRAWN');
+} else {
+  const rode = [];
+  let pictured = false;
+  for (let i = 0; i < 40; i++) {
+    await frame();
+    rode.push(await evaluate(() => {
+      const game = window.voxelcraft.game;
+      return {
+        on: window.voxelcraft.riding().on,
+        x: Math.round(game.player.x),
+        z: Math.round(game.player.z),
+      };
+    }));
+    // While they are actually on it, not after the train has gone: a picture of the
+    // ground beside a railway is not a picture of riding a train.
+    if (!pictured && rode.filter((one) => one.on !== null).length >= 4) {
+      pictured = true;
+      await shot('07y6-aboard');
+    }
+  }
+  const carried = rode.filter((one) => one.on !== null);
+  const first = carried[0];
+  const last = carried[carried.length - 1];
+  console.log('rode the train:', JSON.stringify({
+    frames: `${carried.length}/${rode.length}`,
+    from: first ? `${first.x},${first.z}` : null,
+    to: last ? `${last.x},${last.z}` : null,
+  }));
+  // Standing in a carriage that then leaves without you is the failure this is here for.
+  if (carried.length < 8) {
+    throw new Error(`the train left without its passenger after ${carried.length} frames`);
+  }
+  const travelled = first && last ? Math.hypot(last.x - first.x, last.z - first.z) : 0;
+  if (travelled < 5) {
+    throw new Error(`a passenger on a moving train went ${Math.round(travelled)} blocks`);
+  }
+}
+
+// --- the map, big ------------------------------------------------------------
+// The corner map covers 224 blocks, which is less than half the distance between two
+// villages, so everything the network is about happens off the edge of it.
+await page.keyboard.press('KeyM');
+await until(() => document.querySelector('.worldmap')?.style.display !== 'none');
+await frame();
+const mapped = await evaluate(() => document.querySelector('.worldmap-readout')?.textContent ?? '');
+console.log('map opened:', mapped);
+if (!/1 ドット 2 マス/.test(mapped)) throw new Error(`the map opened at the wrong zoom: ${mapped}`);
+await shot('07y7-map');
+// Out to the coarsest zoom and back to the finest, so both ends of the range are known to
+// work rather than only the one it opens at.
+for (let i = 0; i < 6; i++) await page.keyboard.press('Minus');
+await frame();
+const widest = await evaluate(() => document.querySelector('.worldmap-readout')?.textContent ?? '');
+console.log('zoomed out:', widest);
+if (!/1 ドット 16 マス/.test(widest)) throw new Error(`the map would not zoom out: ${widest}`);
+await shot('07y8-map-wide');
+for (let i = 0; i < 6; i++) await page.keyboard.press('Equal');
+await frame();
+const closest = await evaluate(() => document.querySelector('.worldmap-readout')?.textContent ?? '');
+if (!/1 ドット 1 マス/.test(closest)) throw new Error(`the map would not zoom in: ${closest}`);
+console.log('zoomed in:', closest);
+await page.keyboard.press('KeyM');
+await until(() => document.querySelector('.worldmap')?.style.display === 'none');
+console.log('map closed');
+// Exactly where they were, not merely near it. What follows lays track by mouse from
+// wherever the player happens to be standing, and its shape is the ground's as much as the
+// player's — putting them back a block and a half off would be changing that test.
+await evaluate((at) => {
+  const p = window.voxelcraft.game.player;
+  p.flying = false;
+  p.teleportTo(at.x, at.y, at.z);
+  p.yaw = at.yaw;
+  p.pitch = at.pitch;
+}, beforeBoarding);
+await settled(60000);
 
 /** One right click, then two frames before looking.
  *
@@ -1212,7 +1309,18 @@ if (ghost === 'none') throw new Error('a start is down and nothing is being prev
 const railsBefore = await evaluate(() => window.voxelcraft.game.player.inventory.count('rail'));
 let finished = await rightClick();
 for (let attempt = 1; attempt < 5 && finished.edges === 0; attempt++) finished = await rightClick();
-if (finished.edges === 0) throw new Error(`the second right click did not lay the curve: ${JSON.stringify(finished)}`);
+if (finished.edges === 0) {
+  const why = await evaluate(() => ({
+    tool: window.voxelcraft.trackTool(),
+    player: {
+      x: window.voxelcraft.game.player.x, y: window.voxelcraft.game.player.y,
+      z: window.voxelcraft.game.player.z, yaw: window.voxelcraft.game.player.yaw,
+      pitch: window.voxelcraft.game.player.pitch,
+    },
+    rails: window.voxelcraft.game.player.inventory.count('rail'),
+  }));
+  throw new Error(`the second right click did not lay the curve: ${JSON.stringify(finished)} ${JSON.stringify(why)}`);
+}
 console.log('laid by hand:', JSON.stringify(await evaluate((before) => ({
   tracks: window.voxelcraft.tracks(),
   railsSpent: before - window.voxelcraft.game.player.inventory.count('rail'),

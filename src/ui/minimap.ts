@@ -6,12 +6,26 @@ import type { Atlas } from '../render/textures';
 import { TILE } from '../render/textures';
 import { el } from './dom';
 
-/** Pixels across the map. */
+/** Pixels across the corner map. */
 const SIZE = 112;
-/** Blocks per pixel: the map covers SIZE * SCALE blocks in each direction. */
+/** Blocks per pixel: the map covers `size * scale` blocks in each direction. */
 const SCALE = 2;
-/** Rows redrawn per frame. A full pass takes SIZE / ROWS_PER_FRAME frames. */
-const ROWS_PER_FRAME = 28;
+/** Pixels of terrain repainted per frame: the corner map's own rate, four frames to a
+ *  full pass. A budget rather than a fraction, so a bigger map costs no more per frame and
+ *  simply takes longer to come round. */
+const PIXELS_PER_FRAME = SIZE * 28;
+
+/** How far the big map may be zoomed, in blocks per pixel. One block to the pixel is a
+ *  village you can count the houses of; sixteen is most of a day's walk on screen. */
+export const ZOOM_STEPS = [1, 2, 4, 8, 16] as const;
+
+export interface MinimapOptions {
+  /** Pixels across. */
+  size?: number;
+  /** Blocks per pixel. */
+  scale?: number;
+  className?: string;
+}
 
 /** Places and roads drawn on top of the terrain. */
 export interface MinimapOverlay {
@@ -57,30 +71,63 @@ function roadColour(block: number | undefined): string {
 /** Overhead map of the loaded world around the player. Redrawn a few rows at a time
  *  so a full refresh costs a fraction of a frame. */
 export class Minimap {
-  readonly root = el('div', 'minimap');
-  private readonly canvas = el('canvas', 'minimap-canvas') as HTMLCanvasElement;
+  readonly root: HTMLElement;
+  private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
-  private readonly image: ImageData;
+  private image: ImageData;
   /** Average colour of a block's top face, read out of the texture atlas once. */
   private readonly colors = new Map<number, [number, number, number]>();
   private atlasPixels: ImageData | null = null;
   private row = 0;
   private originX = 0;
   private originZ = 0;
+  /** Set when the whole map has to be painted again on the next pass rather than a slice
+   *  at a time: it has been opened, or the zoom has changed under it. */
+  private repaint = true;
+  private readonly size: number;
+  private scale: number;
 
-  constructor(private readonly atlas: Atlas) {
-    this.canvas.width = SIZE;
-    this.canvas.height = SIZE;
+  constructor(private readonly atlas: Atlas, options: MinimapOptions = {}) {
+    this.size = options.size ?? SIZE;
+    this.scale = options.scale ?? SCALE;
+    this.root = el('div', options.className ?? 'minimap');
+    this.canvas = el('canvas', 'minimap-canvas') as HTMLCanvasElement;
+    this.canvas.width = this.size;
+    this.canvas.height = this.size;
     const ctx = this.canvas.getContext('2d');
     if (!ctx) throw new Error('2D canvas is not available');
     this.ctx = ctx;
     this.ctx.imageSmoothingEnabled = false;
-    this.image = ctx.createImageData(SIZE, SIZE);
+    this.image = ctx.createImageData(this.size, this.size);
     this.root.append(this.canvas, el('div', 'minimap-north', 'N'));
   }
 
   setVisible(visible: boolean): void {
     this.root.style.display = visible ? '' : 'none';
+  }
+
+  /** Blocks per pixel, and the span that covers. */
+  get zoom(): number {
+    return this.scale;
+  }
+
+  get span(): number {
+    return this.size * this.scale;
+  }
+
+  /** Changes how much world fits on the map. The pass in progress is thrown away rather
+   *  than finished: half a map at one zoom and half at another is not a map. */
+  setZoom(scale: number): void {
+    if (scale === this.scale) return;
+    this.scale = scale;
+    this.redrawNow();
+  }
+
+  /** Paints the lot on the next update instead of a slice of it. */
+  redrawNow(): void {
+    this.row = 0;
+    this.repaint = true;
+    this.image = this.ctx.createImageData(this.size, this.size);
   }
 
   /** Reads the atlas back once so map colours always match the textures. */
@@ -127,18 +174,26 @@ export class Minimap {
     overlay: MinimapOverlay = EMPTY_OVERLAY,
   ): void {
     if (this.row === 0) {
-      this.originX = Math.floor(playerX) - (SIZE / 2) * SCALE;
-      this.originZ = Math.floor(playerZ) - (SIZE / 2) * SCALE;
+      this.originX = Math.floor(playerX) - (this.size / 2) * this.scale;
+      this.originZ = Math.floor(playerZ) - (this.size / 2) * this.scale;
     }
-    const end = Math.min(SIZE, this.row + ROWS_PER_FRAME);
+    // Everything at once when the view has just changed, and a slice a frame after that.
+    // A map somebody has just opened has to be a map, and one full pass is a single frame
+    // of work spent where a modal has already interrupted them; keeping up with a walking
+    // player afterwards is worth a quarter of it.
+    const rows = this.repaint
+      ? this.size
+      : Math.max(1, Math.round(PIXELS_PER_FRAME / this.size));
+    this.repaint = false;
+    const end = Math.min(this.size, this.row + rows);
     for (let py = this.row; py < end; py++) {
-      const z = this.originZ + py * SCALE;
-      for (let px = 0; px < SIZE; px++) {
-        const x = this.originX + px * SCALE;
+      const z = this.originZ + py * this.scale;
+      for (let px = 0; px < this.size; px++) {
+        const x = this.originX + px * this.scale;
         this.paint(world, px, py, x, z);
       }
     }
-    this.row = end >= SIZE ? 0 : end;
+    this.row = end >= this.size ? 0 : end;
 
     this.ctx.putImageData(this.image, 0, 0);
     this.drawRoads(overlay);
@@ -151,14 +206,14 @@ export class Minimap {
   /** World coordinates to canvas pixels, or null when they fall off the map. */
   private project(x: number, z: number): { px: number; py: number } | null {
     const at = this.place(x, z);
-    if (at.px < 0 || at.px >= SIZE || at.py < 0 || at.py >= SIZE) return null;
+    if (at.px < 0 || at.px >= this.size || at.py < 0 || at.py >= this.size) return null;
     return at;
   }
 
   /** The same, unclipped. A line with one end off the map is still drawn to the edge;
    *  dropping its far point would bend it back on itself instead. */
   private place(x: number, z: number): { px: number; py: number } {
-    return { px: (x - this.originX) / SCALE, py: (z - this.originZ) / SCALE };
+    return { px: (x - this.originX) / this.scale, py: (z - this.originZ) / this.scale };
   }
 
   /** The roads the player has laid, so it is visible at a glance where one stops. */
@@ -252,7 +307,7 @@ export class Minimap {
   }
 
   private paint(world: World, px: number, py: number, x: number, z: number): void {
-    const index = (py * SIZE + px) * 4;
+    const index = (py * this.size + px) * 4;
     const top = world.heightAt(x, z);
     if (top < 0) {
       // Not loaded yet: leave it dark rather than pretending to know.
@@ -266,8 +321,8 @@ export class Minimap {
     let [r, g, b] = this.colorOf(block);
 
     // Shade by the slope towards the north west so ridges and valleys read at a glance.
-    const west = world.heightAt(x - SCALE, z);
-    const north = world.heightAt(x, z - SCALE);
+    const west = world.heightAt(x - this.scale, z);
+    const north = world.heightAt(x, z - this.scale);
     const slope = (west >= 0 ? top - west : 0) + (north >= 0 ? top - north : 0);
     const light = 1 + Math.max(-0.45, Math.min(0.45, slope * 0.12));
     r *= light;
@@ -291,8 +346,8 @@ export class Minimap {
 
   private drawPlayer(yaw: number): void {
     const ctx = this.ctx;
-    const cx = SIZE / 2;
-    const cy = SIZE / 2;
+    const cx = this.size / 2;
+    const cy = this.size / 2;
     ctx.save();
     ctx.translate(cx, cy);
     // Yaw 0 looks towards -Z, which is up on the map.

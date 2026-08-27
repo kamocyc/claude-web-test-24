@@ -55,6 +55,20 @@ export const SNAP_RADIUS = 2.0;
  *  walk from a road is - see `doorGap` in `transport.ts`. */
 export const STATION_REACH = 48;
 
+/** The station's platform, as the numbers both the renderer and the player's feet need.
+ *
+ *  Here rather than in the renderer because a platform is something to stand on before it
+ *  is something to look at, and two copies of "how long is a platform" would come apart the
+ *  first time either was changed. The length is a short train's, so a train that stops
+ *  here looks like it fits; the height is a carriage floor's, so stepping aboard is a step
+ *  across rather than a climb — see `CAR_FLOOR` in `consist.ts`, which takes it from here. */
+export const PLATFORM_LONG = 7;
+export const PLATFORM_WIDE = 2.4;
+/** Gap between the edge of the track and the edge of the platform. */
+export const PLATFORM_GAP = 0.15;
+/** Height of the platform surface over the railhead. */
+export const PLATFORM_TOP = 0.85;
+
 /** Rails consumed per block of track. One rail buys two blocks: this track carries
  *  nothing, so it cannot cost what the freight-carrying kind does — but free track would
  *  be the only thing in the game a player never has to fetch iron for. */
@@ -926,10 +940,14 @@ export class TrackNetwork {
    *  their whole footprint: you walk off when your middle passes the end of the sleepers,
    *  which is both the simplest rule and the one that looks right. */
   surfaceTopAt(x: number, z: number, low: number, high: number): number | null {
-    if (this.edges.size === 0) return null;
+    const platform = this.platformTopAt(x, z, low, high);
+    if (this.edges.size === 0) return platform;
     this.refreshDeck();
     const cell = this.deckCells.get(`${Math.floor(x / DECK_CELL)},${Math.floor(z / DECK_CELL)}`);
-    if (!cell) return null;
+    // A platform stands beside the track rather than on it, so the point somebody is
+    // standing on may well be in no deck cell at all. Losing it here would make the one
+    // part of a station you have to be able to stand on the one part you fall through.
+    if (!cell) return platform;
     const half = TRACK_WIDTH / 2;
     let best: number | null = null;
     for (const piece of cell) {
@@ -955,6 +973,40 @@ export class TrackNetwork {
       const top = piece.ay + (piece.by - piece.ay) * raw;
       if (top < low || top > high) continue;
       if (best === null || top > best) best = top;
+    }
+    // A platform is deck too. It is the one part of a station a player has to be able to
+    // stand on: the whole of what it is for is being level with a carriage floor, and
+    // being level with something you fall through is being nothing at all.
+    return platform !== null && (best === null || platform > best) ? platform : best;
+  }
+
+  /** The station platform under a point, when its surface is inside the window.
+   *
+   *  A rectangle down one side of the track, oriented with the line, exactly as the
+   *  renderer draws it — both read the same four numbers, so what is drawn and what holds
+   *  the player up cannot come apart. */
+  private platformTopAt(x: number, z: number, low: number, high: number): number | null {
+    let best: number | null = null;
+    for (const node of this.nodesNear(x, z, PLATFORM_LONG)) {
+      if (!node.station) continue;
+      const top = node.y + PLATFORM_TOP;
+      if (top < low || top > high) continue;
+      if (best !== null && top <= best) continue;
+      // Forward along the line, and across it to the side the platform is on. The renderer
+      // takes the same side from the same heading.
+      const flat = Math.hypot(node.hx, node.hz) || 1;
+      const fx = node.hx / flat;
+      const fz = node.hz / flat;
+      const dx = x - node.x;
+      const dz = z - node.z;
+      const along = dx * fx + dz * fz;
+      // `s` in the renderer's frame is (f.z, -f.x); the platform's middle sits one half
+      // width plus the gap out along it.
+      const across = dx * fz - dz * fx;
+      const middle = TRACK_WIDTH / 2 + PLATFORM_GAP + PLATFORM_WIDE / 2;
+      if (Math.abs(along) > PLATFORM_LONG / 2) continue;
+      if (Math.abs(across - middle) > PLATFORM_WIDE / 2) continue;
+      best = top;
     }
     return best;
   }
