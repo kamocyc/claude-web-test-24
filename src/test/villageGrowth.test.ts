@@ -31,18 +31,36 @@ function record(stage: number): VillageRecord {
  *  The top solid block is `BASE_Y`, which is what a village plateau is: `TerrainGenerator`
  *  fills a column up to and including its height, so somebody standing on it stands at
  *  `BASE_Y + 1`. */
+/** Blocks for one chunk, worked out once and copied into every world that wants it.
+ *  The columns are the same in all thirty-six chunks and this file builds two dozen
+ *  worlds, so filling them cell by cell each time was half a million writes per world. */
+const columnCache = new Map<string, Uint16Array>();
+
+function chunkBlocks(key: string, fill: (chunk: Chunk) => void): Uint16Array {
+  let cached = columnCache.get(key);
+  if (!cached) {
+    const template = new Chunk(0, 0, new Uint16Array(CHUNK_VOLUME), new Uint8Array(CHUNK_VOLUME));
+    fill(template);
+    cached = template.blocks;
+    columnCache.set(key, cached);
+  }
+  // A copy, never the template: growth writes through these.
+  return cached.slice();
+}
+
 function grassWorld(): World {
   const world = new World(1);
   for (let cx = 4; cx <= 9; cx++) {
     for (let cz = 10; cz <= 15; cz++) {
-      const blocks = new Uint16Array(CHUNK_VOLUME);
-      const chunk = new Chunk(cx, cz, blocks, new Uint8Array(CHUNK_VOLUME));
-      for (let lz = 0; lz < CHUNK_SIZE; lz++) {
-        for (let lx = 0; lx < CHUNK_SIZE; lx++) {
-          for (let y = 0; y < BASE_Y; y++) chunk.set(lx, y, lz, Block.DIRT);
-          chunk.set(lx, BASE_Y, lz, Block.GRASS);
+      const blocks = chunkBlocks('grass', (template) => {
+        for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+          for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+            for (let y = 0; y < BASE_Y; y++) template.set(lx, y, lz, Block.DIRT);
+            template.set(lx, BASE_Y, lz, Block.GRASS);
+          }
         }
-      }
+      });
+      const chunk = new Chunk(cx, cz, blocks, new Uint8Array(CHUNK_VOLUME));
       chunk.generated = true;
       world.addChunk(chunk);
     }
@@ -336,14 +354,18 @@ function slopedWorld(): World {
   const world = new World(1);
   for (let cx = 4; cx <= 9; cx++) {
     for (let cz = 10; cz <= 15; cz++) {
-      const chunk = new Chunk(cx, cz, new Uint16Array(CHUNK_VOLUME), new Uint8Array(CHUNK_VOLUME));
-      for (let lz = 0; lz < CHUNK_SIZE; lz++) {
-        for (let lx = 0; lx < CHUNK_SIZE; lx++) {
-          const top = cx * CHUNK_SIZE + lx >= SITE.x + 8 ? BASE_Y - 3 : BASE_Y;
-          for (let y = 0; y < top; y++) chunk.set(lx, y, lz, Block.DIRT);
-          chunk.set(lx, top, lz, Block.GRASS);
+      // The step runs north-south, so a column depends on cx but not on cz: six templates
+      // cover the whole world.
+      const blocks = chunkBlocks(`sloped:${cx}`, (template) => {
+        for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+          for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+            const top = cx * CHUNK_SIZE + lx >= SITE.x + 8 ? BASE_Y - 3 : BASE_Y;
+            for (let y = 0; y < top; y++) template.set(lx, y, lz, Block.DIRT);
+            template.set(lx, top, lz, Block.GRASS);
+          }
         }
-      }
+      });
+      const chunk = new Chunk(cx, cz, blocks, new Uint8Array(CHUNK_VOLUME));
       chunk.generated = true;
       world.addChunk(chunk);
     }
