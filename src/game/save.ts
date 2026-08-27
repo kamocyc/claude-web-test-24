@@ -83,6 +83,35 @@ export interface SavedQuest {
   milestone?: number;
 }
 
+/** One end of a laid track: where it is, which way the track runs through it, and how
+ *  steeply. The heading came from the player's yaw at the moment they clicked and cannot
+ *  be re-derived from anything else, so it is the one thing that has to be written down. */
+export interface SavedTrackNode {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+  hx: number;
+  hz: number;
+  grade: number;
+}
+
+/** Only the pair of ends, and which way round the track runs through each. The curve
+ *  between them is a pure function of the two, so it is solved again on load rather than
+ *  stored twice — the same bargain SavedRoute makes with the road it lies on. */
+export interface SavedTrackEdge {
+  a: number;
+  b: number;
+  dirA: number;
+  dirB: number;
+}
+
+export interface SavedTracks {
+  nodes: SavedTrackNode[];
+  edges: SavedTrackEdge[];
+  nextId: number;
+}
+
 export interface SaveData {
   version: number;
   seed: number;
@@ -112,6 +141,11 @@ export interface SaveData {
   quest?: SavedQuest;
   /** Villagers a village earned by growing while their chunk was unloaded. */
   pendingVillagers?: { x: number; y: number; z: number; profession: string }[];
+  /** The free-form railway: curves laid in world coordinates, with no blocks under them.
+   *  Optional for the same reason `villages` is — a save written before it existed opens
+   *  with no track laid, which is exactly right, and bumping SAVE_VERSION to say so would
+   *  throw every world away instead. */
+  tracks?: SavedTracks;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

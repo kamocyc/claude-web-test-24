@@ -980,6 +980,167 @@ if (unrailed) {
 }
 
 
+// --- the other railway: curves, not blocks -----------------------------------
+// A rail block is a road surface, so a line of them turns ninety degrees at a time. The
+// track tool is the separate answer: click a start, click an end, and the game works out
+// a curve between them that owes nothing to the grid. What is checked here is the whole
+// of the claim - that it curves, that a second run joins the first without a kink, that
+// it refuses the shapes it says it refuses, that the mouse really drives it, and that
+// track hanging over a drop grows legs.
+await evaluate(() => {
+  window.voxelcraft.clearTracks();
+  window.voxelcraft.give('track_tool', 1);
+  window.voxelcraft.give('rail', 200);
+  const inv = window.voxelcraft.game.player.inventory;
+  for (let i = 0; i < 9; i++) if (inv.slots[i]?.id === 'track_tool') inv.selected = i;
+});
+const curved = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const x = Math.round(g.player.x);
+  const z = Math.round(g.player.z);
+  const y = g.world.heightAt(x, z) + 6;
+  // Leaving north and arriving east: nothing on the voxel grid can do this in one piece.
+  return window.voxelcraft.layTrack(
+    { x, y, z, yaw: 0 },
+    { x: x + 20, y, z: z - 20, yaw: -Math.PI / 2 },
+  );
+});
+console.log('a curve laid in one gesture:', JSON.stringify(curved));
+if (!curved.ok) throw new Error(`the track tool could not lay a quarter turn: ${curved.fault}`);
+const shape = await evaluate((id) => {
+  const start = window.voxelcraft.trackAt(id, 0);
+  const end = window.voxelcraft.trackAt(id, window.voxelcraft.trackEdges()[0].length);
+  const middle = window.voxelcraft.trackAt(id, window.voxelcraft.trackEdges()[0].length / 2);
+  // How far the middle of the run sits from the straight line between its ends.
+  const dx = end.x - start.x;
+  const dz = end.z - start.z;
+  const length = Math.hypot(dx, dz);
+  const bow = Math.abs((middle.x - start.x) * dz - (middle.z - start.z) * dx) / length;
+  return { start, end, middle, bow, edge: window.voxelcraft.trackEdges()[0] };
+}, curved.edge);
+console.log('the shape of it:', JSON.stringify(shape));
+if (shape.bow < 1) throw new Error(`a quarter turn should bow away from its chord: ${shape.bow}`);
+if (shape.edge.minRadius < 6) throw new Error('a curve tighter than the limit should not exist');
+
+// Joining on: the second run takes its angle from the end of the first, not from the
+// click. This one assertion is the whole of "match the track that is already there".
+const joined = await evaluate((id) => {
+  const first = window.voxelcraft.trackEdges().find((e) => e.id === id);
+  const end = window.voxelcraft.trackAt(id, first.length);
+  // Ask for a wildly different angle at the join and watch it be overruled.
+  const second = window.voxelcraft.layTrack(
+    { x: end.x, y: end.y, z: end.z, yaw: 2.5 },
+    { x: end.x + 24, y: end.y, z: end.z - 6, yaw: -Math.PI / 2 },
+  );
+  return {
+    second,
+    nodes: window.voxelcraft.tracks().nodes,
+    arriving: window.voxelcraft.trackTangentAt(id, first.length),
+    leaving: second.ok ? window.voxelcraft.trackTangentAt(second.edge, 0) : null,
+  };
+}, curved.edge);
+console.log('joining onto an end:', JSON.stringify(joined));
+if (!joined.second.ok) throw new Error(`could not join onto a free end: ${joined.second.fault}`);
+if (joined.nodes !== 3) throw new Error(`a shared end should be one node, not two: ${joined.nodes}`);
+for (const axis of ['x', 'y', 'z']) {
+  if (Math.abs(joined.arriving[axis] - joined.leaving[axis]) > 1e-3) {
+    throw new Error(`the joint has a kink in it: ${JSON.stringify(joined)}`);
+  }
+}
+
+// The refusals, by name. A curve that cannot be built has to say which rule it broke.
+const refused = await evaluate(() => {
+  const y = 90;
+  return {
+    behind: window.voxelcraft.layTrack({ x: 900, y, z: 900, yaw: 0 }, { x: 900, y, z: 912, yaw: 0 }).fault,
+    radius: window.voxelcraft.layTrack({ x: 940, y, z: 900, yaw: 0 }, { x: 944, y, z: 896, yaw: -Math.PI / 2 }).fault,
+    grade: window.voxelcraft.layTrack({ x: 980, y, z: 900, yaw: 0 }, { x: 980, y: y + 12, z: 880, yaw: 0 }).fault,
+  };
+});
+console.log('shapes it will not build:', JSON.stringify(refused));
+for (const [rule, fault] of Object.entries({ behind: 'behind', radius: 'radius', grade: 'grade' })) {
+  if (refused[rule] !== fault) throw new Error(`${rule} should be refused as ${fault}: ${refused[rule]}`);
+}
+
+// The mouse, not the console. Everything above would pass with the placement code
+// unplugged from the buttons.
+await evaluate(() => {
+  const g = window.voxelcraft.game;
+  window.voxelcraft.clearTracks();
+  g.player.flying = false;
+  const x = Math.round(g.player.x);
+  const z = Math.round(g.player.z);
+  g.player.teleportTo(x + 0.5, g.world.heightAt(x, z) + 1, z + 0.5);
+  g.player.yaw = 0;
+  // Shallow, so the crosshair lands a dozen blocks out rather than at their feet.
+  g.player.pitch = -0.13;
+});
+await settled(60000);
+const startPlaced = await useUntil(() => window.voxelcraft.trackTool().pending !== null);
+if (!startPlaced) throw new Error('right clicking with the track tool did not put a start down');
+console.log('start placed by hand:', JSON.stringify(await evaluate(() => window.voxelcraft.trackTool())));
+// Turning on the spot is how the curve gets chosen: the far end follows the head.
+await evaluate(() => { window.voxelcraft.game.player.yaw = 0.5; });
+await frame();
+await frame();
+const ghost = await evaluate(() => window.voxelcraft.trackView().ghost);
+console.log('the ghost while turning:', JSON.stringify(ghost));
+if (ghost === 'none') throw new Error('a start is down and nothing is being previewed');
+const railsBefore = await evaluate(() => window.voxelcraft.game.player.inventory.count('rail'));
+const laidByHand = await useUntil(() => window.voxelcraft.tracks().edges > 0);
+if (!laidByHand) throw new Error('the second right click did not lay the curve');
+console.log('laid by hand:', JSON.stringify(await evaluate((before) => ({
+  tracks: window.voxelcraft.tracks(),
+  railsSpent: before - window.voxelcraft.game.player.inventory.count('rail'),
+}), railsBefore)));
+await shot('07y5-track-curve');
+
+// Track over a drop grows legs, and only where the ground under it is actually loaded.
+const piered = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  window.voxelcraft.clearTracks();
+  const x = Math.round(g.player.x);
+  const z = Math.round(g.player.z);
+  const y = g.world.heightAt(x, z) + 1;
+  for (let d = 8; d < 20; d++) {
+    for (let w = -3; w <= 3; w++) {
+      for (let h = 0; h < 5; h++) g.world.setBlock(x + w, y - 1 - h, z - d, 0);
+    }
+  }
+  const laid = window.voxelcraft.layTrack({ x, y, z, yaw: 0 }, { x, y, z: z - 28, yaw: 0 });
+  return { laid, view: window.voxelcraft.trackView(), x, y, z };
+});
+console.log('carried over a trench:', JSON.stringify(piered));
+if (!piered.laid.ok) throw new Error(`could not carry track over a trench: ${piered.laid.fault}`);
+if (piered.view.piers === 0) throw new Error('floating track should stand on something');
+await settled(60000);
+// From above and to one side, looking down the trench, where the legs are the picture.
+await evaluate((at) => {
+  const g = window.voxelcraft.game;
+  g.player.flying = true;
+  const cx = at.x + 13;
+  const cy = at.y + 15;
+  const cz = at.z - 2;
+  const tx = at.x;
+  const ty = at.y - 2;
+  const tz = at.z - 16;
+  g.player.teleportTo(cx, cy, cz);
+  const dx = tx - cx;
+  const dy = ty - cy;
+  const dz = tz - cz;
+  // The camera looks along (-sin yaw cos pitch, sin pitch, -cos yaw cos pitch).
+  g.player.yaw = Math.atan2(-dx, -dz);
+  g.player.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+}, piered);
+await settled(60000);
+await frame();
+await shot('07y6-track-piers');
+await evaluate(() => {
+  window.voxelcraft.game.player.flying = false;
+  window.voxelcraft.clearTracks();
+});
+
+
 // A route runs between two doorways, not two map pins: the shipment leaves the building
 // the player picked and arrives at the other village's.
 const ends = await evaluate(() => {

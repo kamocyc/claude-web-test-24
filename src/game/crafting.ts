@@ -66,6 +66,13 @@ recipe('blocks', 'table', { id: 'rail', count: 16 }, [
   { id: 'oak_planks', count: 2 },
 ]);
 
+// Iron for the head and sticks for the handle, priced like a tool rather than like track:
+// what the player pays per block of curve is the rail it eats as they lay it.
+recipe('tools', 'table', { id: 'track_tool', count: 1 }, [
+  { id: 'iron_ingot', count: 3 },
+  { id: 'stick', count: 2 },
+]);
+
 // --- food ---------------------------------------------------------------------
 recipe('food', 'hand', { id: 'bread', count: 1 }, [{ id: 'wheat', count: 3 }]);
 

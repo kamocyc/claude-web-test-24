@@ -395,6 +395,23 @@ tile('rail_side', (ctx, rng) => {
   rect(ctx, 0, 0, TILE, 1, shade(RAIL_STEEL, 26));
 });
 
+// The tool that lays the free-form track. It cannot borrow `rail_top`: a stack of rails
+// and the thing that draws curves would then be the same picture in the hotbar, and they
+// do entirely different jobs on the same mouse button.
+tile('track_tool', (ctx) => {
+  iconBase(ctx);
+  // The same bottom-left to top-right handle every tool in the game has.
+  for (let i = 0; i < 7; i++) rect(ctx, 2 + i, 13 - i, 2, 2, shade(BARK, 16));
+  // A short length of track for a head, bending as it goes, because bending is the point.
+  for (let j = 0; j < 7; j++) {
+    const y = 2 + j;
+    const x = 8 - Math.round((j * j) / 8);
+    if (j % 2 === 0) rect(ctx, x, y, 7, 1, RAIL_TIE);
+    rect(ctx, x, y, 1, 1, RAIL_STEEL);
+    rect(ctx, x + 6, y, 1, 1, shade(RAIL_STEEL, 30));
+  }
+});
+
 tile('cactus_top', (ctx, rng) => {
   grain(ctx, rng, [70, 132, 62], 12);
   blob(ctx, rng, 8, 8, 4, [92, 160, 78]);

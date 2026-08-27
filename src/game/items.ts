@@ -155,6 +155,11 @@ for (const tier of TIERS) {
   }
 }
 
+// The free-form track tool. Deliberately not given `tool` stats: it has no tier and mines
+// nothing, and a ToolStats here would put it in the running whenever auto-tool swaps the
+// hotbar — which would take it out of the player's hand halfway through laying a curve.
+item({ id: 'track_tool', label: '線路敷設ツール', tex: 'track_tool', maxStack: 1 });
+
 // --- armour ------------------------------------------------------------------
 const ARMOR_LABELS: Record<ArmorSlot, string> = {
   helmet: 'ヘルメット',
