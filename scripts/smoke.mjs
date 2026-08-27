@@ -915,69 +915,524 @@ if (pinched) {
 }
 
 
-// --- railing a road until a train runs --------------------------------------
-// Pavement is speed and width is load; rail is both, and the last thing a line can be
-// given. Every column rail and the cart becomes a train — and one column of dirt anywhere
-// puts it back to the cart it had already earned, which is the demotion the panel has to
-// be able to point at.
+// --- laying a railway until a train runs -------------------------------------
+// Pavement is speed and width is load. A railway is neither of those: it is the *other*
+// way between two villages, drawn as curves over whatever is in between, and it beats the
+// best cart on both numbers at once. Pulling one curve out of the middle of it drops the
+// line back onto the road it was laid beside, which is the demotion the panel has to be
+// able to point at.
 const byRoad = await evaluate(QUEST_ROUTE);
-console.log('before railing:', JSON.stringify({ vehicle: byRoad.vehicle, load: byRoad.load }));
-if (byRoad.vehicle === 'train') throw new Error('a road nobody railed is already a railway');
-console.log('railed:', await evaluate(() => window.voxelcraft.buildRailway()));
+console.log('before the railway:', JSON.stringify({ vehicle: byRoad.vehicle, load: byRoad.load }));
+if (byRoad.vehicle === 'train') throw new Error('a pair nobody has railed is already a railway');
+console.log('railway laid:', await evaluate(() => window.voxelcraft.buildRailway()));
 await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'train'`, null, { timeout: 60000 });
 const byTrain = await evaluate(QUEST_ROUTE);
-console.log('after railing:', JSON.stringify({
-  vehicle: byTrain.vehicle, load: byTrain.load, grade: byTrain.grade, climb: byTrain.climb,
+console.log('after the railway:', JSON.stringify({
+  vehicle: byTrain.vehicle, load: byTrain.load, grade: byTrain.grade,
+  length: Math.round(byTrain.length), climb: byTrain.climb,
 }));
-// Railing re-lays the line, so the two loads are not quite the same road's. The exact
-// multiplier is pinned in `transport.test.ts`; what matters here is that it plainly
-// bought a great deal more than the cart did.
+// The exact multiplier is pinned in `transport.test.ts`; what matters here is that the
+// railway plainly bought a great deal more than the cart did, and that it is quoted as
+// the one thing a road can never be.
 if (byTrain.load <= byRoad.load) {
   throw new Error(`a train should carry more than a cart: ${byRoad.load} -> ${byTrain.load}`);
+}
+if (byTrain.grade !== '鉄路') {
+  throw new Error(`a railed route should be quoted as 鉄路, not ${byTrain.grade}`);
 }
 console.log('linked panel with a train:', JSON.stringify(
   await page.locator('.route-row').first().innerText().catch(() => null)));
 await shot('07y4-railway');
 
-// One rail, out of the middle, and the train stops.
-const unrailed = await evaluate(() => {
+// One curve, out of the middle, and the train stops.
+const pulled = await evaluate(() => {
   const g = window.voxelcraft.game;
   const q = window.voxelcraft.quest();
   const a = g.villages.get(q.origin);
   const b = g.villages.get(q.target);
-  const mx = Math.round((a.x + b.x) / 2);
-  const mz = Math.round((a.z + b.z) / 2);
-  const near = window.voxelcraft.roadColumnsNear(mx, mz, 10);
-  near.sort((p, r) => Math.hypot(p.x - mx, p.z - mz) - Math.hypot(r.x - mx, r.z - mz));
-  // 49 is the dirt path: still a road, so the line stays joined and merely demotes.
-  const taken = [];
-  for (const c of near) {
-    if (g.world.getBlock(c.x, c.y, c.z) !== 59) continue;
-    taken.push({ x: c.x, y: c.y, z: c.z, was: 59 });
-    g.world.setBlock(c.x, c.y, c.z, 49);
-    if (taken.length >= 3) break;
+  const mx = (a.x + b.x) / 2;
+  const mz = (a.z + b.z) / 2;
+  let best = null;
+  for (const edge of window.voxelcraft.trackEdges()) {
+    const middle = window.voxelcraft.trackAt(edge.id, edge.length / 2);
+    const gap = Math.hypot(middle.x - mx, middle.z - mz);
+    if (!best || gap < best.gap) best = { id: edge.id, gap, middle };
   }
-  return taken.length > 0 ? { taken } : null;
+  return best && window.voxelcraft.removeTrack(best.id) ? best : null;
 });
-if (!unrailed) console.log('one rail out of the line: NO RAIL COLUMN FOUND');
-if (unrailed) {
+if (!pulled) console.log('one curve out of the line: NO EDGE FOUND');
+if (pulled) {
   await page.waitForFunction(`${QUEST_ROUTE}?.vehicle !== 'train'`, null, { timeout: 60000 });
   const broken = await evaluate(QUEST_ROUTE);
-  console.log('one rail turned back to dirt:', JSON.stringify({
-    took: unrailed.taken.length,
+  console.log('one curve pulled out of the line:', JSON.stringify({
+    edge: pulled.id,
     vehicle: broken.vehicle,
     connected: broken.connected,
     pinch: broken.railPinch,
     note: await page.locator('.route-note.rail').first().innerText().catch(() => null),
   }));
-  if (!broken.connected) throw new Error('a line short of one rail should still carry goods');
-  if (!broken.railPinch) throw new Error('a line short of one rail should say where');
-  await evaluate((list) => {
-    for (const c of list) window.voxelcraft.game.world.setBlock(c.x, c.y, c.z, c.was);
-  }, unrailed.taken);
+  if (!broken.connected) throw new Error('the road under a broken railway should still carry goods');
+  // A line with nothing left of it has no railhead to report, and should not invent one:
+  // a beacon over every village in the world would answer a question nobody asked.
+  const left = await evaluate(() => window.voxelcraft.tracks().edges);
+  if (left > 0 && !broken.railPinch) {
+    throw new Error('a half built railway should say where it stops');
+  }
+  if (left === 0 && broken.railPinch) {
+    throw new Error('a pair with no rails anywhere near it should have nothing to point at');
+  }
+  console.log('railed back:', await evaluate(() => window.voxelcraft.buildRailway()));
   await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'train'`, null, { timeout: 60000 });
-  console.log('railed back:', await evaluate(QUEST_ROUTE).then((r) => r.vehicle));
+  console.log('running again:', await evaluate(QUEST_ROUTE).then((r) => r.vehicle));
 }
+
+// And the freight really is out on the rails rather than walking along under them: the
+// mob is a picture of the shipment, and the shipment is where the deck is.
+const riding = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const spots = window.voxelcraft.porterSpots();
+  return spots.map((at) => ({
+    at,
+    deck: window.voxelcraft.trackDeckAt(at.x, at.z),
+    ground: g.world.heightAt(at.x, at.z),
+  }));
+});
+console.log('where the freight rides:', JSON.stringify(riding));
+
+/** One right click, then two frames before looking.
+ *
+ *  `useUntil` is wrong for a gesture with more than one click in it: when a poll comes
+ *  back late it clicks again, and a second click on the track tool does not repeat the
+ *  first, it finishes the curve. Waiting a couple of frames makes the poll reliable, so
+ *  the retry is only ever a retry of a press that genuinely went nowhere. Returns what
+ *  the tool is doing afterwards, so a failure can say which. */
+const rightClick = async () => {
+  await page.mouse.move(640, 360);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.up({ button: 'right' });
+  await frame();
+  await frame();
+  return evaluate(() => ({
+    pending: window.voxelcraft.trackTool().pending !== null,
+    ghost: window.voxelcraft.trackTool().ghost,
+    edges: window.voxelcraft.tracks().edges,
+  }));
+};
+
+// --- the same railway, laid by hand ------------------------------------------
+// Above it was built from the console in one call. This is the tool a player actually
+// holds: click a start, click an end, and the game works out a curve between them that
+// owes nothing to the grid. What is checked here is the whole of the claim - that it
+// curves, that a second run joins the first without a kink, that it refuses the shapes it
+// says it refuses, that the mouse really drives it, and that track hanging over a drop
+// grows legs.
+await evaluate(() => {
+  window.voxelcraft.clearTracks();
+  window.voxelcraft.give('track_tool', 1);
+  window.voxelcraft.give('rail', 200);
+  const inv = window.voxelcraft.game.player.inventory;
+  for (let i = 0; i < 9; i++) if (inv.slots[i]?.id === 'track_tool') inv.selected = i;
+});
+const curved = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const x = Math.round(g.player.x);
+  const z = Math.round(g.player.z);
+  const y = g.world.heightAt(x, z) + 6;
+  // Leaving north and arriving east: nothing on the voxel grid can do this in one piece.
+  return window.voxelcraft.layTrack(
+    { x, y, z, yaw: 0 },
+    { x: x + 20, y, z: z - 20, yaw: -Math.PI / 2 },
+  );
+});
+console.log('a curve laid in one gesture:', JSON.stringify(curved));
+if (!curved.ok) throw new Error(`the track tool could not lay a quarter turn: ${curved.fault}`);
+const shape = await evaluate((id) => {
+  const start = window.voxelcraft.trackAt(id, 0);
+  const end = window.voxelcraft.trackAt(id, window.voxelcraft.trackEdges()[0].length);
+  const middle = window.voxelcraft.trackAt(id, window.voxelcraft.trackEdges()[0].length / 2);
+  // How far the middle of the run sits from the straight line between its ends.
+  const dx = end.x - start.x;
+  const dz = end.z - start.z;
+  const length = Math.hypot(dx, dz);
+  const bow = Math.abs((middle.x - start.x) * dz - (middle.z - start.z) * dx) / length;
+  return { start, end, middle, bow, edge: window.voxelcraft.trackEdges()[0] };
+}, curved.edge);
+console.log('the shape of it:', JSON.stringify(shape));
+if (shape.bow < 1) throw new Error(`a quarter turn should bow away from its chord: ${shape.bow}`);
+if (shape.edge.minRadius < 6) throw new Error('a curve tighter than the limit should not exist');
+
+// Joining on: the second run takes its angle from the end of the first, not from the
+// click. This one assertion is the whole of "match the track that is already there".
+const joined = await evaluate((id) => {
+  const first = window.voxelcraft.trackEdges().find((e) => e.id === id);
+  const end = window.voxelcraft.trackAt(id, first.length);
+  // Ask for a wildly different angle at the join and watch it be overruled.
+  const second = window.voxelcraft.layTrack(
+    { x: end.x, y: end.y, z: end.z, yaw: 2.5 },
+    { x: end.x + 24, y: end.y, z: end.z - 6, yaw: -Math.PI / 2 },
+  );
+  return {
+    second,
+    nodes: window.voxelcraft.tracks().nodes,
+    arriving: window.voxelcraft.trackTangentAt(id, first.length),
+    leaving: second.ok ? window.voxelcraft.trackTangentAt(second.edge, 0) : null,
+  };
+}, curved.edge);
+console.log('joining onto an end:', JSON.stringify(joined));
+if (!joined.second.ok) throw new Error(`could not join onto a free end: ${joined.second.fault}`);
+if (joined.nodes !== 3) throw new Error(`a shared end should be one node, not two: ${joined.nodes}`);
+for (const axis of ['x', 'y', 'z']) {
+  if (Math.abs(joined.arriving[axis] - joined.leaving[axis]) > 1e-3) {
+    throw new Error(`the joint has a kink in it: ${JSON.stringify(joined)}`);
+  }
+}
+
+// The refusals, by name. A curve that cannot be built has to say which rule it broke.
+const refused = await evaluate(() => {
+  const y = 90;
+  return {
+    behind: window.voxelcraft.layTrack({ x: 900, y, z: 900, yaw: 0 }, { x: 900, y, z: 912, yaw: 0 }).fault,
+    radius: window.voxelcraft.layTrack({ x: 940, y, z: 900, yaw: 0 }, { x: 944, y, z: 896, yaw: -Math.PI / 2 }).fault,
+    grade: window.voxelcraft.layTrack({ x: 980, y, z: 900, yaw: 0 }, { x: 980, y: y + 12, z: 880, yaw: 0 }).fault,
+  };
+});
+console.log('shapes it will not build:', JSON.stringify(refused));
+for (const [rule, fault] of Object.entries({ behind: 'behind', radius: 'radius', grade: 'grade' })) {
+  if (refused[rule] !== fault) throw new Error(`${rule} should be refused as ${fault}: ${refused[rule]}`);
+}
+
+// The mouse, not the console. Everything above would pass with the placement code
+// unplugged from the buttons.
+await evaluate(() => {
+  const g = window.voxelcraft.game;
+  window.voxelcraft.clearTracks();
+  window.voxelcraft.heal();
+  g.player.flying = false;
+  const x = Math.round(g.player.x);
+  const z = Math.round(g.player.z);
+  g.player.teleportTo(x + 0.5, g.world.heightAt(x, z) + 1, z + 0.5);
+  g.player.yaw = 0;
+  // Shallow, so the crosshair lands a dozen blocks out rather than at their feet.
+  g.player.pitch = -0.13;
+  // And the tool actually in hand. A dozen console steps stand between here and where it
+  // was selected, and a mouse test that quietly runs with a shovel out proves nothing.
+  const inv = g.player.inventory;
+  if (inv.held?.id !== 'track_tool') {
+    window.voxelcraft.give('track_tool', 1);
+    for (let i = 0; i < 9; i++) if (inv.slots[i]?.id === 'track_tool') inv.selected = i;
+  }
+});
+await settled(60000);
+let placed = await rightClick();
+for (let attempt = 1; attempt < 5 && !placed.pending && placed.edges === 0; attempt++) placed = await rightClick();
+if (!placed.pending) {
+  const why = await evaluate(() => ({
+    held: window.voxelcraft.game.player.inventory.held?.id ?? null,
+    tool: window.voxelcraft.trackTool(),
+    screen: window.voxelcraft.game.screens.isOpen,
+    dead: window.voxelcraft.game.player.health <= 0,
+  }));
+  throw new Error(
+    `right clicking with the track tool did not leave a start down: ${JSON.stringify(placed)} ${JSON.stringify(why)}`,
+  );
+}
+console.log('start placed by hand:', JSON.stringify(placed));
+// Turning on the spot is how the curve gets chosen: the far end follows the head.
+await evaluate(() => { window.voxelcraft.game.player.yaw = 0.5; });
+await frame();
+await frame();
+const ghost = await evaluate(() => window.voxelcraft.trackView().ghost);
+console.log('the ghost while turning:', JSON.stringify(ghost));
+if (ghost === 'none') throw new Error('a start is down and nothing is being previewed');
+const railsBefore = await evaluate(() => window.voxelcraft.game.player.inventory.count('rail'));
+let finished = await rightClick();
+for (let attempt = 1; attempt < 5 && finished.edges === 0; attempt++) finished = await rightClick();
+if (finished.edges === 0) throw new Error(`the second right click did not lay the curve: ${JSON.stringify(finished)}`);
+console.log('laid by hand:', JSON.stringify(await evaluate((before) => ({
+  tracks: window.voxelcraft.tracks(),
+  railsSpent: before - window.voxelcraft.game.player.inventory.count('rail'),
+}), railsBefore)));
+await shot('07y5-track-curve');
+
+// Track over a drop grows legs, and only where the ground under it is actually loaded.
+const piered = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  window.voxelcraft.clearTracks();
+  const x = Math.round(g.player.x);
+  const z = Math.round(g.player.z);
+  const y = g.world.heightAt(x, z) + 1;
+  for (let d = 8; d < 20; d++) {
+    for (let w = -3; w <= 3; w++) {
+      for (let h = 0; h < 5; h++) g.world.setBlock(x + w, y - 1 - h, z - d, 0);
+    }
+  }
+  const laid = window.voxelcraft.layTrack({ x, y, z, yaw: 0 }, { x, y, z: z - 28, yaw: 0 });
+  return { laid, view: window.voxelcraft.trackView(), x, y, z };
+});
+console.log('carried over a trench:', JSON.stringify(piered));
+if (!piered.laid.ok) throw new Error(`could not carry track over a trench: ${piered.laid.fault}`);
+if (piered.view.piers === 0) throw new Error('floating track should stand on something');
+await settled(60000);
+// From above and to one side, looking down the trench, where the legs are the picture.
+await evaluate((at) => {
+  const g = window.voxelcraft.game;
+  g.player.flying = true;
+  const cx = at.x + 13;
+  const cy = at.y + 15;
+  const cz = at.z - 2;
+  const tx = at.x;
+  const ty = at.y - 2;
+  const tz = at.z - 16;
+  g.player.teleportTo(cx, cy, cz);
+  const dx = tx - cx;
+  const dy = ty - cy;
+  const dz = tz - cz;
+  // The camera looks along (-sin yaw cos pitch, sin pitch, -cos yaw cos pitch).
+  g.player.yaw = Math.atan2(-dx, -dz);
+  g.player.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+}, piered);
+await settled(60000);
+await frame();
+await shot('07y6-track-piers');
+
+// --- standing on the track ---------------------------------------------------
+// None of this railway is in the block grid, so the sweep that moves the player cannot
+// land anyone on it - it resolves every contact onto the nearest whole block, and a deck
+// sits wherever the curve put it. The deck is settled onto afterwards instead, and this
+// is the check that the wiring for that survived the trip into the real game: the unit
+// tests can all pass with `Game` never handing the player the network at all.
+const onDeck = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const edge = window.voxelcraft.trackEdges()[0];
+  const middle = window.voxelcraft.trackAt(edge.id, edge.length / 2);
+  const deck = window.voxelcraft.trackDeckAt(middle.x, middle.z);
+  g.player.flying = false;
+  // A little above it, so the fall is what puts them on it.
+  g.player.teleportTo(middle.x, middle.y + 2, middle.z);
+  return { deck, middle };
+});
+await until(() => window.voxelcraft.backlog() === 0, null, 60000);
+// Let the fall land and settle.
+await until(() => window.voxelcraft.game.player.onGround === true, null, 10000);
+const landed = await evaluate(() => ({
+  y: window.voxelcraft.game.player.y,
+  onGround: window.voxelcraft.game.player.onGround,
+}));
+console.log('standing on a viaduct:', JSON.stringify({ ...onDeck, landed }));
+if (onDeck.deck === null) throw new Error('the deck should hold a height over its own centreline');
+if (Math.abs(landed.y - onDeck.deck) > 0.05) {
+  throw new Error(`the player should be standing on the deck, not through it: ${JSON.stringify({ landed, deck: onDeck.deck })}`);
+}
+if (!landed.onGround) throw new Error('a player on a deck is standing on something');
+// And it is the deck holding them up, not the ground: the trench under it is five deep.
+if (landed.y < onDeck.middle.y - 0.5) throw new Error('the player fell through the deck to the floor of the trench');
+
+// Walking along it stays on it, gradient and all.
+await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const edge = window.voxelcraft.trackEdges()[0];
+  const a = window.voxelcraft.trackAt(edge.id, edge.length * 0.25);
+  const b = window.voxelcraft.trackAt(edge.id, edge.length * 0.35);
+  g.player.teleportTo(a.x, a.y + 0.2, a.z);
+  g.player.yaw = Math.atan2(-(b.x - a.x), -(b.z - a.z));
+  g.player.pitch = 0;
+});
+await until(() => window.voxelcraft.game.player.onGround === true, null, 10000);
+const startedAt = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  window.__smokeFrom = { x: g.player.x, z: g.player.z };
+  return window.__smokeFrom;
+});
+await page.keyboard.down('KeyW');
+await until(() => {
+  const g = window.voxelcraft.game;
+  return Math.hypot(g.player.x - window.__smokeFrom.x, g.player.z - window.__smokeFrom.z) > 6;
+}, null, 15000).catch(() => {});
+await page.keyboard.up('KeyW');
+const walked = await evaluate((from) => {
+  const g = window.voxelcraft.game;
+  return {
+    moved: Math.hypot(g.player.x - from.x, g.player.z - from.z),
+    y: g.player.y,
+    deck: window.voxelcraft.trackDeckAt(g.player.x, g.player.z),
+    onGround: g.player.onGround,
+  };
+}, startedAt);
+console.log('walking along it:', JSON.stringify(walked));
+if (walked.moved < 4) throw new Error(`the player did not walk along the deck: ${walked.moved}`);
+if (walked.deck === null || Math.abs(walked.y - walked.deck) > 0.05) {
+  throw new Error(`the player left the deck while walking it: ${JSON.stringify(walked)}`);
+}
+await frame();
+await shot('07y7-track-standing');
+
+// --- what the readout says while laying --------------------------------------
+// "Too steep" is not an answer a player can act on until they know it was going up.
+const said = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  window.voxelcraft.clearTracks();
+  g.player.flying = false;
+  const x = Math.round(g.player.x);
+  const z = Math.round(g.player.z);
+  const y = g.world.heightAt(x, z) + 1;
+  return {
+    climb: window.voxelcraft.layTrack({ x, y, z, yaw: 0 }, { x, y: y + 12, z: z - 20, yaw: 0 }),
+    drop: window.voxelcraft.layTrack({ x: x + 40, y, z, yaw: 0 }, { x: x + 40, y: y - 12, z: z - 20, yaw: 0 }),
+    tight: window.voxelcraft.layTrack({ x: x + 80, y, z, yaw: 0 }, { x: x + 84, y, z: z - 4, yaw: -Math.PI / 2 }),
+  };
+});
+console.log('shapes described as they are refused:', JSON.stringify(said));
+if (said.climb.fault !== 'grade' || said.climb.value <= 0) {
+  throw new Error(`a climb refused for its grade should say so with a positive slope: ${JSON.stringify(said.climb)}`);
+}
+if (said.drop.fault !== 'grade' || said.drop.value >= 0) {
+  throw new Error(`a descent should be refused with a negative slope: ${JSON.stringify(said.drop)}`);
+}
+if (said.tight.fault !== 'radius') throw new Error('a four block quarter turn should be refused for its radius');
+
+// And what it puts under the crosshair while a start is down.
+await evaluate(() => {
+  const g = window.voxelcraft.game;
+  window.voxelcraft.clearTracks();
+  const x = Math.round(g.player.x);
+  const z = Math.round(g.player.z);
+  g.player.teleportTo(x + 0.5, g.world.heightAt(x, z) + 1, z + 0.5);
+  g.player.yaw = 0;
+  g.player.pitch = -0.13;
+});
+await settled(60000);
+let forReadout = await rightClick();
+for (let attempt = 1; attempt < 5 && !forReadout.pending && forReadout.edges === 0; attempt++) {
+  forReadout = await rightClick();
+}
+if (!forReadout.pending) {
+  throw new Error(`could not put a start down for the readout: ${JSON.stringify(forReadout)}`);
+}
+await evaluate(() => { window.voxelcraft.game.player.yaw = 0.35; });
+await frame();
+await frame();
+const readout = await evaluate(() => ({
+  tool: window.voxelcraft.trackTool().readout,
+  shown: document.querySelector('.track-readout')?.style.display !== 'none',
+  text: document.querySelector('.track-lines')?.textContent ?? null,
+}));
+console.log('the readout under the crosshair:', JSON.stringify(readout));
+if (!readout.shown) throw new Error('a start is down and nothing is being described');
+for (const word of ['長さ', '勾配', '曲がり']) {
+  if (!readout.text?.includes(word)) throw new Error(`the readout should say ${word}: ${readout.text}`);
+}
+if (readout.tool.lines.length !== 3) throw new Error('the readout is three lines');
+await shot('07y8-track-readout');
+await evaluate(() => {
+  window.voxelcraft.game.debug.game.player.inventory.selected = 0;
+  window.voxelcraft.clearTracks();
+});
+await page.mouse.move(640, 360);
+await page.mouse.down({ button: 'left' });
+await page.mouse.up({ button: 'left' });
+await frame();
+
+await evaluate(() => {
+  window.voxelcraft.game.player.flying = false;
+  window.voxelcraft.clearTracks();
+});
+
+// --- the debug mode where nothing runs out -----------------------------------
+// Trying a curve out should not begin with an afternoon of smelting iron. The mode
+// promises two things: a shelf with one of everything on it, and pockets that never
+// empty. Checked here: that both hold, that the shelf cannot be emptied either, and -
+// the part that matters most - that switching it off puts the cost straight back, so it
+// cannot leak into the rest of this run.
+await evaluate(() => {
+  window.voxelcraft.clearTracks();
+  // Empty of rails while the cost still applies, so "laid it carrying none" means it.
+  window.voxelcraft.game.player.inventory.remove('rail', 9999);
+  window.voxelcraft.creative(true);
+});
+await frame();
+await page.keyboard.press('KeyC');
+await until(() => window.voxelcraft.game.screens.kind === 'creative');
+const shelf = await evaluate(() => ({
+  slots: document.querySelectorAll('.creative-grid .slot').length,
+  filled: document.querySelectorAll('.creative-grid .slot-icon').length,
+  badge: document.querySelector('.creative-badge')?.style.display === '',
+}));
+console.log('the shelf:', JSON.stringify(shelf));
+if (shelf.slots === 0 || shelf.slots !== shelf.filled) {
+  throw new Error(`the shelf should hold one of everything: ${JSON.stringify(shelf)}`);
+}
+if (!shelf.badge) throw new Error('a mode that makes everything free has to be visible');
+
+// Take the track tool off the shelf and watch the shelf not notice. Shift-click, because
+// by this point in the run the hotbar is full and where it lands is not the point.
+const moved = await evaluate(() => {
+  const slots = [...document.querySelectorAll('.creative-grid .slot')];
+  const at = slots.findIndex((slot) => slot.title.startsWith('線路敷設ツール'));
+  if (at < 0) return null;
+  slots[at].dispatchEvent(
+    new MouseEvent('mousedown', { button: 0, shiftKey: true, bubbles: true, cancelable: true }),
+  );
+  const inv = window.voxelcraft.game.player.inventory;
+  const landed = inv.find('track_tool');
+  return {
+    landed,
+    held: landed >= 0 ? inv.get(landed) : null,
+    stillFilled: document.querySelectorAll('.creative-grid .slot-icon').length,
+  };
+});
+console.log('taking one off the shelf:', JSON.stringify(moved));
+if (moved?.held?.id !== 'track_tool') throw new Error('could not take the track tool off the shelf');
+if (moved.stillFilled !== shelf.filled) throw new Error('the endless shelf ran out');
+await closeScreen();
+
+// Lay a curve carrying no rails at all: this is the whole reason the mode exists.
+const free = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const x = Math.round(g.player.x);
+  const z = Math.round(g.player.z);
+  const y = g.world.heightAt(x, z) + 4;
+  const laid = window.voxelcraft.layTrack({ x, y, z, yaw: 0 }, { x: x + 16, y, z: z - 20, yaw: -0.6 });
+  return { laid, rails: g.player.inventory.count('rail'), edges: window.voxelcraft.tracks().edges };
+});
+console.log('a curve laid out of nothing:', JSON.stringify(free));
+if (free.rails !== 0 || free.edges === 0) {
+  throw new Error(`the debug mode should lay track for free: ${JSON.stringify(free)}`);
+}
+
+// Spending out of a slot does not empty it either. Straight at the choke point rather
+// than through the hotbar, which by now has nothing free in it.
+const spare = await evaluate(() => window.voxelcraft.game.player.inventory.firstEmpty());
+if (spare < 0) throw new Error('no free slot to test spending with');
+const kept = await evaluate((at) => {
+  const inv = window.voxelcraft.game.player.inventory;
+  inv.set(at, { id: 'stone', count: 3 });
+  inv.consumeAt(at);
+  return inv.get(at)?.count ?? 0;
+}, spare);
+if (kept !== 3) throw new Error(`a spent block should not leave the slot in the debug mode: ${kept}`);
+
+// And off again.
+await evaluate(() => {
+  window.voxelcraft.creative(false);
+  window.voxelcraft.clearTracks();
+});
+await frame();
+const back = await evaluate((at) => {
+  const inv = window.voxelcraft.game.player.inventory;
+  inv.consumeAt(at);
+  const left = inv.get(at)?.count ?? 0;
+  inv.set(at, null);
+  return {
+    left,
+    unlimited: inv.unlimited,
+    badge: document.querySelector('.creative-badge')?.style.display,
+  };
+}, spare);
+console.log('turned back off:', JSON.stringify(back));
+if (back.left !== 2 || back.unlimited !== false || back.badge !== 'none') {
+  throw new Error(`the debug mode did not switch off cleanly: ${JSON.stringify(back)}`);
+}
+
 
 
 // A route runs between two doorways, not two map pins: the shipment leaves the building
@@ -1232,21 +1687,45 @@ console.log('sample route:', JSON.stringify(sampleRoutes));
 if (!sampleRoutes.some((r) => r.vehicle === 'cart' || r.vehicle === 'train')) {
   throw new Error(`the sample road is too narrow for a cart: ${JSON.stringify(sampleRoutes)}`);
 }
-// And it is railed down the middle of all but its first stretch, with the rails for the
-// rest handed over — the half-built railway is the sample's second lesson, and a player
-// who is given neither the gap nor the rails to close it is given only the first.
+// And a railway runs beside it, laid for all but the stretch the player is standing on,
+// with the tool and the rails to close it handed over — the half-built railway is the
+// sample's second lesson, and a player given neither the gap nor the means to close it is
+// given only the first.
 const sampleRail = await evaluate(() => {
-  const surfaces = window.voxelcraft.game.roads.surfaces;
-  let rail = 0;
-  for (const block of surfaces.values()) if (block === 59) rail++;
-  return { rail, columns: surfaces.size, held: window.voxelcraft.game.player.inventory.count('rail') };
+  const g = window.voxelcraft.game;
+  const inv = g.player.inventory;
+  const pinch = window.voxelcraft.routes().find((r) => r.length > 250)?.railPinch ?? null;
+  const under = pinch ? g.world.heightAt(Math.round(pinch.x), Math.round(pinch.z)) : -1;
+  return {
+    ...window.voxelcraft.tracks(),
+    tool: inv.count('track_tool'),
+    held: inv.count('rail'),
+    pinch,
+    // How far over the ground the open end stands. A railway held to a gradient has to fly
+    // over the valleys between two villages in hill country, and the piers say so — but a
+    // line hanging so high that nobody can see what it is for is a different matter.
+    over: pinch && under > 0 ? Math.round((pinch.y - under) * 10) / 10 : null,
+  };
 });
 console.log('sample railway:', JSON.stringify(sampleRail));
-if (sampleRail.rail < 100) {
-  throw new Error(`the sample road carries no railway: ${JSON.stringify(sampleRail)}`);
+if (sampleRail.length < 200) {
+  throw new Error(`the sample world laid no railway: ${JSON.stringify(sampleRail)}`);
 }
-if (sampleRail.held < 60) {
-  throw new Error(`the sample world handed over too few rails: ${JSON.stringify(sampleRail)}`);
+// One line with two ends, not a row of stumps: a curve the builder could not solve would
+// leave a hole in the middle, and a hole in the middle is a railway that never runs.
+if (sampleRail.freeEnds !== 2) {
+  throw new Error(`the sample railway is not one unbroken line: ${JSON.stringify(sampleRail)}`);
+}
+if (sampleRail.tool < 1 || sampleRail.held < 40) {
+  throw new Error(`the sample world handed over no way to finish it: ${JSON.stringify(sampleRail)}`);
+}
+// Left open at the near end, and the panel says where: a finished railway would show the
+// train and none of the lesson.
+if (!sampleRail.pinch) {
+  throw new Error(`the sample railway is not left open for the player: ${JSON.stringify(sampleRail)}`);
+}
+if (sampleRail.over !== null && sampleRail.over > 40) {
+  throw new Error(`the sample railway hangs too high to make sense of: ${JSON.stringify(sampleRail)}`);
 }
 // The gap has to be reported, not merely left: a break nobody is pointed at is a bug the
 // player gets blamed for. (Unless this pair is already a train, in which case there is

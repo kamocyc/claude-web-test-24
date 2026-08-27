@@ -104,3 +104,48 @@ describe('stack drag and drop', () => {
     });
   });
 });
+
+describe('the debug mode where nothing runs out', () => {
+  it('leaves stacks alone when they are spent', () => {
+    const inv = new PlayerInventory();
+    inv.set(0, { id: 'rail', count: 4 });
+    inv.unlimited = true;
+    expect(inv.remove('rail', 3)).toBe(3);
+    expect(inv.get(0)).toEqual({ id: 'rail', count: 4 });
+    inv.consumeAt(0, 2);
+    expect(inv.get(0)).toEqual({ id: 'rail', count: 4 });
+    inv.selected = 0;
+    inv.consumeHeld();
+    expect(inv.get(0)).toEqual({ id: 'rail', count: 4 });
+  });
+
+  it('can supply what it is not even carrying, which is the point of it', () => {
+    const inv = new PlayerInventory();
+    expect(inv.has('rail', 40)).toBe(false);
+    expect(inv.remove('rail', 40)).toBe(0);
+    inv.unlimited = true;
+    expect(inv.has('rail', 40)).toBe(true);
+    expect(inv.remove('rail', 40)).toBe(40);
+  });
+
+  it('still says truthfully what is in the pockets', () => {
+    const inv = new PlayerInventory();
+    inv.unlimited = true;
+    expect(inv.count('wool')).toBe(0);
+    inv.add({ id: 'wool', count: 5 });
+    // A count that answered Infinity would tick off "deliver five wool" for a player
+    // carrying none, so the mode promises free, not omniscient.
+    expect(inv.count('wool')).toBe(5);
+  });
+
+  it('goes back to spending things when it is turned off', () => {
+    const inv = new PlayerInventory();
+    inv.set(0, { id: 'rail', count: 4 });
+    inv.unlimited = true;
+    inv.remove('rail', 4);
+    inv.unlimited = false;
+    expect(inv.remove('rail', 4)).toBe(4);
+    expect(inv.get(0)).toBeNull();
+    expect(inv.has('rail')).toBe(false);
+  });
+});

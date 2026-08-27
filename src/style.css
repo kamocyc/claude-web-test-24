@@ -1012,6 +1012,19 @@ body.screen-open #viewport {
   pointer-events: none;
 }
 
+/* The same box under the crosshair as the building prompt, but three lines of numbers
+   rather than a sentence, so it keeps its own line breaks. */
+.track-readout {
+  white-space: pre-line;
+  font-variant-numeric: tabular-nums;
+}
+
+.track-fault {
+  margin-top: 3px;
+  color: #ff9c9c;
+}
+
+
 .building-title {
   color: rgba(255, 255, 255, 0.92);
 }
@@ -1403,7 +1416,10 @@ body.screen-open #viewport {
 
 /* Loud on purpose: a world quietly running sixteen times faster than the player expects
    is a world that has lied to them. */
-.speed-badge {
+/* Two badges, one shape. They keep separate class names rather than sharing one so that
+   "the fast forward badge" stays a single thing to point at, in CSS and in a test alike. */
+.speed-badge,
+.creative-badge {
   position: absolute;
   /* Just under the compass strip, which owns the top of the screen. */
   top: 52px;
@@ -1418,3 +1434,18 @@ body.screen-open #viewport {
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
+
+/* The debug badge sits under the fast-forward one so both can be up at once, and is
+   green rather than amber so a glance tells them apart. */
+.creative-badge {
+  top: 82px;
+  border-color: rgba(140, 232, 150, 0.5);
+  color: #8ce896;
+}
+
+/* One of everything is a lot of rows; the shelf scrolls rather than the screen. */
+.creative-grid .slots {
+  max-height: 36vh;
+  overflow-y: auto;
+}
+

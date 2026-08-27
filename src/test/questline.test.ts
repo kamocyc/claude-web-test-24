@@ -15,7 +15,7 @@ import {
   type VillageSeed,
   type VillageSource,
 } from '../game/villages';
-import { RAIL_SPEED } from '../game/roads';
+import { RAIL_QUALITY } from '../game/transport';
 import type { Route } from '../game/transport';
 
 const A: VillageSeed = { x: 0, z: 0, baseY: 60, variant: 'plains' };
@@ -311,7 +311,7 @@ describe('milestones', () => {
     village.inputStock = 4;
     // A player who did everything at once is still told what they did, one at a time.
     // Railed rather than merely paved, so the last goal on the list is met as well.
-    const paved: Route = { ...route(true, 0, RAIL_SPEED), vehicle: 'train' };
+    const paved: Route = { ...route(true, 0, RAIL_QUALITY), vehicle: 'train' };
     const earned = quest.claimMilestones(
       state([village], [paved, { ...paved, to: 'c' }, { ...paved, from: 'c', to: 'd' }]),
     );

@@ -132,7 +132,7 @@ export function buildLedger(view: LedgerView): HTMLElement {
         route.connected ? route.grade : '—',
         route.connected ? route.vehicle : '—',
         route.connected ? `${route.load}` : '—',
-        route.connected ? `登り ${route.climb} / ×${route.detour.toFixed(2)}` : '—',
+        route.connected ? `登り ${Math.round(route.climb)} / ×${route.detour.toFixed(2)}` : '—',
         `${route.porters}`,
         `${route.delivered}`,
       ]),
@@ -145,7 +145,7 @@ export function buildLedger(view: LedgerView): HTMLElement {
       'div',
       'ledger-note',
       '舗装は速さ、幅は運ぶ手段を決める — 全区間が幅 3 マスなら荷車が走り、一度に 3 倍運ぶ。' +
-        '全区間がレールなら列車が走り、速さも積む量も上がる（幅は問わない）。' +
+        '線路が両方の村に届いていれば列車が走り、速さも積む量も上がる（道は関係ない）。' +
         '登りは時間を食い、遠回りしても運賃は増えない（運賃は直線距離ぶん）。' +
         '荷は在庫のあるほうの村から出る（在庫 1 個から出発する）。工房は原料が届くまで何も作らない。' +
         '荷は村の「集荷所」の戸口から出て戸口へ入る — 建物を見て F キーで変えられる。',

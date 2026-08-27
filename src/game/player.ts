@@ -1,4 +1,4 @@
-import { type EntityBox, STEP_HEIGHT, stepUpMove, sweepMove } from '../core/aabb';
+import { boxIntersectsWorld, type EntityBox, type StandingSurface, STEP_HEIGHT, stepUpMove, sweepMove } from '../core/aabb';
 import { blockDef } from '../world/blocks';
 import { WATER_FULL } from '../world/water';
 import type { World } from '../world/world';
@@ -44,6 +44,18 @@ const MAX_WATER_FALL = 8;
 
 /** Tallest ledge the player walks up without jumping, in blocks. */
 export const AUTO_STEP_BLOCKS = 3;
+
+/** How far a standing surface reaches from the feet, up or down, on a frame that began
+ *  on the ground.
+ *
+ *  It only has to cover one frame of a deck. The steepest track the solver allows is
+ *  MAX_GRADE (0.2), the fastest the player travels is SPRINT_SPEED, and the longest frame
+ *  the game hands out is a twentieth of a second, so the deck moves at most 0.11 under
+ *  the player in one step. This is three times that, with room for the same frame's
+ *  gravity, and still a third of STEP_HEIGHT - so it can never reach a surface the voxel
+ *  world would have resolved itself, and never competes with the step logic. Anything
+ *  taller is boarded by jumping, which carries over a block of rise. */
+const SURFACE_REACH = 0.35;
 /** Each climb height to try, shortest first. */
 const AUTO_STEP_HEIGHTS = Array.from(
   { length: AUTO_STEP_BLOCKS },
@@ -125,6 +137,10 @@ export class Player implements Damageable {
   flying = false;
   /** Walk up single block steps instead of having to jump every kerb. */
   autoStep = true;
+  /** Surfaces that are not in the block grid - the laid railway, and nothing else so far.
+   *  Assigned by the game each frame, the way `autoStep` is, so that anything driving a
+   *  player without one (the tests, a headless tick) simply does not have it. */
+  surface: StandingSurface | null = null;
 
   get eyeY(): number {
     return this.y + EYE_HEIGHT;
@@ -235,6 +251,7 @@ export class Player implements Damageable {
     const beforeY = this.y;
     const beforeZ = this.z;
     const wasOnGround = this.onGround;
+    let stepped = false;
     // Kept for the step-up retry below, which happens after the collision has zeroed
     // the velocity of whichever axis ran into the wall.
     const attemptedX = this.vx * dt;
@@ -277,7 +294,45 @@ export class Player implements Damageable {
         this.z = box.z;
         this.onGround = true;
         this.vy = Math.max(this.vy, 0);
+        stepped = true;
         break;
+      }
+    }
+
+    // --- standing on something that is not made of blocks --------------------
+    // The sweep cannot land anyone on a railway deck: it answers a collision by snapping
+    // to `Math.floor(y) + 1`, and a deck sits at whatever height the curve put it. So the
+    // blocks are left to the sweep and the deck is settled onto once, afterwards - which
+    // is also what makes a graded run a ramp that is walked up, rather than a flight of
+    // five-centimetre steps that would have to be climbed one per frame.
+    const surface = this.surface;
+    if (surface && !this.flying && !this.inWater && this.vy <= 0) {
+      // The reach opens only for a player who was already standing on something: it is
+      // there so a deck can be followed up and down its own gradient, not so it can grab
+      // somebody falling past. `wasOnGround`, not `this.onGround` - a viaduct has nothing
+      // solid beneath it, so the sweep has just reported no ground at all, and gating on
+      // that would drop the player on the first frame of every descent.
+      const reach = wasOnGround ? SURFACE_REACH : 0;
+      // A climb up a ledge has already put the player on solid ground; the three blocks
+      // it covered are not deck they fell past.
+      const from = stepped ? this.y : beforeY;
+      const top = surface.surfaceTopAt(
+        this.x,
+        this.z,
+        Math.min(this.y, from) - reach,
+        Math.max(this.y, from) + reach,
+      );
+      // The same question the sweep would have asked: a deck buried in a hillside, or one
+      // with no room to stand up in, is not a floor.
+      if (
+        top !== null &&
+        !boxIntersectsWorld(world, {
+          x: this.x, y: top, z: this.z, width: PLAYER_WIDTH, height: PLAYER_HEIGHT,
+        })
+      ) {
+        this.y = top;
+        this.vy = 0;
+        this.onGround = true;
       }
     }
 

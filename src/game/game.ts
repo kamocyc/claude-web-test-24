@@ -5,6 +5,16 @@ import { ChunkRenderer } from '../render/chunkRenderer';
 import { Effects } from '../render/effects';
 import { EntityRenderer } from '../render/entityRenderer';
 import { RouteGuide, type GuideBeam, type GuideLine, type GuidePoint, type GuideView } from '../render/routeGuide';
+import {
+  SAMPLE_STEP,
+  SLEEPER_THICK,
+  TrackRenderer,
+  type TrackEdgeView,
+  type TrackGhostView,
+  type TrackMarkerView,
+  type TrackPierView,
+  type TrackView,
+} from '../render/trackRenderer';
 import { createChunkMaterials, type ChunkMaterials } from '../render/materials';
 import { Sky } from '../render/sky';
 import { Rain } from '../render/rain';
@@ -44,7 +54,7 @@ import { DayCycle } from './daycycle';
 import { DropManager } from './drops';
 import { EXHAUSTION } from './hunger';
 import { HOTBAR_SIZE, Inventory, type ItemStack } from './inventory';
-import { itemDef, itemLabel } from './items';
+import { allItems, itemDef, itemLabel } from './items';
 import { fillVillageChest } from './loot';
 import { bestToolSlot, blockDrops, heldTool, miningTime } from './mining';
 import { Mob } from './mobs/ai';
@@ -74,6 +84,27 @@ import {
   type RoadFault,
   type RoadPoint,
 } from './roads';
+import {
+  MAX_GRADE,
+  MAX_SPAN,
+  MIN_RADIUS,
+  MIN_SPAN,
+  SNAP_RADIUS,
+  TrackNetwork,
+  pointAt,
+  railsFor,
+  sampleTrack,
+  solveTrack,
+  straightSamples,
+  summarise,
+  tangentAt,
+  type TrackAnchor,
+  type TrackFault,
+  type TrackNode,
+  type TrackPoint,
+  type TrackSummary,
+  type TrackSample,
+} from './tracks';
 import { runRoad, treadBrush, treadLine, TREAD_DIRT, type PaveMaterial, type PaveTarget } from './paving';
 import {
   CATCH_UP,
@@ -150,7 +181,7 @@ const GUIDE_PORTER = 0x8ef0b8;
  *  it does not count", which is the one thing the world itself has to say out loud. */
 const GUIDE_FAULT = 0xff5a5a;
 const GUIDE_NARROW = 0xffc457;
-/** Where the rails run out. Violet, because amber already means "too narrow" and red
+/** Where the railway runs out. Violet, because amber already means "too narrow" and red
  *  already means "does not count" — three different jobs need three different colours. */
 const GUIDE_RAILGAP = 0xb08cff;
 /** The doorway a route loads and unloads at. */
@@ -168,6 +199,29 @@ const ROAD_GRADE = MAX_STEP / 2;
 /** How far ahead `[R]` will run a road back to the player's feet. A road is continuous
  *  now, so this is the one place the player says "and the twenty blocks in between". */
 const ROAD_REACH = 20;
+
+/** How far the free-form track tool reaches.
+ *
+ *  Far further than the hand's REACH, and further again than `R`: one gesture lays a
+ *  whole curve, so what the tool can touch has to be the length of one. */
+const TRACK_REACH = 48;
+/** Clear of the face the click landed on, so the deck cannot z-fight with the ground. */
+const TRACK_LIFT = 0.06;
+/** How near the crosshair has to pass a laid curve to pick it up for removal. */
+const TRACK_PICK = 1.2;
+/** Track beyond this is not built into the mesh. */
+const TRACK_DRAW = 128;
+/** Spacing of the legs under floating track, and the drop one has to bridge to appear. */
+const PIER_STEP = 4;
+const PIER_MIN_GAP = 0.4;
+/** How often the track's geometry is worked out again even though nothing about the track
+ *  changed. Piers are the reason: the ground under a run streams in after the run does,
+ *  and a leg that only appeared when the player next laid something would never appear. */
+const TRACK_VIEW_INTERVAL = 1;
+/** The pending start of a curve, and every end a new curve could be joined to. The
+ *  second one is how a player finds out that snapping exists at all. */
+const TRACK_START_MARK = 0xffbb33;
+const TRACK_END_MARK = 0x66ccff;
 /** The length of road the sample world starts with, in blocks. Villages sit on a 320
  *  block grid, so this picks a neighbour rather than the village next door. */
 const SAMPLE_ROAD = 400;
@@ -180,16 +234,46 @@ const PAVE_BRIDGE = 12;
 /** Width of the road the sample world is built with. Three columns is what a cart needs,
  *  and a sample road nobody can run a cart down teaches the wrong half of the lesson. */
 const SAMPLE_WIDTH = 3;
-/** Columns of the sample road left unrailed, at the end the player starts on.
+/** Blocks of the sample railway left unlaid, at the end the player starts on.
  *
- *  A railway handed over finished shows the train and nothing else: not the tools, not
- *  the violet beacon over the break, not what a line looks like while it is half done.
- *  Leaving the near end bare puts all three in front of the player at once, and the walk
- *  to close it is three presses of `[R]` rather than an afternoon. */
-const SAMPLE_RAIL_GAP = 60;
+ *  A railway handed over finished shows the train and nothing else: not the tool, not the
+ *  violet beacon over the break, not what a line looks like while it is half done.
+ *  Leaving the near end open puts all three in front of the player at once. Short enough
+ *  that one curve closes it: from the open end, a village is inside both the tool's reach
+ *  and a station's, so the lesson is one gesture rather than a march. */
+const SAMPLE_TRACK_GAP = 48;
 /** Rails the sample world hands over: enough for the gap, and enough over it that a
  *  wandering line or a second thought does not strand the player halfway. */
-const SAMPLE_RAIL_SPARE = 24;
+const SAMPLE_TRACK_SPARE = 24;
+/** How far to one side of the sample road its railway runs.
+ *
+ *  Not on top of it. The road and the railway are the two halves of the demonstration and
+ *  a deck laid over the road would hide one of them — and, standing on the road, the point
+ *  of a railway is much easier to see from underneath it. */
+const SAMPLE_TRACK_OFFSET = 6;
+/** How finely a curve is cut up for the map. Two blocks to the pixel there, so anything
+ *  under about eight is drawing detail nobody can see. */
+const MINIMAP_RAIL_STEP = 6;
+/** Blocks between two ends of the sample railway. Comfortably inside MAX_SPAN, and long
+ *  enough that the line is a handful of curves rather than a hundred stitches. */
+const SAMPLE_TRACK_STEP = 64;
+/** How often the ground under the sample railway is asked how high it is. */
+const SAMPLE_TRACK_PROBE = 8;
+/** How far over the highest ground it passes the sample deck is held. Two is enough to
+ *  walk under and to see daylight through, and low enough that the piers stay short. */
+const SAMPLE_TRACK_CLEAR = 2;
+/** The steepest the sample line is laid at.
+ *
+ *  Under MAX_GRADE, but not by much, and the reason is the opposite of the obvious one: a
+ *  *gentler* line is a *higher* one. The deck is an envelope over the ground, so it falls
+ *  away from every hill at exactly this slope — halve it and every peak throws its shadow
+ *  twice as far, and the whole line rises to clear a mountain a quarter of a mile off. A
+ *  demonstration that crosses the country thirty blocks up demonstrates the wrong thing.
+ *
+ *  It cannot go to MAX_GRADE itself. The profile between two ends is a curve rather than a
+ *  ramp, so the middle of a run is steeper than its ends are apart, and a line laid at the
+ *  limit would have the solver refuse half of it. */
+const SAMPLE_TRACK_GRADE = 0.15;
 /** Seconds between two complaints about a road that will not take. Often enough to catch
  *  the branch the player is standing under, rarely enough to stay out of the way. */
 const FAULT_TOAST_INTERVAL = 4;
@@ -237,6 +321,23 @@ export class Game {
   private readonly chunkRenderer: ChunkRenderer;
   private readonly entityRenderer: EntityRenderer;
   private readonly routeGuide = new RouteGuide();
+  private readonly trackRenderer = new TrackRenderer();
+  /** The free-form railway. Not readonly: a save replaces it wholesale. */
+  private trackNet = new TrackNetwork();
+  /** The railway as the map draws it, kept until the track or the player moves far
+   *  enough to matter. Sampling every curve in range is the same work the world renderer
+   *  caches, and the map asks for it on every frame. */
+  private railMap: { key: string; lines: { x: number; z: number }[][] } | null = null;
+  /** The start of a curve that has been clicked but not yet finished. */
+  private trackDraft: { anchor: TrackAnchor; node: number | null } | null = null;
+  private trackGhost: TrackGhostView | null = null;
+  /** Why the shape under the crosshair will not be built, for the console and the toast. */
+  private trackGhostFault: TrackFault | null = null;
+  /** What the shape under the crosshair is, for the readout under the crosshair. */
+  private trackReadout: { lines: string[]; fault: string | null } | null = null;
+  private trackViewCache: TrackView | null = null;
+  private trackViewKey = '';
+  private trackViewTimer = 0;
   /** Draped guide lines by route, so a road is only walked over again when it moves. */
   private readonly guideLines = new Map<string, { key: string; points: GuidePoint[] }>();
   /** Buildings by village, rebuilt only when the village grows a new one. */
@@ -338,7 +439,10 @@ export class Game {
     this.effects = new Effects(this.atlas);
     this.sky = new Sky(this.scene, this.renderDistance * CHUNK_SIZE);
     this.rain = new Rain(this.scene);
-    this.scene.add(this.chunkRenderer.group, this.entityRenderer.group, this.effects.group, this.routeGuide.group);
+    this.scene.add(
+      this.chunkRenderer.group, this.entityRenderer.group, this.effects.group,
+      this.routeGuide.group, this.trackRenderer.group,
+    );
 
     this.mobs = new MobManager(this.world, options.seed);
     this.drops = new DropManager(this.world);
@@ -366,6 +470,15 @@ export class Game {
           const village = this.villages.get(id);
           return village ? this.buildingsFor(village) : [];
         },
+      },
+      // The railway, as the two questions freight has of it. `this.trackNet` is read
+      // through the closures rather than captured, because loading a save replaces the
+      // network wholesale and a captured one would leave transport surveying the world
+      // the player left behind.
+      {
+        wayBetween: (from, to) => this.trackNet.wayBetween(from, to),
+        railheadTowards: (from, to) => this.trackNet.railheadTowards(from, to),
+        revision: () => this.trackNet.revision,
       },
     );
     this.hud = new Hud(this.atlas);
@@ -415,6 +528,7 @@ export class Game {
     this.rain.dispose();
     this.pool.dispose();
     this.chunkRenderer.dispose();
+    this.trackRenderer.dispose();
     this.hud.root.remove();
     this.screens.close();
     this.screens.layer.remove();
@@ -442,6 +556,10 @@ export class Game {
   };
 
   private update(dt: number): void {
+    // Read rather than pushed: the setting can be flipped from the pause menu, from the
+    // console, or by a preferences file loaded at boot, and one assignment a frame is
+    // cheaper than three places remembering to call a setter.
+    this.player.inventory.unlimited = this.options.settings.creative;
     this.streamChunks();
     this.light.update(20000);
     this.chunkRenderer.processDirty(MESH_BUDGET, this.player.x, this.player.z);
@@ -485,6 +603,11 @@ export class Game {
     }
 
     this.player.autoStep = this.options.settings.autoStep;
+    // Assigned every frame rather than once, because loading a save replaces the network
+    // wholesale. The only other thing given it is the train, in `spawnPorter`: it has
+    // freight to carry along the deck. A porter or a cart has no reason to be up on a
+    // viaduct and no way down off one, and a dropped item has neither.
+    this.player.surface = this.trackNet;
     this.applyDifficulty();
     if (this.settlePending && this.settlePlayerOnGround()) this.settlePending = false;
     this.water.setCenter(this.player.x, this.player.z);
@@ -626,6 +749,10 @@ export class Game {
   private render(dt: number): void {
     this.routeGuide.setVisible(this.options.settings.guide);
     if (this.options.settings.guide) this.routeGuide.update(this.guideView(), dt);
+    // Not behind the guide setting: laid track is something the player built, not a
+    // hint drawn over the world. What the setting would switch off is the ghost, and
+    // that is already gated on holding the tool.
+    this.trackRenderer.update(this.trackView(dt));
     this.camera.position.set(this.player.x, this.player.eyeY, this.player.z);
     this.camera.rotation.set(this.player.pitch, this.player.yaw, 0, 'YXZ');
     const wetness = this.forecast().wetness;
@@ -670,6 +797,7 @@ export class Game {
       showRoutes: this.options.settings.routes,
       showCoords: this.options.settings.coords,
       building: this.buildingPrompt(),
+      track: this.heldTrackTool() ? this.trackReadout : null,
       overlay: {
         markers,
         // Only the roads that could be on screen: the index holds every column the player
@@ -680,6 +808,7 @@ export class Game {
           this.player.x + MINIMAP_REACH,
           this.player.z + MINIMAP_REACH,
         ),
+        rails: this.railOverlay(),
         gap:
           questRoute?.gapFrom && questRoute.gapTo
             ? { from: questRoute.gapFrom, to: questRoute.gapTo }
@@ -750,6 +879,7 @@ export class Game {
       mobs: this.mobs.mobs.length,
       speed: this.options.settings.speed,
       effectiveSpeed: this.effectiveSpeed,
+      creative: this.options.settings.creative,
       waterDepth: this.water.depthAt(
         Math.floor(this.player.x),
         Math.floor(this.player.y + 0.4),
@@ -854,6 +984,13 @@ export class Game {
         case 'F3':
           event.preventDefault();
           this.hud.toggleDebug();
+          break;
+        case 'KeyC':
+          if (this.paused || this.player.isDead) break;
+          if (this.screens.kind === 'creative') this.closeScreen();
+          else if (!this.options.settings.creative) {
+            this.hud.toast('デバッグモードが切になっている（Esc のポーズ画面で入れる）');
+          } else this.openScreen(() => this.screens.openCreative());
           break;
         case 'KeyL':
           if (this.paused || this.player.isDead) break;
@@ -986,6 +1123,17 @@ export class Game {
     this.updateLookedAtBuilding(eye, look);
 
     const input = this.options.input;
+    // Holding the track tool takes over the mouse entirely. An early return rather than
+    // another branch inside `useItem`: it is the cheapest possible guarantee that the
+    // new railway cannot disturb attacking, mining, the shovel's sweep or the rail
+    // item's, all of which are already on these two buttons.
+    if (this.heldTrackTool()) {
+      this.effects.setSelection(null);
+      this.resetMining();
+      this.updateTrackLaying(dt);
+      return;
+    }
+    if (this.trackDraft) this.cancelTrackDraft(false);
     if (input.buttonJustPressed(0)) {
       const mob = this.mobUnderCrosshair(eye, look);
       if (mob) {
@@ -1039,35 +1187,20 @@ export class Game {
 
     const from = this.paveFrom;
     const span = from ? Math.max(Math.abs(hit.x - from.x), Math.abs(hit.z - from.z)) : 0;
-    const laid =
-      from && span > 1 && span <= PAVE_BRIDGE
-        ? treadLine(this.paveTarget, from, hit, from.y, material).laid
-        : treadBrush(this.paveTarget, hit.x, hit.z, hit.y, material).laid;
+    if (from && span > 1 && span <= PAVE_BRIDGE) treadLine(this.paveTarget, from, hit, from.y, material);
+    else treadBrush(this.paveTarget, hit.x, hit.z, hit.y, material);
     this.paveFrom = { x: hit.x, y: hit.y, z: hit.z };
-    if (laid === 0 && material.supply && !this.player.inventory.has('rail')) {
-      this.warn('レールが尽きた');
-      return;
-    }
     this.reportPavingFaults(PAVE_INTERVAL, hit.x, hit.z);
   }
 
-  /** What the held item lays while the right button is down, and what it costs.
+  /** What the held item lays while the right button is down.
    *
-   *  This is the whole of "rail laying is a build mode": there is no mode, only what is
-   *  in the player's hand, exactly as the shovel has always worked. Dirt is free and
-   *  sweeps three columns across because a wide road is what buys a cart; rails go down
-   *  single file out of the pack, because a train needs one column and every one of them
-   *  was smelted. */
+   *  There is no mode, only what is in the player's hand. A shovel treads a path; nothing
+   *  else lays anything, because the one other thing worth building along a route is a
+   *  railway, and a railway is not made of blocks any more — it is drawn with the track
+   *  tool, which takes the mouse over entirely. */
   private heldPaving(): PaveMaterial | null {
-    const held = this.player.inventory.held;
-    if (held?.id === 'rail') {
-      return {
-        block: Block.RAIL,
-        width: 1,
-        supply: { take: () => this.player.inventory.remove('rail', 1) > 0 },
-      };
-    }
-    return heldTool(held)?.tool?.kind === 'shovel' ? TREAD_DIRT : null;
+    return heldTool(this.player.inventory.held)?.tool?.kind === 'shovel' ? TREAD_DIRT : null;
   }
 
   /** A toast that cannot repeat itself into a wall. Shares the fault timer, because both
@@ -1119,24 +1252,14 @@ export class Game {
     }
     // Whatever is in hand decides what the line is made of, the same as the sweep.
     const material = this.heldPaving() ?? TREAD_DIRT;
-    const rails = material.block === Block.RAIL;
-    const held = rails ? this.player.inventory.count('rail') : 0;
-    const spine = this.runRoad(
+    const laid = this.runRoad(
       { x: hit.x, z: hit.z },
       { x: Math.floor(this.player.x), z: Math.floor(this.player.z) },
       material.block,
       hit.y,
-      undefined,
-      1,
-      material.supply,
     );
-    // What the pile paid for is the honest length of a rail run: the spine is how far the
-    // line was planned, and the two part company exactly when the rails ran out.
-    const laid = rails ? held - this.player.inventory.count('rail') : spine;
-    const what = rails ? 'レール' : '道';
-    if (laid === 0) this.hud.toast(`${what}をのばせる地面がない`);
-    else if (rails && laid < spine) this.hud.toast(`レールが ${laid} マスで尽きた`);
-    else this.hud.toast(`${what}を ${laid} マスのばした`);
+    if (laid === 0) this.hud.toast('道をのばせる地面がない');
+    else this.hud.toast(`道を ${laid} マスのばした`);
     this.faultToastTimer = 0;
     this.reportPavingFaults(0, hit.x, hit.z);
   }
@@ -1525,6 +1648,368 @@ export class Game {
   }
 
 
+
+  // --- the free-form railway --------------------------------------------------
+
+  private heldTrackTool(): boolean {
+    return this.player.inventory.held?.id === 'track_tool';
+  }
+
+  /** Where the tool is pointing, as a point in the world rather than as a block.
+   *
+   *  The voxel walk gives back the distance at which it entered the block it hit, and that
+   *  distance is measured along a unit direction, so `eye + look * distance` is the exact
+   *  place the line of sight crossed the face. That exactness is the whole point: this
+   *  railway is not on the grid, and a click rounded to a block corner would put it back. */
+  private trackAim(): { point: TrackPoint; node: TrackNode | null } {
+    const eye = { x: this.player.x, y: this.player.eyeY, z: this.player.z };
+    const look = this.player.lookVector();
+    // An end the line of sight passes wins outright, before the ground is consulted at
+    // all: track hanging in the air is not in the block grid, so the ray goes through it
+    // and lands somewhere behind. Without this the one end most worth building on - the
+    // far end of a viaduct - is the one that cannot be pointed at.
+    const onRay = this.trackNet.nodeAlongRay(eye, look, TRACK_REACH);
+    if (onRay) return { point: { x: onRay.x, y: onRay.y, z: onRay.z }, node: onRay };
+    const hit = raycastVoxels(this.world, eye, look, { maxDistance: TRACK_REACH });
+    // A hit at zero distance means the eye is inside a block; there is no face there.
+    const point = hit && hit.distance >= 0.5
+      ? {
+        x: eye.x + look.x * hit.distance + hit.nx * TRACK_LIFT,
+        y: eye.y + look.y * hit.distance + hit.ny * TRACK_LIFT,
+        z: eye.z + look.z * hit.distance + hit.nz * TRACK_LIFT,
+      }
+      : this.trackAimInAir(eye, look);
+    return { point, node: this.trackNet.nodeAt(point, SNAP_RADIUS) };
+  }
+
+  /** Aiming at nothing at all is not a mistake here, it is how a gorge gets crossed.
+   *
+   *  The point is put where the line of sight crosses the height the track is being laid
+   *  at, which over a drop is the place the player means. Looking up there is no crossing,
+   *  so the track simply runs out level as far as the tool reaches. Either way the ghost
+   *  is already drawing where it will go, so nothing lands somewhere unseen. */
+  private trackAimInAir(eye: TrackPoint, look: TrackPoint): TrackPoint {
+    const deck = this.trackDraft ? this.trackDraft.anchor.y : this.player.y;
+    const flat = Math.hypot(look.x, look.z);
+    if (flat < 1e-3) return { x: eye.x, y: deck, z: eye.z };
+    const cross = Math.abs(look.y) > 1e-3 ? (deck - eye.y) / look.y : -1;
+    if (cross > 0.5 && cross <= TRACK_REACH) {
+      return { x: eye.x + look.x * cross, y: deck, z: eye.z + look.z * cross };
+    }
+    return {
+      x: eye.x + (look.x / flat) * TRACK_REACH,
+      y: deck,
+      z: eye.z + (look.z / flat) * TRACK_REACH,
+    };
+  }
+
+  /** A click, as one end of a curve.
+   *
+   *  The heading is the player's yaw and nothing else - deliberately not their whole look
+   *  vector. Aiming at the ground means looking thirty to sixty degrees down, and track
+   *  that left at the angle the player was looking would ramp into the sky every time.
+   *
+   *  An end that is already there overrules the yaw completely: position, heading and
+   *  slope all come from the node. That is what "match the angle of the track that is
+   *  already there" means, and it is why the joint comes out exactly continuous rather
+   *  than nearly. `continuationAt` answers in the direction a curve *leaves* in, so an end
+   *  a curve *arrives* at is the same direction turned round. */
+  private trackAnchorAt(
+    aim: { point: TrackPoint; node: TrackNode | null },
+    arriving: boolean,
+  ): TrackAnchor {
+    if (!aim.node) {
+      const yaw = this.player.yaw;
+      return {
+        x: aim.point.x,
+        y: aim.point.y,
+        z: aim.point.z,
+        hx: -Math.sin(yaw),
+        hz: -Math.cos(yaw),
+        grade: 0,
+      };
+    }
+    const snap = this.trackNet.continuationAt(aim.node);
+    const sign = arriving ? -1 : 1;
+    return {
+      x: aim.node.x,
+      y: aim.node.y,
+      z: aim.node.z,
+      hx: snap.hx * sign,
+      hz: snap.hz * sign,
+      grade: snap.grade * sign,
+    };
+  }
+
+  private updateTrackLaying(dt: number): void {
+    // `warn` shares the paving fault timer, and while the tool is out nothing else is
+    // winding it down.
+    this.faultToastTimer -= dt;
+    const input = this.options.input;
+    const aim = this.trackAim();
+    if (input.buttonJustPressed(2)) {
+      if (this.trackDraft) this.commitTrack(aim);
+      else this.beginTrack(aim);
+    }
+    if (input.buttonJustPressed(0)) {
+      if (this.trackDraft) this.cancelTrackDraft(true);
+      else this.removeTrackLookedAt();
+    }
+    this.updateTrackGhost(aim);
+  }
+
+  private beginTrack(aim: { point: TrackPoint; node: TrackNode | null }): void {
+    if (aim.node && aim.node.edges.length >= 2) {
+      this.warn(trackFaultText('occupied', 0));
+      return;
+    }
+    this.trackDraft = { anchor: this.trackAnchorAt(aim, false), node: aim.node?.id ?? null };
+    this.hud.toast(aim.node
+      ? '既存の線路の端につないだ。もう一度右クリックで終点'
+      : '始点を置いた。もう一度右クリックで終点');
+  }
+
+  private cancelTrackDraft(announce: boolean): void {
+    this.trackDraft = null;
+    this.trackGhost = null;
+    this.trackGhostFault = null;
+    this.trackReadout = null;
+    if (announce) this.hud.toast('敷設をやめた');
+  }
+
+  private commitTrack(aim: { point: TrackPoint; node: TrackNode | null }): void {
+    const draft = this.trackDraft;
+    if (!draft) return;
+    const laid = this.trackNet.lay(draft.anchor, this.trackAnchorAt(aim, true), {
+      ...(draft.node !== null ? { fromNode: draft.node } : {}),
+      ...(aim.node ? { toNode: aim.node.id } : {}),
+    });
+    if (!laid.ok) {
+      // The start stays where it was put. The fix for almost every refusal is to turn a
+      // little and click again, and making the player set the start down a second time
+      // would charge them for the game's opinion.
+      this.warn(trackFaultText(laid.fault, laid.value, laid.curve ? summarise(laid.curve).turn : null));
+      return;
+    }
+    const cost = railsFor(laid.edge.curve.length);
+    if (!this.player.inventory.has('rail', cost)) {
+      const short = cost - this.player.inventory.count('rail');
+      this.trackNet.remove(laid.edge.id);
+      this.warn(`レールが足りない（あと ${short} 本）`);
+      return;
+    }
+    const spent = this.player.inventory.remove('rail', cost);
+    this.trackDraft = null;
+    this.trackGhost = null;
+    this.trackGhostFault = null;
+    this.trackReadout = null;
+    const built = summarise(laid.edge.curve);
+    // Everything the run turned out to be, in one bracket: what it does, and what it cost
+    // when it cost anything. In the debug mode nothing was spent, and a toast that said
+    // otherwise would be the one line on screen quietly lying about what just happened.
+    const parts = [
+      Math.abs(built.steepest) < LEVEL
+        ? null
+        : `${slopeWord(built.steepest)} ${Math.round(Math.abs(built.steepest) * 100)}%`,
+      built.bend === 'straight'
+        ? null
+        : built.bend === 's'
+          ? `S字 半径 ${built.radius.toFixed(0)} マス`
+          : `${bendWord(built.bend)} 半径 ${built.radius.toFixed(0)} マス`,
+      this.player.inventory.unlimited ? null : `レール ${spent} 本`,
+    ].filter((part) => part !== null);
+    this.hud.toast(
+      `線路を ${Math.round(built.length)} マスのばした${parts.length > 0 ? `（${parts.join(' / ')}）` : ''}`,
+    );
+  }
+
+  /** Takes out the run under the crosshair. Picked against the curve rather than against
+   *  the block the ray stops at, for the same reason `trackAim` is. */
+  private removeTrackLookedAt(): void {
+    const eye = { x: this.player.x, y: this.player.eyeY, z: this.player.z };
+    const edge = this.trackNet.edgeAlongRay(eye, this.player.lookVector(), TRACK_REACH, TRACK_PICK);
+    if (!edge) return;
+    // Half back, the way a pickaxe gives back less than a furnace cost.
+    const refund = Math.floor(railsFor(edge.curve.length) / 2);
+    this.trackNet.remove(edge.id);
+    const paid = this.player.inventory.unlimited ? 0 : refund;
+    if (paid > 0) {
+      const left = this.player.inventory.add({ id: 'rail', count: paid });
+      if (left > 0) this.dropAtPlayer({ id: 'rail', count: left });
+    }
+    this.hud.toast(paid > 0 ? `線路を撤去した（レール ${paid} 本）` : '線路を撤去した');
+  }
+
+  /** The curve as it would be if the player clicked now.
+   *
+   *  Because the shape is a pure function of the aim and the yaw, the end of the ghost
+   *  follows the player's head with no extra machinery at all - turning on the spot is how
+   *  the curve gets chosen. A shape the solver refuses still draws, as a thin line, so the
+   *  reason is visible while they are still turning rather than only after they click. */
+  private updateTrackGhost(aim: { point: TrackPoint; node: TrackNode | null }): void {
+    const draft = this.trackDraft;
+    if (!draft) {
+      this.trackGhost = null;
+      this.trackReadout = null;
+      return;
+    }
+    const to = this.trackAnchorAt(aim, true);
+    const solved = solveTrack(draft.anchor, to);
+    // Quantised, so that the small movements of a head that is really still do not rebuild
+    // a few thousand vertices every frame.
+    const key = [
+      Math.round(to.x * 8), Math.round(to.y * 8), Math.round(to.z * 8),
+      Math.round(this.player.yaw * 64), aim.node?.id ?? 0,
+      this.trackNet.revision, solved.ok ? 1 : 0,
+    ].join(',');
+    this.trackGhostFault = solved.ok ? null : solved.fault;
+    // Described whether or not it will be built. "Too steep" is not an answer a player can
+    // act on until they know it was 45% and going up.
+    const summary = solved.ok ? summarise(solved.curve) : solved.curve ? summarise(solved.curve) : null;
+    this.trackReadout = {
+      lines: summary ? trackLines(summary) : [],
+      fault: solved.ok
+        ? null
+        : trackFaultText(solved.fault, solved.value, summary?.turn ?? null),
+    };
+    this.trackGhost = solved.ok
+      ? { samples: sampleTrack(solved.curve, SAMPLE_STEP), valid: true, key }
+      : { samples: straightSamples(draft.anchor, to), valid: false, key };
+  }
+
+  /** What the renderer draws.
+   *
+   *  Sampling every curve in range is far too much to do sixty times a second for track
+   *  that has not moved since it was laid, so the heavy half is kept and only worked out
+   *  again when the network changes, when a different set of runs comes into range, or
+   *  once a second so that piers can find ground that has since loaded. The markers and
+   *  the ghost are cheap and want to be current, so they are refreshed every frame. */
+  private trackView(dt: number): TrackView | null {
+    const holding = this.heldTrackTool();
+    if (this.trackNet.edges.size === 0 && !holding) {
+      this.trackViewCache = null;
+      this.trackViewKey = '';
+      return null;
+    }
+    this.trackViewTimer -= dt;
+    const near = this.trackNet.edgesNear(this.player.x, this.player.z, TRACK_DRAW);
+    near.sort((a, b) => a.id - b.id);
+    const key = `${this.trackNet.revision}:${near.map((edge) => edge.id).join(',')}`;
+    if (!this.trackViewCache || key !== this.trackViewKey || this.trackViewTimer <= 0) {
+      this.trackViewKey = key;
+      this.trackViewTimer = TRACK_VIEW_INTERVAL;
+      const edges: TrackEdgeView[] = [];
+      const piers: TrackPierView[] = [];
+      for (const edge of near) {
+        const samples = sampleTrack(edge.curve, SAMPLE_STEP);
+        edges.push({ id: edge.id, samples });
+        this.collectPiers(samples, piers);
+      }
+      this.trackViewCache = {
+        // The pier count is in here because a pier over an unloaded chunk is skipped:
+        // without it, the far end of a long run would never grow its legs.
+        key: `${key}:${piers.length}`,
+        edges,
+        piers,
+        markers: [],
+        ghost: null,
+      };
+    }
+    const view = this.trackViewCache;
+    view.markers = holding ? this.trackMarkers() : [];
+    view.ghost = holding ? this.trackGhost : null;
+    return view;
+  }
+
+  /** Every end a new curve could be joined to, plus the start of the one being laid.
+   *  Without these, snapping is a rule the player can only find out about by accident. */
+  private trackMarkers(): TrackMarkerView[] {
+    const markers: TrackMarkerView[] = [];
+    for (const node of this.trackNet.freeEnds()) {
+      if (Math.hypot(node.x - this.player.x, node.z - this.player.z) > TRACK_DRAW) continue;
+      markers.push({ x: node.x, y: node.y, z: node.z, colour: TRACK_END_MARK });
+    }
+    const draft = this.trackDraft;
+    if (draft) {
+      markers.push({
+        x: draft.anchor.x, y: draft.anchor.y, z: draft.anchor.z, colour: TRACK_START_MARK,
+      });
+    }
+    return markers;
+  }
+
+  /** Legs under whatever floats. Nothing is put under a column whose chunk is not loaded:
+   *  `heightAt` answers -1 there, and a pier guessed onto ground nobody has generated
+   *  would be worse than the gap it was covering up. */
+  private collectPiers(samples: TrackSample[], into: TrackPierView[]): void {
+    let travelled = 0;
+    let next = PIER_STEP / 2;
+    for (let i = 1; i < samples.length; i++) {
+      const a = samples[i - 1];
+      const b = samples[i];
+      const span = Math.hypot(b.x - a.x, b.z - a.z);
+      if (span < 1e-6) continue;
+      while (next <= travelled + span) {
+        const t = (next - travelled) / span;
+        next += PIER_STEP;
+        const x = a.x + (b.x - a.x) * t;
+        const y = a.y + (b.y - a.y) * t;
+        const z = a.z + (b.z - a.z) * t;
+        const ground = this.world.heightAt(Math.floor(x), Math.floor(z));
+        if (ground < 0) continue;
+        const top = y - SLEEPER_THICK;
+        const bottom = ground + 1;
+        if (top - bottom <= PIER_MIN_GAP) continue;
+        const flat = Math.hypot(a.tx, a.tz) || 1;
+        into.push({ x, z, top, bottom, sx: a.tz / flat, sz: -a.tx / flat });
+      }
+      travelled += span;
+    }
+  }
+
+  /** Lays a curve from two positions and two yaws, skipping the aiming and the cost.
+   *  Building a demonstration by hand is the player's afternoon, not the browser test's. */
+  private debugLayTrack(
+    from: { x: number; y: number; z: number; yaw: number; grade?: number },
+    to: { x: number; y: number; z: number; yaw: number; grade?: number },
+  ): { ok: boolean; fault?: TrackFault; value?: number; edge?: number; length?: number } {
+    const anchor = (at: { x: number; y: number; z: number; yaw: number; grade?: number }): TrackAnchor => ({
+      x: at.x, y: at.y, z: at.z, hx: -Math.sin(at.yaw), hz: -Math.cos(at.yaw), grade: at.grade ?? 0,
+    });
+    const laid = this.trackNet.lay(anchor(from), anchor(to));
+    if (!laid.ok) return { ok: false, fault: laid.fault, value: laid.value };
+    return { ok: true, edge: laid.edge.id, length: laid.edge.curve.length };
+  }
+
+  /** A straight run, a right-hand curve and a left-hand one, laid end to end from where
+   *  the player is standing. One call shows the whole of what this railway does: that it
+   *  curves, that a joint between two curves has no kink in it, and that none of it cares
+   *  what the ground underneath is doing. */
+  private buildSampleTrack(): { edges: number; length: number } {
+    const radius = 14;
+    const y = this.player.y + 0.5;
+    let x = this.player.x;
+    let z = this.player.z;
+    let heading = this.player.yaw;
+    let laid = 0;
+    for (const turn of [0, 0.9, -0.9]) {
+      // The chord of a circular arc of this radius through this much of a turn, so the
+      // curve the solver finds is the one that was asked for.
+      const chord = turn === 0 ? 24 : 2 * radius * Math.sin(Math.abs(turn) / 2);
+      const nx = x - Math.sin(heading + turn / 2) * chord;
+      const nz = z - Math.cos(heading + turn / 2) * chord;
+      const result = this.debugLayTrack(
+        { x, y, z, yaw: heading },
+        { x: nx, y, z: nz, yaw: heading + turn },
+      );
+      if (result.ok) laid++;
+      x = nx;
+      z = nz;
+      heading += turn;
+    }
+    return { edges: laid, length: this.trackNet.totalLength() };
+  }
+
   // --- villages, roads and transport -----------------------------------------
 
   private updateVillages(dt: number): void {
@@ -1698,8 +2183,9 @@ export class Game {
       if (route !== questRoute && !this.nearPlayer(route.cartPinch, FAULT_REACH * 2)) continue;
       beams.push({ ...route.cartPinch, colour: GUIDE_NARROW, height: 10 });
     }
-    // Where the rails run out. Only on lines somebody has started railing: `surveyRail`
-    // hands back no pinch at all for a road with not one rail on it.
+    // Where the railway towards the far village stops. Only for a pair somebody has
+    // started laying one between: `railheadTowards` hands back nothing at all when
+    // neither village has a station.
     for (const route of this.transport.routes) {
       if (!route.connected || !route.railPinch) continue;
       if (route !== questRoute && !this.nearPlayer(route.railPinch, FAULT_REACH * 2)) continue;
@@ -2088,8 +2574,13 @@ export class Game {
 
   private spawnPorter(point: RoadPoint, vehicle: Vehicle): number | null {
     if (!this.world.hasChunk(toChunkCoord(point.x), toChunkCoord(point.z))) return null;
-    const mob = new Mob(vehicle, point.x + 0.5, point.y + 1, point.z + 0.5);
+    const middle = centreOf(vehicle);
+    const mob = new Mob(vehicle, point.x + middle, point.y + 1, point.z + middle);
     mob.follow = { x: mob.x, z: mob.z };
+    // The one thing on rails is the only thing given the deck to stand on. Everything
+    // else that walks has no reason to be up on a viaduct and no way down off one; a
+    // train has both, and without this it walks off the first pier and falls.
+    if (vehicle === 'train') mob.surface = this.trackNet;
     this.mobs.add(mob);
     this.porterMobs.set(mob.id, mob);
     return mob.id;
@@ -2109,8 +2600,9 @@ export class Game {
   private movePorter(id: number, point: RoadPoint, speed: number): void {
     const mob = this.livePorter(id);
     if (!mob) return;
-    const x = point.x + 0.5;
-    const z = point.z + 0.5;
+    const middle = centreOf(mob.kind);
+    const x = point.x + middle;
+    const z = point.z + middle;
     mob.follow = { x, z };
     const lag = Math.hypot(mob.x - x, mob.z - z);
     // A porter on a paved road has to walk as fast as the goods it is following, or it
@@ -2213,6 +2705,19 @@ export class Game {
     return this.runRoad(start, end, block, start.y, end.y, width);
   }
 
+  /** Lays a railway between two villages, end to end. */
+  private debugBuildRailway(fromId?: string, toId?: string): number {
+    const from = this.villages.get(fromId ?? this.questline.originId ?? '');
+    const to = this.villages.get(toId ?? this.questline.targetId ?? '');
+    if (!from || !to) return 0;
+    const built = this.layRailway(
+      this.roads.streetPoint(from, to.x, to.z),
+      this.roads.streetPoint(to, from.x, from.z),
+    );
+    this.transport.invalidate();
+    return Math.round(built.length);
+  }
+
   /** Lays an unbroken line of road columns from one point to the other. */
   private runRoad(
     from: { x: number; z: number },
@@ -2221,12 +2726,11 @@ export class Game {
     startY: number,
     endY?: number,
     width = 1,
-    supply: { take(): boolean } | null = null,
   ): number {
     return runRoad(
       {
         ground: (x, z) => this.groundHeightAt(x, z),
-        lay: (x, y, z) => this.layRoadColumn(x, y, z, block, supply),
+        lay: (x, y, z) => this.layRoadColumn(x, y, z, block),
       },
       from,
       to,
@@ -2255,14 +2759,11 @@ export class Game {
     y: number,
     z: number,
     block: BlockId = Block.DIRT_PATH,
-    supply: { take(): boolean } | null = null,
   ): void {
     const surface = this.betterOf(x, y, z, block);
-    // Nothing to do, and so nothing to pay for: running rails back along rails that are
-    // already there should cost the player no iron at all.
+    // Nothing to do: a line run back over road that is already there changes nothing.
     const here = `${x},${z}`;
     if (this.roads.columns.get(here) === y && this.roads.surfaces.get(here) === surface) return;
-    if (supply && !supply.take()) return;
     if (this.world.hasChunk(toChunkCoord(x), toChunkCoord(z))) {
       this.world.setBlock(x, y, z, surface);
       // Headroom, and then whatever falls into it. Cutting under a dune drops the entire
@@ -2471,18 +2972,13 @@ export class Game {
     const start = this.roads.streetPoint(from, to.x, to.z);
     const end = this.roads.streetPoint(to, from.x, from.z);
     const blocks = this.runRoad(start, end, Block.DIRT_PATH, start.y, end.y, SAMPLE_WIDTH);
-    // Then the same line again in rail, one column wide, skipping the stretch nearest the
-    // player. The spine is worked out from `start` and `end` alone and is laid in order,
-    // so this second pass lands on exactly the centre of the band the first one put down,
-    // at the same heights — and `betterOf` keeps rail over dirt, so the road underneath
-    // is not disturbed. What comes out is a road three across with rails down the middle
-    // of all but its first `SAMPLE_RAIL_GAP` columns.
-    let reached = 0;
-    this.runRoad(start, end, Block.RAIL, start.y, end.y, 1, {
-      take: () => ++reached > SAMPLE_RAIL_GAP,
-    });
-    const gap = Math.min(SAMPLE_RAIL_GAP, reached);
-    this.player.inventory.add({ id: 'rail', count: gap + SAMPLE_RAIL_SPARE });
+    // Then a railway beside it, which is the other half of the demonstration: the same
+    // two villages joined by something that does not touch the ground at all. The stretch
+    // nearest the player is left open, and the tool and the rails to close it go in the
+    // pack.
+    const railway = this.layRailway(start, end, SAMPLE_TRACK_GAP);
+    this.player.inventory.add({ id: 'track_tool', count: 1 });
+    this.player.inventory.add({ id: 'rail', count: railsFor(SAMPLE_TRACK_GAP) + SAMPLE_TRACK_SPARE });
     this.villages.discover(from.id);
     this.villages.discover(to.id);
     this.transport.requestRoute(from.id, to.id);
@@ -2497,10 +2993,89 @@ export class Game {
     this.sampleToast = `見本: ${from.name}と${to.name}を結ぶ ${blocks} マスの道（幅 ${SAMPLE_WIDTH}・荷車が通れる）`;
     // The second line is the invitation. The first says what is already there; this says
     // what is missing, where, and that the answer is in the player's hands.
-    this.railToast =
-      `この先はレールが敷いてある。足もとの ${gap} マスだけ空いているので、` +
-      `持っているレールで埋めれば列車が走る（紫の光の柱がその場所）`;
+    this.railToast = railway.laid === 0
+      ? null
+      : `道の横に ${Math.round(railway.length)} マスの線路が高架で敷いてある。足もとの ${SAMPLE_TRACK_GAP} マスだけ空いているので、` +
+        `線路敷設ツールでつなげば列車が走る（紫の光の柱がその場所。空を見上げて 2 度目のクリック）`;
     return { from: from.name, to: to.name, blocks };
+  }
+
+
+  /** Lays a railway between two places as curves, the way a player would.
+   *
+   *  The line runs beside whatever spine it is given rather than on it, and it is laid
+   *  from `leave` blocks along that spine to the far end, so the near stretch is left for
+   *  somebody to close.
+   *
+   *  The height is the interesting part. A railway does not follow the ground — that is
+   *  the whole of what it is for — so the deck is an *envelope* over it: the highest of
+   *  every probe along the line, each one falling away at the steepest slope the line is
+   *  allowed. That is one pass and it cannot bury the deck in a hillside, which a smoothed
+   *  copy of the ground can. What it does instead is fly: a dip is crossed on piers rather
+   *  than dived into, which is what a railway looks like and what a road cannot do. */
+  private layRailway(
+    from: { x: number; z: number },
+    to: { x: number; z: number },
+    leave = 0,
+  ): { laid: number; length: number } {
+    const span = Math.hypot(to.x - from.x, to.z - from.z);
+    if (span - leave < MIN_SPAN) return { laid: 0, length: 0 };
+    const ux = (to.x - from.x) / span;
+    const uz = (to.z - from.z) / span;
+    // Perpendicular, so the line runs alongside the spine rather than down the middle.
+    const at = (s: number): { x: number; z: number } => ({
+      x: from.x + ux * s - uz * SAMPLE_TRACK_OFFSET,
+      z: from.z + uz * s + ux * SAMPLE_TRACK_OFFSET,
+    });
+    const probes: { s: number; y: number }[] = [];
+    for (let s = 0; s <= span; s += SAMPLE_TRACK_PROBE) {
+      const p = at(s);
+      probes.push({
+        s,
+        y: this.groundHeightAt(Math.round(p.x), Math.round(p.z)) + SAMPLE_TRACK_CLEAR,
+      });
+    }
+    const deckAt = (s: number): number => {
+      let top = -Infinity;
+      for (const probe of probes) top = Math.max(top, probe.y - SAMPLE_TRACK_GRADE * Math.abs(s - probe.s));
+      return top;
+    };
+
+    const count = Math.max(1, Math.ceil((span - leave) / SAMPLE_TRACK_STEP));
+    const stops: number[] = [];
+    for (let i = 0; i <= count; i++) stops.push(leave + ((span - leave) * i) / count);
+    const heights = stops.map(deckAt);
+    // The slope through each joint, so the profile runs on through it instead of coming
+    // level at every end and setting off again — which is what an end of grade zero means
+    // and what would make a long climb a row of humps.
+    const grades = stops.map((_, i) =>
+      i === 0 || i === stops.length - 1
+        ? 0
+        : (heights[i + 1] - heights[i - 1]) / (stops[i + 1] - stops[i - 1]),
+    );
+    const yaw = Math.atan2(-(to.x - from.x), -(to.z - from.z));
+    let laid = 0;
+    for (let i = 0; i < count; i++) {
+      const a = at(stops[i]);
+      const b = at(stops[i + 1]);
+      const result = this.debugLayTrack(
+        { x: a.x, y: heights[i], z: a.z, yaw, grade: grades[i] },
+        { x: b.x, y: heights[i + 1], z: b.z, yaw, grade: grades[i + 1] },
+      );
+      if (result.ok) laid++;
+    }
+    return { laid, length: this.trackNet.totalLength() };
+  }
+
+  /** The curves near the player, as polylines for the map. */
+  private railOverlay(): { x: number; z: number }[][] {
+    const key = `${this.trackNet.revision}:${Math.round(this.player.x / 32)},${Math.round(this.player.z / 32)}`;
+    if (this.railMap?.key === key) return this.railMap.lines;
+    const lines = this.trackNet
+      .edgesNear(this.player.x, this.player.z, MINIMAP_REACH)
+      .map((edge) => sampleTrack(edge.curve, MINIMAP_RAIL_STEP).map((p) => ({ x: p.x, z: p.z })));
+    this.railMap = { key, lines };
+    return lines;
   }
 
   /** A place along a fresh road worth standing on: on the road, a little way from the
@@ -2635,6 +3210,7 @@ export class Game {
       routes: this.transport.toJSON(),
       quest: this.questline.toJSON(),
       pendingVillagers: [...this.pendingVillagers],
+      tracks: this.trackNet.toJSON(),
     };
     const ok = writeSave(data);
     if (announce) this.hud.toast(ok ? 'セーブしました' : 'セーブに失敗しました');
@@ -2873,13 +3449,111 @@ export class Game {
        *  is the player's job, not the smoke test's. */
       buildRoad: (fromId?: string, toId?: string, surface?: string): number =>
         this.debugBuildRoad(fromId, toId, surface),
-      /** Rails the quest route from end to end, which is what puts a train on it. Single
-       *  track, because that is all a train asks for. */
-      buildRailway: (fromId?: string, toId?: string): number =>
-        this.debugBuildRoad(fromId, toId, 'rail', 1),
+      /** Lays a railway from one village to the other, which is what puts a train on the
+       *  route. Curves, piers and all — the same builder the sample world uses, with
+       *  nothing left open at the near end. */
+      buildRailway: (fromId?: string, toId?: string): number => this.debugBuildRailway(fromId, toId),
       /** Builds the sample world's road here and now, and stands the player on it. */
       sampleRoad: (): { from: string; to: string; blocks: number } | null =>
         this.buildSampleRoad(),
+
+      // --- the free-form railway (curves, not blocks) ---
+      /** Lays a curve between two points without aiming at anything. The angles are yaw
+       *  in radians, the same convention the player's own heading uses. */
+      layTrack: (
+        from: { x: number; y: number; z: number; yaw: number },
+        to: { x: number; y: number; z: number; yaw: number },
+      ) => this.debugLayTrack(from, to),
+      /** From where the player stands, along their yaw, turning by `turn` radians. */
+      layTrackHere: (span = 24, turn = 0) => {
+        const yaw = this.player.yaw;
+        const y = this.player.y + 0.5;
+        return this.debugLayTrack(
+          { x: this.player.x, y, z: this.player.z, yaw },
+          {
+            x: this.player.x - Math.sin(yaw + turn / 2) * span,
+            y,
+            z: this.player.z - Math.cos(yaw + turn / 2) * span,
+            yaw: yaw + turn,
+          },
+        );
+      },
+      /** A straight run and two curves laid end to end from here, for seeing the lot at
+       *  once. The counterpart of `sampleRoad` for the railway that is not made of blocks. */
+      sampleTrack: (): { edges: number; length: number } => this.buildSampleTrack(),
+      tracks: () => ({
+        nodes: this.trackNet.nodes.size,
+        edges: this.trackNet.edges.size,
+        length: this.trackNet.totalLength(),
+        revision: this.trackNet.revision,
+        freeEnds: this.trackNet.freeEnds().length,
+      }),
+      trackEdges: () => [...this.trackNet.edges.values()].map((edge) => ({
+        id: edge.id,
+        a: edge.a,
+        b: edge.b,
+        length: edge.curve.length,
+        minRadius: edge.curve.minRadius,
+        steepest: edge.curve.steepest,
+        segments: edge.curve.plan.map((piece) => piece.kind),
+      })),
+      /** Pulls one curve out of the network, the way a left click on it would. */
+      removeTrack: (edgeId: number): boolean => this.trackNet.remove(edgeId),
+      /** The height of the deck over a point, or null where there is none to stand on. */
+      trackDeckAt: (x: number, z: number, low = -64, high = 320): number | null =>
+        this.trackNet.surfaceTopAt(x, z, low, high),
+      /** A point on a laid curve, so a test can check the shape rather than a vertex count. */
+      trackAt: (edgeId: number, s: number): TrackPoint | null => {
+        const edge = this.trackNet.edges.get(edgeId);
+        return edge ? pointAt(edge.curve, s) : null;
+      },
+      trackTangentAt: (edgeId: number, s: number): TrackPoint | null => {
+        const edge = this.trackNet.edges.get(edgeId);
+        return edge ? tangentAt(edge.curve, s) : null;
+      },
+      /** What the tool is doing: whether it is even in hand, and whether a start is down. */
+      trackTool: () => ({
+        held: this.heldTrackTool(),
+        pending: this.trackDraft?.anchor ?? null,
+        ghost: this.trackGhost ? (this.trackGhost.valid ? 'valid' : 'invalid') : 'none',
+        fault: this.trackGhostFault,
+        readout: this.trackReadout,
+        aim: this.trackAim().point,
+      }),
+      /** What the renderer is being handed right now. */
+      trackView: () => {
+        const view = this.trackView(TRACK_VIEW_INTERVAL);
+        return view === null ? null : {
+          key: view.key,
+          edges: view.edges.length,
+          samples: view.edges.reduce((total, edge) => total + edge.samples.length, 0),
+          piers: view.piers.length,
+          markers: view.markers.length,
+          ghost: view.ghost ? (view.ghost.valid ? 'valid' : 'invalid') : 'none',
+        };
+      },
+      /** The debug mode itself: nothing is used up, and `C` opens a shelf of everything. */
+      creative: (on?: boolean): boolean => {
+        const next = on ?? !this.options.settings.creative;
+        this.options.settings.creative = next;
+        this.player.inventory.unlimited = next;
+        if (!next && this.screens.kind === 'creative') this.closeScreen();
+        this.hud.toast(next ? 'デバッグ: 全アイテム無限（C で一覧）' : 'デバッグモードを切にした');
+        return next;
+      },
+      /** Fills the hotbar and pockets with as much of the game as will fit. The shelf
+       *  behind `C` holds the rest; this is for a console one-liner. */
+      giveAll: (): number => {
+        let given = 0;
+        for (const def of allItems()) {
+          if (this.player.inventory.add({ id: def.id, count: def.maxStack }) === 0) given++;
+        }
+        return given;
+      },
+      clearTracks: (): number => {
+        this.cancelTrackDraft(false);
+        return this.trackNet.clear();
+      },
       /** Road columns the index holds inside a square, for checking that a sweep of the
        *  shovel left an unbroken road rather than a dotted line. */
       roadColumnsNear: (x: number, z: number, radius = 24): RoadPoint[] =>
@@ -3072,6 +3746,9 @@ export class Game {
     this.transport.loadJSON(data.routes);
     this.questline.loadJSON(data.quest);
     this.freightEarned = data.freight ?? 0;
+    // Absent in every world written before this railway existed, which opens with none
+    // laid - the right answer, and the reason SAVE_VERSION did not have to move.
+    if (data.tracks) this.trackNet = TrackNetwork.fromJSON(data.tracks);
     for (const pending of data.pendingVillagers ?? []) this.pendingVillagers.push(pending);
     for (const key of data.populatedChunks) this.populatedChunks.add(key);
     for (const villager of data.villagers) {
@@ -3121,4 +3798,67 @@ function rayBoxDistance(
  *  makes the water worth saving, not impossible to get. */
 function springRate(wetness: number): number {
   return Math.max(0.25, Math.min(1.75, 1 + wetness * 0.75));
+}
+
+/** Why a curve was refused, in a sentence the player can act on. The numbers come from
+ *  `tracks.ts` rather than being typed out again here. */
+function trackFaultText(fault: TrackFault, value: number, turn: 'left' | 'right' | null = null): string {
+  switch (fault) {
+    case 'short':
+      return `始点に近すぎる（${MIN_SPAN} マス以上はなれた所を指す）`;
+    case 'long':
+      return `一度に敷けるのは ${MAX_SPAN} マスまで（今 ${Math.round(value)} マス）`;
+    case 'behind':
+      return '始点の向きの後ろへはつなげない';
+    case 'radius':
+      // Which way it was turning, because "too tight" is not something a player can act
+      // on until they know which way to turn their head to loosen it.
+      return `曲がりが急すぎる（${turn ? `${bendWord(turn)} ` : ''}半径 ${value.toFixed(1)} マス、${MIN_RADIUS} マス以上必要）`;
+    case 'grade':
+      return `勾配が急すぎる（${slopeWord(value)} ${Math.round(Math.abs(value) * 100)}%、${Math.round(MAX_GRADE * 100)}% まで）`;
+    case 'occupied':
+      return 'その線路の端は両側ともふさがっている';
+    default:
+      return 'この向きではつなげない';
+  }
+}
+
+/** Anything under half a percent is level, and saying "up 0%" would be worse than
+ *  saying nothing. */
+const LEVEL = 0.005;
+
+/** Where in a waypoint a hauler stands.
+ *
+ *  A road waypoint is a block, and something walking it stands in the middle. A railway
+ *  waypoint is a point on a curve that never asked the grid where its corners were, so
+ *  the middle of it is itself — and half a block off the centreline of a two block deck
+ *  is most of the way to the edge of it. */
+function centreOf(kind: MobKind): number {
+  return kind === 'train' ? 0 : 0.5;
+}
+
+function slopeWord(grade: number): string {
+  return Math.abs(grade) < LEVEL ? '水平' : grade > 0 ? '上り' : '下り';
+}
+
+function bendWord(turn: 'left' | 'right'): string {
+  return turn === 'right' ? '右' : '左';
+}
+
+/** The shape under the crosshair, in the three lines the readout shows and the toast
+ *  borrows. Horizontal length, because that is what everything in `tracks.ts` measures. */
+function trackLines(summary: TrackSummary): string[] {
+  // Signed off the rounded number, not the raw one: a run that drops four centimetres
+  // should not be labelled "-0.0".
+  const climbed = Math.abs(summary.rise).toFixed(1);
+  const rise = climbed === '0.0' ? '±0.0' : `${summary.rise > 0 ? '+' : '-'}${climbed}`;
+  const slope = Math.abs(summary.steepest) < LEVEL
+    ? '勾配 なし（水平）'
+    : `勾配 ${slopeWord(summary.steepest)} ${Math.round(Math.abs(summary.steepest) * 100)}%（高低差 ${rise} マス）`;
+  const bend = summary.bend === 'straight'
+    ? '曲がり なし（直線）'
+    : summary.bend === 's'
+      ? `曲がり S字 半径 ${summary.radius.toFixed(1)} マス`
+      : `曲がり ${bendWord(summary.bend)} 半径 ${summary.radius.toFixed(1)} マス`;
+  return [`長さ ${summary.length.toFixed(1)} マス`, slope, bend];
 }

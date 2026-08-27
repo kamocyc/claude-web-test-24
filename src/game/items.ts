@@ -86,9 +86,6 @@ blockItem('drain', Block.DRAIN);
 // One item for both states of the gate; it is placed closed and toggled in place.
 blockItem('floodgate', Block.FLOODGATE_CLOSED);
 blockItem('gold_ore', Block.GOLD_ORE, { smeltsTo: 'gold_ingot' });
-// The side of a rail block is ballast; the icon has to be the track, or a stack of it
-// in the hotbar is indistinguishable from gravel.
-blockItem('rail', Block.RAIL, { tex: 'rail_top' });
 
 // Cobblestone smelts back into smooth stone.
 ITEMS.get('cobblestone')!.smeltsTo = 'stone';
@@ -101,6 +98,9 @@ item({ id: 'water_bucket', label: '水入りバケツ', tex: 'water_bucket', max
 item({ id: 'stick', label: '棒', tex: 'stick', fuel: 5 });
 item({ id: 'coal', label: '石炭', tex: 'coal', fuel: 80 });
 item({ id: 'iron_ingot', label: '鉄インゴット', tex: 'iron_ingot' });
+// Track, by the length rather than by the block. It is not placed: it is what the track
+// tool spends as it draws a curve, so it never had a right side up to be laid.
+item({ id: 'rail', label: 'レール', tex: 'rail_top' });
 item({ id: 'gold_ingot', label: '金インゴット', tex: 'gold_ingot' });
 item({ id: 'diamond', label: 'ダイヤモンド', tex: 'diamond' });
 item({ id: 'emerald', label: 'エメラルド', tex: 'emerald' });
@@ -154,6 +154,11 @@ for (const tier of TIERS) {
     });
   }
 }
+
+// The free-form track tool. Deliberately not given `tool` stats: it has no tier and mines
+// nothing, and a ToolStats here would put it in the running whenever auto-tool swaps the
+// hotbar — which would take it out of the player's hand halfway through laying a curve.
+item({ id: 'track_tool', label: '線路敷設ツール', tex: 'track_tool', maxStack: 1 });
 
 // --- armour ------------------------------------------------------------------
 const ARMOR_LABELS: Record<ArmorSlot, string> = {

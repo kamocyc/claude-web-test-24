@@ -25,6 +25,10 @@ export interface Settings {
   autoTool: boolean;
   /** Walk up single block steps without jumping. */
   autoStep: boolean;
+  /** Debug: nothing in the player's hands is ever used up, and `C` opens a shelf with
+   *  one of everything on it. Kept with the other preferences rather than in the save so
+   *  that turning it on cannot quietly change what a world contains. */
+  creative: boolean;
   /** How many times faster the world runs than real time. The player is never sped up —
    *  only the clock everything else lives on. */
   speed: number;
@@ -58,6 +62,7 @@ export const DEFAULT_SETTINGS: Settings = {
   coords: true,
   autoTool: true,
   autoStep: true,
+  creative: false,
   speed: 1,
 };
 
@@ -93,6 +98,7 @@ export function loadSettings(): Settings {
       coords: parsed.coords ?? DEFAULT_SETTINGS.coords,
       autoTool: parsed.autoTool ?? DEFAULT_SETTINGS.autoTool,
       autoStep: parsed.autoStep ?? DEFAULT_SETTINGS.autoStep,
+      creative: parsed.creative ?? DEFAULT_SETTINGS.creative,
       speed: nearestSpeed(parsed.speed ?? DEFAULT_SETTINGS.speed),
     };
   } catch {

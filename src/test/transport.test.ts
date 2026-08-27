@@ -3,16 +3,19 @@ import {
   BASE_LOAD,
   CART_LOAD,
   PORTER_SPEED,
+  RAIL_QUALITY,
   TRAIN_LOAD,
   TransportNetwork,
   loadFor,
   payFor,
   portersFor,
   type PorterHost,
+  type RailSource,
+  type RailWay,
   type TransportEvents,
   type Vehicle,
 } from '../game/transport';
-import { RoadNetwork, type RoadWorld } from '../game/roads';
+import { RoadNetwork, roadGrade, type RoadPoint, type RoadWorld } from '../game/roads';
 import { MAX_STAGE, STAGE_POINTS, VillageRegistry, villageId, type VillageSeed, type VillageSource } from '../game/villages';
 import { Block, type BlockId } from '../world/blocks';
 import { blockIndex, chunkKey, toChunkCoord, toLocalCoord } from '../world/chunk';
@@ -75,6 +78,53 @@ class StuckHost implements PorterHost {
   }
 }
 
+/** A railway between the two villages, as transport sees one.
+ *
+ *  A straight line on piers three blocks over everything, because the point of the real
+ *  thing is that it does not care what is underneath it — and because none of what this
+ *  module does with a way depends on the shape of it. `laid` is how much of it exists:
+ *  under 1 the two villages are not joined and only a railhead is reported. */
+class FakeRails implements RailSource {
+  private built = 1;
+  private moved = 1;
+
+  /** Deck height. Well clear of the ground, so nothing here can be confused with a road. */
+  static readonly DECK = GROUND + 3;
+
+  lay(fraction: number): void {
+    this.built = fraction;
+    this.moved++;
+  }
+
+  revision(): number {
+    return this.moved;
+  }
+
+  wayBetween(from: RoadPoint, to: RoadPoint): RailWay | null {
+    if (this.built < 1) return null;
+    return { points: this.line(from, to, 1), climb: 0 };
+  }
+
+  railheadTowards(from: RoadPoint, to: RoadPoint): RoadPoint | null {
+    if (this.built <= 0) return null;
+    const line = this.line(from, to, this.built);
+    return line[line.length - 1];
+  }
+
+  private line(from: RoadPoint, to: RoadPoint, fraction: number): RoadPoint[] {
+    const out: RoadPoint[] = [];
+    for (let i = 0; i <= 8; i++) {
+      const t = (i / 8) * fraction;
+      out.push({
+        x: from.x + (to.x - from.x) * t,
+        y: FakeRails.DECK,
+        z: from.z + (to.z - from.z) * t,
+      });
+    }
+    return out;
+  }
+}
+
 interface BuildOptions {
   /** What the road is paved with, or null for no road at all. */
   surface?: BlockId | null;
@@ -82,11 +132,13 @@ interface BuildOptions {
   host?: PorterHost;
   /** Columns across. Three is what a cart needs. */
   width?: number;
+  /** A railway between the two villages, when the test is about one. */
+  rails?: FakeRails;
 }
 
 /** The villages' streets end at x=30 and x=210, and a road connects by touching one, so
  *  an unbroken run from 31 to 209 is the finished road. */
-function build({ surface = Block.DIRT_PATH, host, width = 1 }: BuildOptions = {}) {
+function build({ surface = Block.DIRT_PATH, host, width = 1, rails }: BuildOptions = {}) {
   const world = new FakeWorld();
   const span = Math.floor((width - 1) / 2);
   if (surface !== null) {
@@ -116,7 +168,7 @@ function build({ surface = Block.DIRT_PATH, host, width = 1 }: BuildOptions = {}
     onConnected: () => events.connected++,
     onDisconnected: () => events.disconnected++,
   };
-  const transport = new TransportNetwork(roads, registry, handlers, host ?? null);
+  const transport = new TransportNetwork(roads, registry, handlers, host ?? null, null, rails ?? null);
   return { world, roads, registry, transport, events };
 }
 
@@ -626,20 +678,40 @@ describe('which end a trip starts from', () => {
 });
 
 describe('a train on a railway', () => {
-  it('runs where every column is rail, however narrow the line', () => {
-    const { transport } = build({ surface: Block.RAIL });
+  it('runs where the rails join the two villages, with no road at all', () => {
+    // The whole of what replacing the block railway bought: a railway is its own way
+    // between two places, laid over whatever is in between, and nothing about it asks
+    // whether anybody ever paved anything.
+    const rails = new FakeRails();
+    const { transport } = build({ surface: null, rails });
     transport.requestRoute(ID_A, ID_B);
     run(transport, 3);
     const route = transport.routes[0];
     expect(route.connected).toBe(true);
     expect(route.vehicle).toBe('train');
     expect(route.railPinch).toBeNull();
+    // And the goods really are up on the deck rather than down on the ground.
+    expect(transport.pointAt(route, 0.5)?.y).toBe(FakeRails.DECK);
+  });
+
+  it('is quoted one quality for its whole length, whatever the road beside it is', () => {
+    // A road is worth what it is paved with, stretch by stretch. A railway is not paved:
+    // it is the same thing all the way along, and a line over a gorge is exactly as good
+    // as one over a meadow.
+    const rails = new FakeRails();
+    const { transport } = build({ surface: Block.DIRT_PATH, rails });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    const route = transport.routes[0];
+    expect(route.quality).toBe(RAIL_QUALITY);
+    expect(route.grade).toBe(roadGrade(RAIL_QUALITY));
+    expect(route.grade).toBe('鉄路');
   });
 
   it('carries more than the best cart, and gets there faster', () => {
-    // Rail is the one upgrade that moves both numbers, which is what makes it worth
+    // A railway is the one upgrade that moves both numbers, which is what makes it worth
     // paying iron for once there is nothing left to widen.
-    const rail = build({ surface: Block.RAIL });
+    const rail = build({ surface: null, rails: new FakeRails() });
     rail.transport.requestRoute(ID_A, ID_B);
     run(rail.transport, 3);
     const cart = build({ surface: Block.STONE_BRICKS, width: 3 });
@@ -651,18 +723,33 @@ describe('a train on a railway', () => {
     expect(byCart.vehicle).toBe('cart');
     expect(rail.transport.loadOf(byRail)).toBeGreaterThan(cart.transport.loadOf(byCart));
     expect(rail.transport.speedOf(byRail)).toBeGreaterThan(cart.transport.speedOf(byCart));
-    expect(rail.transport.loadOf(byRail)).toBe(loadFor(byRail.quality) * TRAIN_LOAD);
+    expect(rail.transport.loadOf(byRail)).toBe(loadFor(RAIL_QUALITY) * TRAIN_LOAD);
   });
 
-  it('beats width when the line is both railed and wide', () => {
-    const { transport } = build({ surface: Block.RAIL, width: 3 });
+  it('beats the road when the line is both railed and wide', () => {
+    const { transport } = build({ surface: Block.STONE_BRICKS, width: 3, rails: new FakeRails() });
     transport.requestRoute(ID_A, ID_B);
     run(transport, 3);
     expect(transport.routes[0].vehicle).toBe('train');
   });
 
-  it('goes back to a cart when one rail is pulled up, without losing cargo', () => {
-    const { world, roads, transport, registry, events } = build({ surface: Block.RAIL, width: 3 });
+  it('notices a railway that is laid without a road block being touched', () => {
+    // The survey is skipped entirely while nothing it has looked at has moved, and the
+    // road index does not move when a curve is laid a hundred blocks off it.
+    const rails = new FakeRails();
+    rails.lay(0);
+    const { transport } = build({ surface: Block.DIRT_PATH, width: 3, rails });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    expect(transport.routes[0].vehicle).toBe('cart');
+    rails.lay(1);
+    run(transport, 3);
+    expect(transport.routes[0].vehicle).toBe('train');
+  });
+
+  it('goes back to a cart when the rails come up, without losing cargo', () => {
+    const rails = new FakeRails();
+    const { transport, registry, events } = build({ surface: Block.STONE_BRICKS, width: 3, rails });
     transport.requestRoute(ID_A, ID_B);
     registry.produce(600);
     // Eight seconds, not thirty: a train covers seven blocks a second, so by thirty it
@@ -672,13 +759,10 @@ describe('a train on a railway', () => {
     const carrying = transport.routes[0].porters.reduce((sum, p) => sum + p.cargo, 0);
     expect(carrying).toBeGreaterThan(0);
 
-    for (const z of [-1, 0, 1]) {
-      world.lay(120, GROUND, z, Block.DIRT_PATH);
-      roads.onBlockChanged(120, GROUND, z, Block.RAIL, Block.DIRT_PATH);
-    }
+    rails.lay(0.5);
     run(transport, 3);
-    // One dirt column is still a road, and the road is still three across: the line
-    // demotes to the cart it had already earned rather than breaking.
+    // The road is still three across, so the line demotes to the cart it had already
+    // earned rather than breaking.
     expect(transport.routes[0].vehicle).toBe('cart');
     expect(transport.routes[0].connected).toBe(true);
     expect(events.disconnected).toBe(0);
@@ -686,20 +770,18 @@ describe('a train on a railway', () => {
     expect(transport.routes[0].porters.reduce((sum, p) => sum + p.cargo, 0)).toBe(carrying);
   });
 
-  it('sends the cargo home when the railway itself is dug up', () => {
-    const { world, roads, transport, registry, events } = build({ surface: Block.RAIL });
+  it('sends the cargo home when the railway is dug up and there is no road', () => {
+    const rails = new FakeRails();
+    const { transport, registry, events } = build({ surface: null, rails });
     transport.requestRoute(ID_A, ID_B);
     registry.produce(600);
-    // Eight seconds, not thirty: a train covers seven blocks a second, so by thirty it
-    // has been there and back and there is nothing in flight to protect.
     run(transport, 8);
     expect(transport.routes[0].vehicle).toBe('train');
     const carrying = transport.routes[0].porters.reduce((sum, p) => sum + p.cargo, 0);
     expect(carrying).toBeGreaterThan(0);
     const stock = registry.get(ID_A)!.stock;
 
-    world.lay(120, GROUND, 0, Block.AIR);
-    roads.onBlockChanged(120, GROUND, 0, Block.RAIL, Block.AIR);
+    rails.lay(0);
     run(transport, 3);
     expect(transport.routes[0].connected).toBe(false);
     expect(events.disconnected).toBe(1);
@@ -707,10 +789,28 @@ describe('a train on a railway', () => {
     expect(transport.routes[0].railPinch).toBeNull();
   });
 
+  it('says where a half built line stops, and nothing at all where there is none', () => {
+    // A beacon over every village in the world, pointing at a gate, would be an answer to
+    // a question nobody asked; the railhead is for a player who has started laying.
+    const half = new FakeRails();
+    half.lay(0.5);
+    const { transport } = build({ surface: Block.DIRT_PATH, rails: half });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 3);
+    const pinch = transport.routes[0].railPinch;
+    expect(pinch).not.toBeNull();
+    expect(pinch!.x).toBeCloseTo(120, 0);
+
+    const none = build({ surface: Block.DIRT_PATH });
+    none.transport.requestRoute(ID_A, ID_B);
+    run(none.transport, 3);
+    expect(none.transport.routes[0].railPinch).toBeNull();
+  });
+
   it('draws a train while a train is running it, and a walker afterwards', () => {
-    // The mob is only ever a picture of the shipment, so when the road stops deserving a
+    // The mob is only ever a picture of the shipment, so when the line stops deserving a
     // train the picture has to change with it — otherwise a locomotive keeps rolling
-    // down a line that no longer has rails under it.
+    // along rails that are no longer under it.
     const drawn: Vehicle[] = [];
     const host: PorterHost = {
       spawnPorter: (_point, vehicle) => {
@@ -721,7 +821,8 @@ describe('a train on a railway', () => {
       movePorter: () => {},
       removePorter: () => {},
     };
-    const { world, roads, transport, registry } = build({ surface: Block.RAIL, host });
+    const rails = new FakeRails();
+    const { transport, registry } = build({ surface: Block.DIRT_PATH, host, rails });
     transport.requestRoute(ID_A, ID_B);
     registry.produce(600);
     // Standing at the origin, so the mob is actually drawn: `run` puts the player ten
@@ -729,9 +830,8 @@ describe('a train on a railway', () => {
     for (let t = 0; t < 2; t += 0.5) transport.update(0.5, 0, 0);
     expect(drawn).toContain('train');
 
-    world.lay(120, GROUND, 0, Block.DIRT_PATH);
-    roads.onBlockChanged(120, GROUND, 0, Block.RAIL, Block.DIRT_PATH);
-    for (let t = 0; t < 2; t += 0.5) transport.update(0.5, 0, 0);
+    rails.lay(0);
+    for (let t = 0; t < 4; t += 0.5) transport.update(0.5, 0, 0);
     expect(transport.routes[0].vehicle).toBe('porter');
     expect(drawn[drawn.length - 1]).toBe('porter');
   });

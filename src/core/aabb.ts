@@ -6,6 +6,18 @@ export interface VoxelCollider {
   isSolidAt(x: number, y: number, z: number): boolean;
 }
 
+/** Something to stand on that is not in the block grid.
+ *
+ *  `VoxelCollider` answers a question about a cell; this answers one about a column,
+ *  because the things it describes do not lie on cell boundaries. It exists because
+ *  `moveAxis` resolves every contact by snapping to the integer plane nearest the answer,
+ *  and a railway deck at y = 64.37 has no such plane. Nothing in this file consults it:
+ *  a surface is settled onto after the sweep, by whoever owns the entity. */
+export interface StandingSurface {
+  /** The highest surface under (x, z) whose top lies in [low, high], or null. */
+  surfaceTopAt(x: number, z: number, low: number, high: number): number | null;
+}
+
 export interface EntityBox {
   /** Centre of the footprint. */
   x: number;

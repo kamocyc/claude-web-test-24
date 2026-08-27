@@ -10,7 +10,8 @@ import { KEYS } from './help';
 import { el, show } from './dom';
 
 type ToggleKey =
-  | 'compass' | 'minimap' | 'forecast' | 'routes' | 'guide' | 'coords' | 'autoTool' | 'autoStep';
+  | 'compass' | 'minimap' | 'forecast' | 'routes' | 'guide' | 'coords' | 'autoTool'
+  | 'autoStep' | 'creative';
 
 const TOGGLE_LABELS: [ToggleKey, string][] = [
   ['compass', '方角コンパス'],
@@ -21,13 +22,15 @@ const TOGGLE_LABELS: [ToggleKey, string][] = [
   ['coords', '座標の表示'],
   ['autoTool', '道具の自動切り替え'],
   ['autoStep', '段差を自動で登る（3 段まで）'],
+  ['creative', 'デバッグ: 全アイテム無限（C で一覧）'],
 ];
 
 export interface TitleActions {
   onNewWorld(seed: string): void;
   onContinue(): void;
-  /** The fixed world, plus a road between two villages to stand on — railed most of
-   *  the way, with the last stretch and the rails for it left to the player. */
+  /** The fixed world, plus a road between two villages to stand on and a railway
+   *  running beside it — laid most of the way, with the last stretch, the tool and the
+   *  rails for it left to the player. */
   onSampleWorld(): void;
 }
 

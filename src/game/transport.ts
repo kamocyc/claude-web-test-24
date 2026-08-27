@@ -48,10 +48,18 @@ export const PAY_DISTANCE = 800;
 export const CART_LOAD = 3;
 
 /** What a train multiplies a trip by. More than a cart, and unlike a cart it comes with
- *  the speed as well — rail is the one surface the player pays iron for, so it is the one
- *  upgrade that moves both numbers. Widening a road is still what a cart is for; this is
- *  what comes after there is nothing left to widen. */
+ *  the speed as well — a railway is the one way the player builds out of nothing but
+ *  iron, so it is the one upgrade that moves both numbers. Widening a road is still what
+ *  a cart is for; this is what comes after there is nothing left to widen. */
 export const TRAIN_LOAD = 4;
+/** How fast a railway is, as the road quality it stands in for.
+ *
+ *  A railway is not a road and has no pavement to weigh: it is laid as curves in the
+ *  open, and what it is worth is the same wherever it runs. So a railed route is quoted
+ *  one number for the whole line, and `roadGrade` already has a word for it — 鉄路. It
+ *  is the old rail block's speed, kept to the digit, because what a finished railway pays
+ *  should not have changed underneath a player who had already built one. */
+export const RAIL_QUALITY = 2.2;
 /** Detour past which the panel starts saying so. Under it a road is merely following the
  *  ground; over it, it is going somewhere else first. */
 export const DETOUR_NOTICE = 1.15;
@@ -129,9 +137,10 @@ export interface Route {
   /** What hauls this route, and where the road is too narrow for a cart when it is not. */
   vehicle: Vehicle;
   cartPinch: RoadPoint | null;
-  /** Where the rails run out on a line somebody has started laying them on. Null when the
-   *  line is all rail, and null when none of it is: a beacon over every dirt road in the
-   *  world would answer a question nobody asked. */
+  /** Where the line towards the far village runs out, on a pair somebody has started
+   *  laying a railway between. Null when the rails already join the two, and null when
+   *  neither village has a station at all: a beacon over every village in the world would
+   *  answer a question nobody asked. */
   railPinch: RoadPoint | null;
   /** The longest stretch at either end between a depot's door and the road proper. */
   doorGap: number;
@@ -171,6 +180,33 @@ export interface DepotSource {
   /** The village's building plots, so the walk from a doorway to the road can go round
    *  them instead of through them. */
   plotsOf(village: VillageId): readonly { x0: number; z0: number; w: number; d: number }[];
+}
+
+/** A line of rails as something freight can travel. Whatever shape the curves are is the
+ *  railway's business, not this module's; the length is measured off the points here, the
+ *  same way a road's is, so that the walk to the door counts once and in one place. */
+export interface RailWay {
+  points: RoadPoint[];
+  /** Blocks of up and down along it. Not derivable from the points to any accuracy worth
+   *  having: they are samples of a curve, and the sag between two of them is real. */
+  climb: number;
+}
+
+/** The railway, as the only two questions transport has to ask of it.
+ *
+ *  Narrow on purpose, and duck typed like `DepotSource`: this module has never known what
+ *  a road block is, and it is not about to learn what a biarc is either. The game passes
+ *  its `TrackNetwork`; a test passes four points and a length. */
+export interface RailSource {
+  /** The rails from one place to the other, when they join the two. */
+  wayBetween(from: RoadPoint, to: RoadPoint): RailWay | null;
+  /** Where a line setting out from one towards the other runs out, when one has been
+   *  started. Null when nothing serves `from`. */
+  railheadTowards(from: RoadPoint, to: RoadPoint): RoadPoint | null;
+  /** Bumped whenever the rails move. Without it a railway laid or pulled up would not be
+   *  noticed until somebody happened to touch a road block: the survey is skipped
+   *  entirely while nothing it has looked at has changed. */
+  revision(): number;
 }
 
 /** What the game hands transport so it can show a porter. Kept narrow so the simulation
@@ -231,6 +267,7 @@ export class TransportNetwork {
   readonly routes: Route[] = [];
   private surveyTimer = 0;
   private surveyedRevision = -1;
+  private surveyedRails = -1;
   /** Where the round robin over routes starts this update. */
   private dispatchCursor = 0;
 
@@ -240,6 +277,7 @@ export class TransportNetwork {
     private readonly events: TransportEvents = {},
     private readonly host: PorterHost | null = null,
     private readonly depots: DepotSource | null = null,
+    private readonly rails: RailSource | null = null,
   ) {}
 
   /** Registers a pair worth watching. Idempotent, and direction-insensitive. */
@@ -282,8 +320,7 @@ export class TransportNetwork {
     this.routes.push(route);
     // Survey on the very next update, so the panel never shows a stale or invented
     // distance for a route the player just started caring about.
-    this.surveyedRevision = -1;
-    this.surveyTimer = 0;
+    this.invalidate();
     return route;
   }
 
@@ -292,6 +329,7 @@ export class TransportNetwork {
    *  as far as its waypoints are concerned. */
   invalidate(): void {
     this.surveyedRevision = -1;
+    this.surveyedRails = -1;
     this.surveyTimer = 0;
   }
 
@@ -337,7 +375,9 @@ export class TransportNetwork {
     this.surveyTimer -= dt;
     if (this.surveyTimer <= 0) {
       this.surveyTimer = RESURVEY_INTERVAL;
-      if (this.surveyedRevision !== this.roads.revision) {
+      const roadsAt = this.roads.revision;
+      const railsAt = this.rails?.revision() ?? 0;
+      if (this.surveyedRevision !== roadsAt || this.surveyedRails !== railsAt) {
         let complete = true;
         for (const route of this.routes) {
           if (!this.resurvey(route)) complete = false;
@@ -346,7 +386,10 @@ export class TransportNetwork {
         // enough for its villages to be re-derived from the seed. Marking the revision
         // done there would leave the route stuck until somebody moved a road block, so
         // the attempt only counts once every route could actually be walked.
-        if (complete) this.surveyedRevision = this.roads.revision;
+        if (complete) {
+          this.surveyedRevision = roadsAt;
+          this.surveyedRails = railsAt;
+        }
       }
     }
     // Round robin rather than array order. Every route sharing a village calls
@@ -366,17 +409,42 @@ export class TransportNetwork {
     const to = this.registry.get(route.to);
     if (!from || !to) return false;
     route.good = from.produces;
-    const result: SurveyResult = this.roads.survey(from, to);
     const was = route.connected;
     route.surveyed = true;
+    // The doors first, whatever answers: the railway is surveyed door to door, and the
+    // road survey wants them the moment it connects. The village itself stands in for a
+    // door that is not known yet, which is every village the player has not walked into.
+    route.fromDoor = this.depots?.doorOf(route.from) ?? null;
+    route.toDoor = this.depots?.doorOf(route.to) ?? null;
+    const doors = {
+      from: route.fromDoor ?? { x: from.x, y: from.baseY, z: from.z },
+      to: route.toDoor ?? { x: to.x, y: to.baseY, z: to.z },
+    };
+    // The railway is asked about the villages themselves and not about their doors. A
+    // line that ends at the edge of a village has arrived at it; requiring it to reach
+    // the door would mean laying track between the houses, and a station is a place at
+    // the edge of a town in every world including this one.
+    const places = {
+      from: { x: from.x, y: from.baseY, z: from.z },
+      to: { x: to.x, y: to.baseY, z: to.z },
+    };
+
+    // The railway is asked first, and it is not asked about the road. It is its own way
+    // between the two villages — laid in the open, over whatever is in between — so a
+    // pair with rails between them is joined whether or not anybody ever paved anything.
+    const way = this.rails?.wayBetween(places.from, places.to) ?? null;
+    if (way) {
+      this.railed(route, way, doors, was);
+      return true;
+    }
+
+    const result: SurveyResult = this.roads.survey(from, to);
     if (result.connected) {
       route.connected = true;
       route.everConnected = true;
       // The survey walks street to street; the last few blocks at each end are the walk
       // between that street and the door goods actually go through. Those count towards
       // the trip, which is what makes a 集荷所 by the road worth choosing.
-      route.fromDoor = this.depots?.doorOf(route.from) ?? null;
-      route.toDoor = this.depots?.doorOf(route.to) ?? null;
       const walked = toWaypoints(result.waypoints);
       // The survey walks street to street. Where the index knows a way from the doorway
       // onto that road, walk it: a spur somebody laid to their own depot is road, and
@@ -403,21 +471,12 @@ export class TransportNetwork {
         : result.direct;
       route.direct = Math.max(1, ends);
       route.detour = route.length / route.direct;
-      // Rail beats width: it is the more specific claim about the road, and the more
-      // expensive one to have made.
-      const vehicle: Vehicle = result.rail.ok ? 'train' : result.cart.ok ? 'cart' : 'porter';
-      if (vehicle !== route.vehicle) {
-        // The mobs are the wrong shape now. Drop them; the next frame draws the right
-        // ones where the shipments actually are, and no cargo moves.
-        for (const porter of route.porters) {
-          if (porter.mobId === null) continue;
-          this.host?.removePorter(porter.mobId);
-          porter.mobId = null;
-        }
-        route.vehicle = vehicle;
-      }
+      this.setVehicle(route, result.cart.ok ? 'cart' : 'porter');
       route.cartPinch = result.cart.ok ? null : result.cart.pinch;
-      route.railPinch = result.rail.ok ? null : result.rail.pinch;
+      // A road that carries the goods today, and a railway somebody has started and not
+      // finished. Saying where that one stops is the whole of what the old violet beacon
+      // was for, and it is worth more now: the rails do not have to follow this road.
+      route.railPinch = this.railhead(places);
       route.missing = 0;
       route.gapFrom = null;
       route.gapTo = null;
@@ -431,8 +490,8 @@ export class TransportNetwork {
     route.gapTo = result.frontierTo;
     route.nearMiss = result.nearMiss;
     route.cartPinch = null;
-    route.railPinch = null;
-    route.vehicle = 'porter';
+    route.railPinch = this.railhead(places);
+    this.setVehicle(route, 'porter');
     if (was) {
       // The road was broken while goods were on it. Send them home rather than losing
       // them; a road being dug up should cost time, not cargo.
@@ -446,6 +505,80 @@ export class TransportNetwork {
       this.events.onDisconnected?.(route);
     }
     return true;
+  }
+
+
+  /** Fills a route in from the rails.
+   *
+   *  Nothing about the road is read here, and that is the point: the length, the climb
+   *  and the way the goods go are the railway's, and the quality is the one number a
+   *  railway has. A line that crosses a gorge on piers is exactly as good as one on flat
+   *  ground, which is the opposite of how a road works and the reason to build one. */
+  private railed(route: Route, way: RailWay, doors: { from: RoadPoint; to: RoadPoint }, was: boolean): void {
+    route.connected = true;
+    route.everConnected = true;
+    const lead = this.walkToStation(route.from, route.fromDoor, way.points[0]);
+    const trail = this.walkToStation(route.to, route.toDoor, way.points[way.points.length - 1]);
+    route.waypoints = [...lead.points, ...way.points, ...trail.points.reverse()];
+    // The walk from the door to the station, exactly as a road route charges the walk
+    // from the door to the road. A railway that stops at the edge of the village is a
+    // railway with a walk on the end of it, and the panel should say so.
+    route.doorGap = Math.max(lead.gap, trail.gap);
+    const measured = measure(route.waypoints);
+    route.cumulative = measured.cumulative;
+    route.length = Math.max(1, measured.length);
+    route.quality = RAIL_QUALITY;
+    route.grade = roadGrade(RAIL_QUALITY);
+    route.climb = way.climb;
+    route.direct = Math.max(1, Math.hypot(doors.to.x - doors.from.x, doors.to.z - doors.from.z));
+    route.detour = route.length / route.direct;
+    this.setVehicle(route, 'train');
+    route.cartPinch = null;
+    route.railPinch = null;
+    route.missing = 0;
+    route.gapFrom = null;
+    route.gapTo = null;
+    route.nearMiss = null;
+    if (!was) this.events.onConnected?.(route);
+  }
+
+  /** The walk from a depot's door out to the end of the line, going round the houses
+   *  rather than through them. Its points stop short of the station itself, which the
+   *  rails already hold. */
+  private walkToStation(
+    village: VillageId,
+    door: RoadPoint | null,
+    station: RoadPoint,
+  ): { points: RoadPoint[]; gap: number } {
+    if (!door) return { points: [], gap: 0 };
+    const near = { x: Math.round(station.x), y: Math.round(station.y), z: Math.round(station.z) };
+    const round = pathAroundPlots(door, near, this.depots?.plotsOf(village) ?? []);
+    if (!round) return { points: [door], gap: Math.hypot(near.x - door.x, near.z - door.z) };
+    let walk = 0;
+    for (let i = 1; i < round.length; i++) {
+      walk += Math.hypot(round[i].x - round[i - 1].x, round[i].z - round[i - 1].z);
+    }
+    return { points: toWaypoints(round.slice(0, -1)), gap: walk };
+  }
+
+  /** Where the railway between two villages stops, when one has been started and does not
+   *  reach. Either end may be the one somebody has been laying from. */
+  private railhead(places: { from: RoadPoint; to: RoadPoint }): RoadPoint | null {
+    if (!this.rails) return null;
+    return this.rails.railheadTowards(places.from, places.to)
+      ?? this.rails.railheadTowards(places.to, places.from);
+  }
+
+  /** Changes what hauls a route, dropping any mob that is now the wrong shape. The next
+   *  frame draws the right ones where the shipments actually are, and no cargo moves. */
+  private setVehicle(route: Route, vehicle: Vehicle): void {
+    if (vehicle === route.vehicle) return;
+    for (const porter of route.porters) {
+      if (porter.mobId === null) continue;
+      this.host?.removePorter(porter.mobId);
+      porter.mobId = null;
+    }
+    route.vehicle = vehicle;
   }
 
   /** Puts a depot's doorway on the front or the back of the walk, and works out how the

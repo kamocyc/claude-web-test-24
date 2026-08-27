@@ -21,6 +21,19 @@ export function sameItem(a: ItemStack | null, b: ItemStack | null): boolean {
  *  crafting grids alike so the UI can drive all of them with the same code. */
 export class Inventory {
   readonly slots: (ItemStack | null)[];
+  /** Debug mode: nothing in here is ever used up, and it can supply anything asked of it.
+   *
+   *  Every path that spends something - placing a block, paving, eating, crafting,
+   *  trading, laying track - goes through `remove`, `consumeAt` or `has`, so one flag on
+   *  the player's own inventory makes the whole game free without a single caller having
+   *  to know that a debug mode exists.
+   *
+   *  `count` is deliberately left honest. It is what the recipe panel, the trade screen
+   *  and the tutorial's "deliver five wool" read, and a count that answered Infinity would
+   *  turn those from readings into lies - the quest would tick itself off without the
+   *  player carrying anything. What the mode promises is that nothing runs out, not that
+   *  the game stops being able to see what is in your pockets. */
+  unlimited = false;
 
   constructor(readonly size: number) {
     this.slots = new Array<ItemStack | null>(size).fill(null);
@@ -51,7 +64,7 @@ export class Inventory {
   }
 
   has(id: string, amount = 1): boolean {
-    return this.count(id) >= amount;
+    return this.unlimited || this.count(id) >= amount;
   }
 
   /** Adds a stack, filling partial stacks first. Returns the amount that did not fit. */
@@ -99,6 +112,7 @@ export class Inventory {
 
   /** Removes up to `amount` of an item. Returns how many were actually removed. */
   remove(id: string, amount = 1): number {
+    if (this.unlimited) return amount;
     let remaining = amount;
     for (let i = 0; i < this.size && remaining > 0; i++) {
       const slot = this.slots[i];
@@ -113,6 +127,7 @@ export class Inventory {
 
   /** Decrements one slot by one, used when placing a block or eating. */
   consumeAt(index: number, amount = 1): void {
+    if (this.unlimited) return;
     const slot = this.slots[index];
     if (!slot) return;
     slot.count -= amount;

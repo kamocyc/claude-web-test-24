@@ -1,5 +1,5 @@
 import { Block, blockDef } from '../world/blocks';
-import { RAIL_BLOCKS, ROAD_SPEED } from '../game/roads';
+import { ROAD_SPEED } from '../game/roads';
 import { WATER_FULL } from '../world/water';
 import type { World } from '../world/world';
 import type { Atlas } from '../render/textures';
@@ -17,6 +17,10 @@ const ROWS_PER_FRAME = 28;
 export interface MinimapOverlay {
   markers: { kind: string; x: number; z: number }[];
   roads: { x: number; z: number; b?: number }[];
+  /** The railway near the player, one polyline per curve. Points rather than columns:
+   *  none of it is in the block grid, and at two blocks to the pixel a deck drawn as the
+   *  cells it happens to pass over would come out as a dotted line. */
+  rails: { x: number; z: number }[][];
   /** The stretch of road that is still missing, if the player is building one. */
   gap: { from: { x: number; z: number }; to: { x: number; z: number } } | null;
   /** Road that is laid and does not count. Drawn on top of the road it is part of, so a
@@ -24,7 +28,7 @@ export interface MinimapOverlay {
   faults: { x: number; z: number }[];
 }
 
-const EMPTY_OVERLAY: MinimapOverlay = { markers: [], roads: [], gap: null, faults: [] };
+const EMPTY_OVERLAY: MinimapOverlay = { markers: [], roads: [], rails: [], gap: null, faults: [] };
 
 /** Road the index refuses, matching the beacon colour used in the world itself. */
 const FAULT_COLOUR = '#ff5a5a';
@@ -38,10 +42,12 @@ const MARKER_COLORS: Record<string, string> = {
   porter: '#8ef0b8',
 };
 
-/** Trodden dirt through to stone brick, as a colour — and steel for rail, which is off
- *  the end of that ramp and would otherwise be drawn as stone brick. */
+/** Steel, and off the end of the road ramp on purpose: a railway is not a better road,
+ *  it is the other thing, and on a map it should read as a different kind of line. */
+const RAIL_COLOUR = 'rgba(150, 196, 236, 0.95)';
+
+/** Trodden dirt through to stone brick, as a colour. */
 function roadColour(block: number | undefined): string {
-  if (block !== undefined && RAIL_BLOCKS.has(block)) return 'rgba(150, 196, 236, 0.95)';
   const speed = block === undefined ? 1 : ROAD_SPEED.get(block) ?? 1;
   const paved = Math.max(0, Math.min(1, (speed - 1) / 0.7));
   const mix = (from: number, to: number): number => Math.round(from + (to - from) * paved);
@@ -136,6 +142,7 @@ export class Minimap {
 
     this.ctx.putImageData(this.image, 0, 0);
     this.drawRoads(overlay);
+    this.drawRails(overlay);
     this.drawFaults(overlay);
     this.drawMarkers(overlay);
     this.drawPlayer(yaw);
@@ -143,10 +150,15 @@ export class Minimap {
 
   /** World coordinates to canvas pixels, or null when they fall off the map. */
   private project(x: number, z: number): { px: number; py: number } | null {
-    const px = (x - this.originX) / SCALE;
-    const py = (z - this.originZ) / SCALE;
-    if (px < 0 || px >= SIZE || py < 0 || py >= SIZE) return null;
-    return { px, py };
+    const at = this.place(x, z);
+    if (at.px < 0 || at.px >= SIZE || at.py < 0 || at.py >= SIZE) return null;
+    return at;
+  }
+
+  /** The same, unclipped. A line with one end off the map is still drawn to the edge;
+   *  dropping its far point would bend it back on itself instead. */
+  private place(x: number, z: number): { px: number; py: number } {
+    return { px: (x - this.originX) / SCALE, py: (z - this.originZ) / SCALE };
   }
 
   /** The roads the player has laid, so it is visible at a glance where one stops. */
@@ -178,6 +190,28 @@ export class Minimap {
     ctx.moveTo(a.px, a.py);
     ctx.lineTo(b.px, b.py);
     ctx.stroke();
+    ctx.restore();
+  }
+
+  /** The railway, drawn as the lines it is. */
+  private drawRails(overlay: MinimapOverlay): void {
+    if (overlay.rails.length === 0) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = RAIL_COLOUR;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+    for (const line of overlay.rails) {
+      if (line.length < 2) continue;
+      ctx.beginPath();
+      const first = this.place(line[0].x, line[0].z);
+      ctx.moveTo(first.px, first.py);
+      for (let i = 1; i < line.length; i++) {
+        const at = this.place(line[i].x, line[i].z);
+        ctx.lineTo(at.px, at.py);
+      }
+      ctx.stroke();
+    }
     ctx.restore();
   }
 

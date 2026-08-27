@@ -39,24 +39,18 @@ export const CLEARABLE: ReadonlySet<BlockId> = new Set<BlockId>([
  *  is honest: that is a cutting to dig, and `runRoad` is the tool that digs it. */
 export const TREAD_REACH = MAX_STEP;
 
-/** What a laying tool puts down, how wide, and what it costs.
+/** What a laying tool puts down.
  *
- *  A shovel treads dirt: free, and three columns across, because dirt costs nothing and a
- *  wide road is what buys a cart. Rails come out of the player's pack one at a time and
- *  go down single file, because a train needs one column and every one of them is iron.
- *  Keeping the three apart in one record is what stops the second material from becoming
- *  a second copy of the sweep. */
+ *  One field and one material: a shovel treads dirt, free, three columns across, because
+ *  dirt costs nothing and a wide road is what buys a cart. It stays a record rather than
+ *  a bare block id because the sweep asks the material what it is worth against the road
+ *  already there, and a second surface worth paving with would be one line here. */
 export interface PaveMaterial {
   block: BlockId;
-  /** Columns across a sweep lays. */
-  width: 1 | 3;
-  /** Takes one block out of the player's pile and says whether there was one. Null when
-   *  the material is free, which is the shovel and every test that does not care. */
-  supply: { take(): boolean } | null;
 }
 
 /** What the shovel lays, and the default everywhere a material is not named. */
-export const TREAD_DIRT: PaveMaterial = { block: Block.DIRT_PATH, width: 3, supply: null };
+export const TREAD_DIRT: PaveMaterial = { block: Block.DIRT_PATH };
 
 export interface PaveTarget {
   getBlock(x: number, y: number, z: number): BlockId;
@@ -99,19 +93,16 @@ export function treadColumn(
     // Tall grass and flowers are not the ground; keep looking underneath them.
     if (!blockDef(id).solid) continue;
     // A road somebody already laid is only ever improved. Treading a paved street back
-    // into dirt would undo the work rather than continue it, so a material is written
-    // over an existing road when it is the faster of the two and never otherwise — which
-    // is what lets rails be laid along a road that is already there, and what stops a
-    // shovel from scraping them off again on the way back.
+    // into dirt would undo the work rather than continue it, so a material is written over
+    // an existing road when it is the faster of the two and never otherwise — which is
+    // what stops a shovel from scraping a cobbled street off on the walk home.
     if (ROAD_BLOCKS.has(id) && target.roadLevel(x, z) === y) {
       if ((ROAD_SPEED.get(material.block) ?? 0) <= (ROAD_SPEED.get(id) ?? 0)) return y;
-      if (material.supply && !material.supply.take()) return null;
       target.setBlock(x, y, z, material.block);
       return y;
     }
     if (!PAVABLE.has(id)) return null;
     if (!clearAbove(target, x, y, z)) return null;
-    if (material.supply && !material.supply.take()) return null;
     target.setBlock(x, y, z, material.block);
     return y;
   }
@@ -133,7 +124,6 @@ export function treadBrush(
   const middle = treadColumn(target, x, z, aroundY, material);
   if (middle !== null) laid++;
   const level = middle ?? aroundY;
-  if (material.width === 1) return { laid, level };
   for (let dz = -1; dz <= 1; dz++) {
     for (let dx = -1; dx <= 1; dx++) {
       if (dx === 0 && dz === 0) continue;

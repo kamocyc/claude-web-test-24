@@ -58,12 +58,20 @@ recipe('basics', 'table', { id: 'chest', count: 1 }, [{ id: 'oak_planks', count:
 // --- building blocks ----------------------------------------------------------
 recipe('blocks', 'table', { id: 'stone_bricks', count: 4 }, [{ id: 'stone', count: 4 }]);
 recipe('blocks', 'table', { id: 'sandstone', count: 1 }, [{ id: 'sand', count: 4 }]);
-// Sixteen at a time, because a line worth running a train down is hundreds of columns
-// long and a recipe that made rail a per-block decision would make it a chore rather
-// than a project. The iron is the point: laying rail is a reason to freight iron.
-recipe('blocks', 'table', { id: 'rail', count: 16 }, [
+// Sixteen at a time, because a line worth running a train down is hundreds of blocks long
+// and a recipe that made rail a per-click decision would make it a chore rather than a
+// project. Sixteen is thirty-two blocks of curve — see `railsFor`. The iron is the point:
+// laying a railway is a reason to freight iron.
+recipe('basics', 'table', { id: 'rail', count: 16 }, [
   { id: 'iron_ingot', count: 6 },
   { id: 'oak_planks', count: 2 },
+]);
+
+// Iron for the head and sticks for the handle, priced like a tool rather than like track:
+// what the player pays per block of curve is the rail it eats as they lay it.
+recipe('tools', 'table', { id: 'track_tool', count: 1 }, [
+  { id: 'iron_ingot', count: 3 },
+  { id: 'stick', count: 2 },
 ]);
 
 // --- food ---------------------------------------------------------------------

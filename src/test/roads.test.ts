@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   HEADROOM,
   MAX_STEP,
-  RAIL_BLOCKS,
-  RAIL_SPEED,
   RoadNetwork,
   ROAD_BLOCKS,
   ROAD_SPEED,
@@ -660,94 +658,5 @@ describe('the road builder and the width rule agree', () => {
     const result = roads.survey(a, b);
     if (!result.connected) throw new Error('fixture is not connected');
     expect(result.cart.ok).toBe(false);
-  });
-});
-
-describe('a line laid in rail', () => {
-  /** The same unbroken road as everywhere else in this file, made of rail. */
-  function railed(): { roads: RoadNetwork; world: FakeWorld } {
-    const world = new FakeWorld();
-    pave(world, 31, 209, GROUND, Block.RAIL);
-    const roads = new RoadNetwork(world);
-    roads.seedFromEdits();
-    return { roads, world };
-  }
-
-  it('counts rail as road, and as the fastest road there is', () => {
-    expect(ROAD_BLOCKS.has(Block.RAIL)).toBe(true);
-    expect(RAIL_BLOCKS.has(Block.RAIL)).toBe(true);
-    expect(ROAD_SPEED.get(Block.RAIL)).toBe(RAIL_SPEED);
-    for (const [block, speed] of ROAD_SPEED) {
-      if (block !== Block.RAIL) expect(speed).toBeLessThan(RAIL_SPEED);
-    }
-    expect(roadGrade(RAIL_SPEED)).toBe('鉄路');
-  });
-
-  it('runs a train when every column of it is rail', () => {
-    const { roads } = railed();
-    const result = roads.survey(A, B);
-    if (!result.connected) throw new Error('fixture is not connected');
-    expect(result.rail.ok).toBe(true);
-    // And not because it is wide: a train is a claim about the surface, and this line is
-    // one column across.
-    expect(result.cart.ok).toBe(false);
-  });
-
-  it('stops at the one column somebody left as dirt', () => {
-    const { roads, world } = railed();
-    world.lay(120, GROUND, 0, Block.DIRT_PATH);
-    roads.seedFromEdits();
-    const result = roads.survey(A, B);
-    if (!result.connected) throw new Error('one dirt column is still a road');
-    expect(result.rail.ok).toBe(false);
-    if (result.rail.ok) throw new Error('unreachable');
-    // The pinch is where the rail ran out on the way there, which is the column before
-    // the gap — the place to go and stand.
-    expect(result.rail.pinch?.x).toBe(119);
-  });
-
-  it('says nothing at all about a road with no rail on it', () => {
-    // A beacon over every dirt road in the world, pointing at a village gate, would be an
-    // answer to a question nobody asked.
-    const world = new FakeWorld();
-    pave(world);
-    const roads = new RoadNetwork(world);
-    roads.seedFromEdits();
-    const result = roads.survey(A, B);
-    if (!result.connected) throw new Error('fixture is not connected');
-    expect(result.rail.ok).toBe(false);
-    if (result.rail.ok) throw new Error('unreachable');
-    expect(result.rail.pinch).toBeNull();
-  });
-
-  it('will not call the last dirt column at a village the end of a railway', () => {
-    // The search trusts its seeds, and arrival is looked up among the far village's own
-    // seeds. Without filtering both ends, a line railed all the way but for the column
-    // touching the streets would read as a railway.
-    const { roads, world } = railed();
-    world.lay(209, GROUND, 0, Block.DIRT_PATH);
-    roads.seedFromEdits();
-    const result = roads.survey(A, B);
-    if (!result.connected) throw new Error('fixture is not connected');
-    expect(result.rail.ok).toBe(false);
-  });
-
-  it('notices rail laid over a road it has already surveyed', () => {
-    // The per-village rail search is cached, and the cache has to be thrown away with
-    // every other one when the index moves.
-    const world = new FakeWorld();
-    pave(world);
-    const roads = new RoadNetwork(world);
-    roads.seedFromEdits();
-    const before = roads.survey(A, B);
-    if (!before.connected) throw new Error('fixture is not connected');
-    expect(before.rail.ok).toBe(false);
-    for (let x = 31; x <= 209; x++) {
-      world.lay(x, GROUND, 0, Block.RAIL);
-      roads.onBlockChanged(x, GROUND, 0, Block.DIRT_PATH, Block.RAIL);
-    }
-    const after = roads.survey(A, B);
-    if (!after.connected) throw new Error('fixture is not connected');
-    expect(after.rail.ok).toBe(true);
   });
 });

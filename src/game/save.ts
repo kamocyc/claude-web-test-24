@@ -4,6 +4,20 @@
 export const SAVE_KEY = 'voxelcraft.save.v1';
 export const SAVE_VERSION = 2;
 
+/** The id the old block railway used, and what a world that still has some in it opens
+ *  with instead.
+ *
+ *  There is no rail block any more: a railway is laid as curves in the open now, and a
+ *  block whose whole job was to be walked over by a train has nothing left to do. Dropping
+ *  the id and leaving it at that would punch holes in every road and bridge somebody
+ *  railed, so the columns become their own ballast. Written here rather than as a version
+ *  bump because a bump throws the world away, and this is one substitution.
+ *
+ *  Ids, not names, so that this does not depend on a block that no longer exists: 59 was
+ *  `RAIL` and 7 is `GRAVEL`. */
+const RETIRED_RAIL = 59;
+const BALLAST = 7;
+
 export interface SavedPlayer {
   x: number;
   y: number;
@@ -83,6 +97,35 @@ export interface SavedQuest {
   milestone?: number;
 }
 
+/** One end of a laid track: where it is, which way the track runs through it, and how
+ *  steeply. The heading came from the player's yaw at the moment they clicked and cannot
+ *  be re-derived from anything else, so it is the one thing that has to be written down. */
+export interface SavedTrackNode {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+  hx: number;
+  hz: number;
+  grade: number;
+}
+
+/** Only the pair of ends, and which way round the track runs through each. The curve
+ *  between them is a pure function of the two, so it is solved again on load rather than
+ *  stored twice — the same bargain SavedRoute makes with the road it lies on. */
+export interface SavedTrackEdge {
+  a: number;
+  b: number;
+  dirA: number;
+  dirB: number;
+}
+
+export interface SavedTracks {
+  nodes: SavedTrackNode[];
+  edges: SavedTrackEdge[];
+  nextId: number;
+}
+
 export interface SaveData {
   version: number;
   seed: number;
@@ -112,6 +155,11 @@ export interface SaveData {
   quest?: SavedQuest;
   /** Villagers a village earned by growing while their chunk was unloaded. */
   pendingVillagers?: { x: number; y: number; z: number; profession: string }[];
+  /** The free-form railway: curves laid in world coordinates, with no blocks under them.
+   *  Optional for the same reason `villages` is — a save written before it existed opens
+   *  with no track laid, which is exactly right, and bumping SAVE_VERSION to say so would
+   *  throw every world away instead. */
+  tracks?: SavedTracks;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -145,7 +193,10 @@ export function decodeEdits(text: string): Map<number, number> {
   const bytes = base64ToBytes(text);
   const packed = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
   const map = new Map<number, number>();
-  for (let i = 0; i < packed.length; i += 2) map.set(packed[i], packed[i + 1]);
+  for (let i = 0; i < packed.length; i += 2) {
+    const id = packed[i + 1];
+    map.set(packed[i], id === RETIRED_RAIL ? BALLAST : id);
+  }
   return map;
 }
 
