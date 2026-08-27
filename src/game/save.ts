@@ -132,6 +132,11 @@ export interface SavedTrackEdge {
   b: number;
   dirA: number;
   dirB: number;
+  /** Where the curve's two arcs meet, for one that was cut out of a longer run. Absent on
+   *  every curve a player laid in one gesture: those are the equal-tangent biarc of their
+   *  own ends, which the solver finds again on its own. */
+  jx?: number;
+  jz?: number;
 }
 
 export interface SavedTracks {

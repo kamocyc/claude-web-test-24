@@ -782,3 +782,102 @@ describe('a railway saved before ports existed', () => {
     expect(net.toJSON().ports, 'a new save did not mark itself').toBe(true);
   });
 });
+
+describe('cutting a run in two', () => {
+  /** Shapes worth cutting: one that collapses to a single arc, and two real biarcs whose
+   *  joint sits somewhere in the middle. The second kind is the whole difficulty — half of
+   *  an equal-tangent biarc is not itself one. */
+  function shapes(): { name: string; from: TrackAnchor; to: TrackAnchor }[] {
+    return [
+      { name: 'quarter turn', from: end(0, 64, 0, 1, 0), to: end(40, 64, 40, 0, 1) },
+      { name: 'gentle bend', from: end(0, 64, 0, 1, 0), to: end(60, 64, 20, 1, 0) },
+      { name: 'S bend', from: end(0, 64, 0, 1, 0), to: end(60, 64, 24, 1, 0) },
+      { name: 'a climb', from: end(0, 64, 0, 1, 0, 0.05), to: end(60, 72, 18, 1, 0, 0.05) },
+    ];
+  }
+
+  /** How far a point on the halves is from where the original run put it. */
+  function drift(net: TrackNetwork, was: TrackCurve, ids: number[]): number {
+    let worst = 0;
+    let walked = 0;
+    for (const id of ids) {
+      const half = net.edges.get(id)!;
+      for (let s = 0; s <= half.curve.length; s += 0.5) {
+        const here = pointAt(half.curve, s);
+        const there = pointAt(was, Math.min(walked + s, was.length));
+        worst = Math.max(worst, Math.hypot(here.x - there.x, here.y - there.y, here.z - there.z));
+      }
+      walked += half.curve.length;
+    }
+    return worst;
+  }
+
+  it('leaves the track exactly where the player built it', () => {
+    // The reason a curve remembers its joint. Without it, a cut past the joint re-solves
+    // to a different biarc through the same ends and the run visibly walks sideways — by
+    // over a block and a half on an S bend, which is not something a player would forgive.
+    for (const shape of shapes()) {
+      for (const f of [0.2, 0.35, 0.5, 0.65, 0.8]) {
+        const net = new TrackNetwork();
+        const laid = net.lay(shape.from, shape.to);
+        if (!laid.ok) throw new Error(`could not lay the ${shape.name}: ${laid.fault}`);
+        const was = laid.edge.curve;
+        const cut = net.splitEdge(laid.edge.id, was.length * f);
+        if (!cut.ok) throw new Error(`could not cut the ${shape.name} at ${f}: ${cut.fault}`);
+        const moved = drift(net, was, cut.edges.map((edge) => edge.id));
+        expect(moved, `the ${shape.name} moved when cut at ${f}`).toBeLessThan(0.01);
+      }
+    }
+  });
+
+  it('keeps the two halves adding up to the whole', () => {
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 24, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the run');
+    const was = laid.edge.curve.length;
+    const cut = net.splitEdge(laid.edge.id, was * 0.7);
+    if (!cut.ok) throw new Error(`could not cut: ${cut.fault}`);
+    const total = cut.edges[0].curve.length + cut.edges[1].curve.length;
+    expect(total).toBeCloseTo(was, 4);
+    expect(cut.edges[0].curve.length).toBeCloseTo(was * 0.7, 4);
+  });
+
+  it('leaves a joint with both sides taken and nothing free', () => {
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the run');
+    const cut = net.splitEdge(laid.edge.id, 30);
+    if (!cut.ok) throw new Error(`could not cut: ${cut.fault}`);
+    expect(net.edges.size).toBe(2);
+    expect(edgesOf(cut.node)).toHaveLength(2);
+    expect(freePorts(cut.node), 'a cut left a side of the line open').toHaveLength(0);
+    // And the line is still one line: the far end walks through the cut to the near one.
+    expect(net.edgesNear(30, 0, 1)).toHaveLength(2);
+  });
+
+  it('refuses a cut too near either end to be a run', () => {
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the run');
+    expect(net.splitEdge(laid.edge.id, MIN_SPAN - 0.1).ok).toBe(false);
+    expect(net.splitEdge(laid.edge.id, 60 - MIN_SPAN + 0.1).ok).toBe(false);
+    // And nothing was touched on the way to saying no.
+    expect(net.edges.size).toBe(1);
+    expect(net.nodes.size).toBe(2);
+  });
+
+  it('comes back the same shape from a save', () => {
+    // The halves are not the equal-tangent biarcs of their own ends, so the joint has to
+    // survive the round trip or a saved railway opens bent.
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 24, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the run');
+    const was = laid.edge.curve;
+    const cut = net.splitEdge(laid.edge.id, was.length * 0.75);
+    if (!cut.ok) throw new Error(`could not cut: ${cut.fault}`);
+    const back = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(net.toJSON())));
+    expect(back.edges.size).toBe(2);
+    const ids = [...back.edges.values()].sort((x, y) => x.a - y.a).map((edge) => edge.id);
+    expect(drift(back, was, ids), 'the run bent on its way through a save').toBeLessThan(0.01);
+  });
+});

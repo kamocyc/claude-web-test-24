@@ -154,6 +154,13 @@ export interface TrackRefusal {
 
 export type TrackSolve = { ok: true; curve: TrackCurve } | TrackRefusal;
 
+/** Where a curve's two arcs meet, in plan. Only a curve made by cutting another one needs
+ *  to say: everything else meets where the equal-tangent solve puts it. */
+export interface TrackJoint {
+  x: number;
+  z: number;
+}
+
 // --- the solver ---------------------------------------------------------------
 
 interface ArcResult {
@@ -246,8 +253,15 @@ function profileSteepest(curve: Omit<TrackCurve, 'steepest' | 'minRadius'>): num
   return worst;
 }
 
-/** The curve joining two ends, or the reason there is not one. */
-export function solveTrack(from: TrackAnchor, to: TrackAnchor): TrackSolve {
+/** The curve joining two ends, or the reason there is not one.
+ *
+ *  `joint` overrules where the two arcs meet. Left off — which is every curve a player
+ *  lays — the equal-tangent biarc is used, and that is the whole of the shape. It is
+ *  passed only by `splitEdge`, because **half of an equal-tangent biarc is not itself
+ *  one**: cut one past its joint and re-solving the piece moves it by over a blockile, which
+ *  is the player's track visibly walking away from where they built it. Given the joint
+ *  it was cut at, the same two arcs come back exactly. */
+export function solveTrack(from: TrackAnchor, to: TrackAnchor, joint?: TrackJoint): TrackSolve {
   const vx = to.x - from.x;
   const vz = to.z - from.z;
   const t0x = from.hx;
@@ -275,10 +289,12 @@ export function solveTrack(from: TrackAnchor, to: TrackAnchor): TrackSolve {
     // fails the radius check below, which is the honest answer rather than a fudged one.
     d = Math.hypot(vx, vz) / 2;
   }
-  if (!Number.isFinite(d) || d <= 1e-6) return { ok: false, fault: 'behind', value: d };
+  // With a joint given, `d` is not what decides the shape and a degenerate one is not a
+  // refusal — the two ends of a split half can sit anywhere relative to each other.
+  if (!joint && (!Number.isFinite(d) || d <= 1e-6)) return { ok: false, fault: 'behind', value: d };
 
-  const jx = (from.x + to.x) / 2 + (d / 2) * (t0x - t1x);
-  const jz = (from.z + to.z) / 2 + (d / 2) * (t0z - t1z);
+  const jx = joint ? joint.x : (from.x + to.x) / 2 + (d / 2) * (t0x - t1x);
+  const jz = joint ? joint.z : (from.z + to.z) / 2 + (d / 2) * (t0z - t1z);
 
   const first = arcThrough(from.x, from.z, t0x, t0z, jx, jz);
   if (!first) return { ok: false, fault: 'degenerate', value: 0 };
@@ -523,6 +539,11 @@ export interface TrackEdge {
   dirB: TrackDir;
   /** Solved from the two nodes; never stored, always reproducible. */
   curve: TrackCurve;
+  /** Where its arcs meet, for a curve that came from cutting another one. Absent on every
+   *  curve a player laid, which is the equal-tangent biarc of its ends and needs no
+   *  telling. Saved and handed back to `solveTrack`, or a split run would come back from
+   *  a save a different shape from the one that went in. */
+  joint?: TrackJoint;
 }
 
 /** An open end a click landed near, which port of it is free, and the direction a new
@@ -536,6 +557,10 @@ export interface TrackSnap {
 }
 
 export type TrackLay = { ok: true; edge: TrackEdge } | TrackRefusal;
+
+export type TrackSplit =
+  | { ok: true; node: TrackNode; edges: [TrackEdge, TrackEdge] }
+  | TrackRefusal;
 
 /** How wide a cell of the node index is. Sixteen matches a chunk, which is the size
  *  everything else in the game already thinks in. */
@@ -917,6 +942,72 @@ export class TrackNetwork {
     return best;
   }
 
+  /** Cuts a run in two at `s` blocks along it, leaving a node where the cut was.
+   *
+   *  This is how a line gets a place to put a signal, and how a branch gets somewhere to
+   *  leave from: a railway laid in long gestures has nodes only at the ends of them, and a
+   *  switch you can only build where you happened to stop is not a switch you can plan.
+   *
+   *  **The shape does not move.** Each half is handed the joint it was cut at, so the two
+   *  arcs that come back are the two the player already had — see `solveTrack`. The
+   *  profile takes care of itself: it is a cubic in `s`, and a cubic restricted to part of
+   *  its own interval is reproduced exactly by its value and slope at the two ends. */
+  splitEdge(edgeId: number, s: number): TrackSplit {
+    const edge = this.edges.get(edgeId);
+    if (!edge) return { ok: false, fault: 'degenerate', value: 0 };
+    const a = this.nodes.get(edge.a);
+    const b = this.nodes.get(edge.b);
+    if (!a || !b) return { ok: false, fault: 'degenerate', value: 0 };
+    const length = edge.curve.length;
+    const spare = Math.min(s, length - s);
+    // Either half has to be a run in its own right. Under this the solver would refuse it
+    // as too short, and refusing here says which end was too close.
+    if (!(spare >= MIN_SPAN)) return { ok: false, fault: 'short', value: Math.max(0, spare) };
+
+    const at = pointAt(edge.curve, s);
+    const tangent = tangentAt(edge.curve, s);
+    const flat = Math.hypot(tangent.x, tangent.z) || 1;
+    // The way the run is travelling here, which is the way out of the new node towards
+    // `b`. Its other port therefore faces `a`, exactly as a joint laid by hand.
+    const ahead: TrackAnchor = {
+      x: at.x, y: at.y, z: at.z,
+      hx: tangent.x / flat, hz: tangent.z / flat,
+      grade: tangent.y / flat,
+    };
+    // Where the original's arcs met. Clamped into each half: inside one, it is the joint
+    // that half genuinely has; outside, it lands on that half's own end, which collapses
+    // one arc to nothing and leaves the single arc the half actually is.
+    const jointS = edge.curve.plan.length > 1 ? edge.curve.plan[0].length : length / 2;
+    const nearJoint = pointAt(edge.curve, Math.min(jointS, s));
+    const farJoint = pointAt(edge.curve, Math.max(jointS, s));
+
+    const first = solveTrack(anchorOf(a, edge.dirA), ahead, nearJoint);
+    if (!first.ok) return first;
+    const second = solveTrack(ahead, arrivalOf(b, edge.dirB), farJoint);
+    if (!second.ok) return second;
+
+    // Nothing above touched the network, so a refusal leaves it exactly as it was.
+    const node = this.addNode(ahead);
+    this.edges.delete(edge.id);
+    a.ports[edge.dirA].edge = null;
+    b.ports[edge.dirB].edge = null;
+    const near: TrackEdge = {
+      id: this.nextId++, a: a.id, b: node.id, dirA: edge.dirA, dirB: 1,
+      curve: first.curve, joint: nearJoint,
+    };
+    const far: TrackEdge = {
+      id: this.nextId++, a: node.id, b: b.id, dirA: 0, dirB: edge.dirB,
+      curve: second.curve, joint: farJoint,
+    };
+    for (const made of [near, far]) {
+      this.edges.set(made.id, made);
+      this.nodes.get(made.a)!.ports[made.dirA].edge = made.id;
+      this.nodes.get(made.b)!.ports[made.dirB].edge = made.id;
+    }
+    this.revision++;
+    return { ok: true, node, edges: [near, far] };
+  }
+
   /** Drops an edge, and any end left holding nothing.
    *
    *  A switch that loses its branch keeps its third port, free and empty — pulling up a
@@ -1296,6 +1387,8 @@ export class TrackNetwork {
       })),
       edges: [...this.edges.values()].map((edge) => ({
         a: edge.a, b: edge.b, dirA: edge.dirA, dirB: edge.dirB,
+        // Only a run that was cut out of a longer one has a joint worth writing down.
+        ...(edge.joint ? { jx: edge.joint.x, jz: edge.joint.z } : {}),
       })),
       nextId: this.nextId,
       ports: true,
@@ -1332,9 +1425,15 @@ export class TrackNetwork {
       const dirA = data.ports ? saved.dirA : legacyStartPort(saved.dirA);
       const dirB = data.ports ? saved.dirB : legacyEndPort(saved.dirB);
       if (!a.ports[dirA] || !b.ports[dirB]) continue;
-      const solved = solveTrack(anchorOf(a, dirA), arrivalOf(b, dirB));
+      const joint = saved.jx === undefined || saved.jz === undefined
+        ? undefined
+        : { x: saved.jx, z: saved.jz };
+      const solved = solveTrack(anchorOf(a, dirA), arrivalOf(b, dirB), joint);
       if (!solved.ok) continue;
-      const edge: TrackEdge = { id: net.nextId++, a: a.id, b: b.id, dirA, dirB, curve: solved.curve };
+      const edge: TrackEdge = {
+        id: net.nextId++, a: a.id, b: b.id, dirA, dirB, curve: solved.curve,
+        ...(joint ? { joint } : {}),
+      };
       net.edges.set(edge.id, edge);
       a.ports[dirA].edge = edge.id;
       b.ports[dirB].edge = edge.id;
