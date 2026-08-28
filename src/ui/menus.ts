@@ -28,6 +28,8 @@ const TOGGLE_LABELS: [ToggleKey, string][] = [
 export interface TitleActions {
   onNewWorld(seed: string): void;
   onContinue(): void;
+  /** A world the player kept as a file, opened again. */
+  onOpenFile(file: File): void;
   /** The fixed world, plus a road between two villages to stand on and a railway
    *  running beside it — laid most of the way, with the last stretch, the tool and the
    *  rails for it left to the player. */
@@ -44,6 +46,15 @@ export class Menus {
   private readonly loadingText = el('div', 'menu-note', 'ワールドを生成しています...');
   private readonly seedInput = el('input', 'seed-input');
   private readonly continueButton = el('button', 'menu-button', '続きから');
+  private readonly openButton = el('button', 'menu-button subtle', 'セーブファイルを開く');
+  private readonly loadButton = el('button', 'menu-button', 'ファイルから読み込む');
+  private readonly exportButton = el('button', 'menu-button', 'ファイルに書き出す');
+  /** One picker for both buttons: a file input is a control, not a screen, and whichever
+   *  button asked for it gets the file through `pickFile`. */
+  private readonly filePicker = el('input', 'file-picker') as HTMLInputElement;
+  private readonly titleNote = el('div', 'menu-note file-note');
+  private readonly pauseNote = el('div', 'menu-note file-note');
+  private onFile: ((file: File) => void) | null = null;
   private readonly sampleButton = el('button', 'menu-button subtle', '見本ワールド（道と鉄道）');
   private readonly verifyButton = el('button', 'menu-button subtle', '検証用ワールド');
   private newButton!: HTMLButtonElement;
@@ -63,11 +74,20 @@ export class Menus {
   private readonly seedLabel = el('div', 'menu-note seed-label');
 
   constructor() {
+    this.filePicker.type = 'file';
+    this.filePicker.accept = 'application/json,.json';
+    this.filePicker.style.display = 'none';
+    this.filePicker.onchange = () => {
+      const file = this.filePicker.files?.[0];
+      // Cleared either way, so picking the same file twice in a row still fires.
+      this.filePicker.value = '';
+      if (file && this.onFile) this.onFile(file);
+    };
     this.buildTitle();
     this.buildPause();
     this.buildDeath();
     this.loading.append(el('h1', 'menu-title', 'VoxelCraft'), this.loadingText);
-    this.root.append(this.title, this.pause, this.death, this.loading);
+    this.root.append(this.title, this.pause, this.death, this.loading, this.filePicker);
     show(this.pause, false);
     show(this.death, false);
     show(this.loading, false);
@@ -88,14 +108,17 @@ export class Menus {
     }
     this.verifyButton.title = '毎回まったく同じ地形で始まる、確認用の固定シード';
     this.sampleButton.title = '村と村を結ぶ 400 マスほどの道が、はじめから敷いてある世界';
+    this.openButton.title = 'ファイルに書き出したワールドを、そのまま開く';
     this.title.append(
       heading,
       subtitle,
       this.seedInput,
       newButton,
       this.continueButton,
+      this.openButton,
       this.sampleButton,
       this.verifyButton,
+      this.titleNote,
       help,
     );
     this.newButton = newButton;
@@ -162,7 +185,7 @@ export class Menus {
     }
     this.pause.append(
       heading, this.resumeButton, this.helpButton, this.seedLabel, settings,
-      this.saveButton, this.quitButton,
+      this.saveButton, this.exportButton, this.loadButton, this.pauseNote, this.quitButton,
     );
   }
 
@@ -234,8 +257,10 @@ export class Menus {
 
   bindTitle(actions: TitleActions, canContinue: boolean): void {
     show(this.continueButton, canContinue);
+    this.titleNote.textContent = '';
     this.newButton.onclick = () => actions.onNewWorld(this.seedInput.value);
     this.continueButton.onclick = () => actions.onContinue();
+    this.openButton.onclick = () => this.pickFile((file) => actions.onOpenFile(file));
     this.verifyButton.onclick = () => {
       this.seedInput.value = VERIFICATION_SEED_TEXT;
       actions.onNewWorld(VERIFICATION_SEED_TEXT);
@@ -250,12 +275,29 @@ export class Menus {
     onResume(): void;
     onHelp(): void;
     onSave(): void;
+    onExport(): void;
+    onOpenFile(file: File): void;
     onQuit(): void;
   }): void {
+    this.pauseNote.textContent = '';
     this.resumeButton.onclick = () => actions.onResume();
     this.helpButton.onclick = () => actions.onHelp();
     this.saveButton.onclick = () => actions.onSave();
+    this.exportButton.onclick = () => actions.onExport();
+    this.loadButton.onclick = () => this.pickFile((file) => actions.onOpenFile(file));
     this.quitButton.onclick = () => actions.onQuit();
+  }
+
+  /** Opens the file picker for one choice. */
+  private pickFile(then: (file: File) => void): void {
+    this.onFile = then;
+    this.filePicker.click();
+  }
+
+  /** Says what happened to a file, under whichever screen asked for it. */
+  setFileNote(text: string): void {
+    this.titleNote.textContent = text;
+    this.pauseNote.textContent = text;
   }
 
   bindDeath(onRespawn: () => void): void {

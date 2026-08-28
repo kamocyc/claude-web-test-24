@@ -8,7 +8,7 @@ import { Minimap, type MinimapOverlay } from './minimap';
 import { ForecastPanel, type ForecastView } from './forecast';
 import { RoutePanel, type RoutePanelView } from './routePanel';
 import { CoordPanel } from './coords';
-import type { World } from '../world/world';
+import type { MapSurface } from '../game/cartography';
 import { renderSlot } from './containers';
 
 export interface DebugInfo {
@@ -29,7 +29,8 @@ export interface DebugInfo {
 
 /** Everything the navigation aids need, gathered once per frame by the game. */
 export interface NavigationInfo {
-  world: World;
+  /** The ground the maps draw: loaded world, survey, and nothing where neither. */
+  surface: MapSurface;
   markers: CompassMarker[];
   showCompass: boolean;
   showMinimap: boolean;
@@ -173,14 +174,14 @@ export class Hud {
     if (navigation.showCompass) this.compass.update(player.yaw, player.x, player.z, navigation.markers);
     this.minimap.setVisible(navigation.showMinimap);
     if (navigation.showMinimap) {
-      this.minimap.update(navigation.world, player.x, player.z, player.yaw, navigation.overlay);
+      this.minimap.update(navigation.surface, player.x, player.z, player.yaw, navigation.overlay);
     }
     this.forecast.setVisible(navigation.showForecast);
     if (navigation.showForecast) this.forecast.update(navigation.forecast);
     this.routes.setVisible(navigation.showRoutes);
     if (navigation.showRoutes) this.routes.update(navigation.routes);
     this.coords.setVisible(navigation.showCoords);
-    if (navigation.showCoords) this.coords.update(player.x, player.y, player.z, player.yaw);
+    if (navigation.showCoords) this.coords.update(player.x, player.y, player.z, player.yaw, info.fps);
     // The readout wins the spot: while a start is down, what the player is doing is
     // laying track, not looking at a building.
     const readout = navigation.track;

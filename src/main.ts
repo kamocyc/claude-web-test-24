@@ -3,7 +3,7 @@ import { Game } from './game/game';
 import { seedFromString } from './core/rng';
 import { Input } from './ui/input';
 import { Menus } from './ui/menus';
-import { hasSave, readSave } from './game/save';
+import { hasSave, readSave, readSaveFile } from './game/save';
 import { loadSettings, saveSettings } from './game/settings';
 import { VERIFICATION_SEED, seedFromUrl } from './game/seeds';
 
@@ -46,6 +46,8 @@ function startGame(seed: number, save: ReturnType<typeof readSave>, sample = fal
     onResume: () => game?.togglePause(),
     onHelp: () => game?.openHelp(),
     onSave: () => game?.save(),
+    onExport: () => game?.exportSave(),
+    onOpenFile: (file) => void openFile(file),
     onQuit: () => {
       game?.save(false);
       quitToTitle();
@@ -55,9 +57,34 @@ function startGame(seed: number, save: ReturnType<typeof readSave>, sample = fal
   game.start();
 }
 
+/** Opens a world the player picked out of their own files. The world that is up is put
+ *  away first — quitting to the title saves it — so the file replaces it rather than
+ *  landing on top of a running game. */
+async function openFile(file: File): Promise<void> {
+  const save = await readSaveFile(file);
+  if (!save) {
+    menus.setFileNote(`${file.name} は読み込めませんでした（セーブファイルではないか、形式が古い）`);
+    return;
+  }
+  if (game) {
+    game.save(false);
+    game.dispose();
+    game = null;
+    document.body.classList.remove('screen-open');
+  }
+  // Nothing to say on success: the world it opens says it. And nothing written to local
+  // storage here either — the world is not finished being built, and a save taken now
+  // would be one without its villagers in it. From the first autosave on, it is the
+  // world 「続きから」 opens, like any other.
+  startGame(save.seed, save);
+}
+
 const titleActions = {
   onNewWorld(seedText: string): void {
     startGame(seedFromString(seedText), null);
+  },
+  onOpenFile(file: File): void {
+    void openFile(file);
   },
   onContinue(): void {
     const save = readSave();

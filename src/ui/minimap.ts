@@ -1,7 +1,7 @@
 import { Block, blockDef } from '../world/blocks';
+import type { MapSurface } from '../game/cartography';
 import { ROAD_SPEED } from '../game/roads';
 import { WATER_FULL } from '../world/water';
-import type { World } from '../world/world';
 import type { Atlas } from '../render/textures';
 import { TILE } from '../render/textures';
 import { el } from './dom';
@@ -68,8 +68,10 @@ function roadColour(block: number | undefined): string {
   return `rgba(${mix(226, 236)}, ${mix(200, 236)}, ${mix(142, 238)}, 0.9)`;
 }
 
-/** Overhead map of the loaded world around the player. Redrawn a few rows at a time
- *  so a full refresh costs a fraction of a frame. */
+/** Overhead map of the ground around the player, drawn from whatever is still known
+ *  about it — the loaded world where there is one, the survey where there is not, and
+ *  nothing at all where the player has never been. Redrawn a few rows at a time so a
+ *  full refresh costs a fraction of a frame. */
 export class Minimap {
   readonly root: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
@@ -167,7 +169,7 @@ export class Minimap {
   }
 
   update(
-    world: World,
+    surface: MapSurface,
     playerX: number,
     playerZ: number,
     yaw: number,
@@ -190,7 +192,7 @@ export class Minimap {
       const z = this.originZ + py * this.scale;
       for (let px = 0; px < this.size; px++) {
         const x = this.originX + px * this.scale;
-        this.paint(world, px, py, x, z);
+        this.paint(surface, px, py, x, z);
       }
     }
     this.row = end >= this.size ? 0 : end;
@@ -306,23 +308,23 @@ export class Minimap {
     }
   }
 
-  private paint(world: World, px: number, py: number, x: number, z: number): void {
+  private paint(surface: MapSurface, px: number, py: number, x: number, z: number): void {
     const index = (py * this.size + px) * 4;
-    const top = world.heightAt(x, z);
+    const top = surface.heightAt(x, z);
     if (top < 0) {
-      // Not loaded yet: leave it dark rather than pretending to know.
+      // Never been there: leave it dark rather than pretending to know.
       this.image.data[index] = 22;
       this.image.data[index + 1] = 24;
       this.image.data[index + 2] = 28;
       this.image.data[index + 3] = 255;
       return;
     }
-    const block = world.getBlock(x, top, z);
+    const block = surface.blockAt(x, top, z);
     let [r, g, b] = this.colorOf(block);
 
     // Shade by the slope towards the north west so ridges and valleys read at a glance.
-    const west = world.heightAt(x - this.scale, z);
-    const north = world.heightAt(x, z - this.scale);
+    const west = surface.heightAt(x - this.scale, z);
+    const north = surface.heightAt(x, z - this.scale);
     const slope = (west >= 0 ? top - west : 0) + (north >= 0 ? top - north : 0);
     const light = 1 + Math.max(-0.45, Math.min(0.45, slope * 0.12));
     r *= light;
@@ -330,7 +332,7 @@ export class Minimap {
     b *= light;
 
     // Deep water reads darker than a shallow bank.
-    const water = world.getWater(x, top, z);
+    const water = surface.waterAt(x, top, z);
     if (water > 0 || block === Block.WATER) {
       const depth = Math.min(1, water / WATER_FULL);
       r = r * 0.45 + 30 * depth;

@@ -970,6 +970,17 @@ body.screen-open #viewport {
   opacity: 0.75;
 }
 
+/* What happened to the last file the player picked. Empty until there is something to
+   say, and it takes no room while it is. */
+.file-note:empty {
+  display: none;
+}
+
+.file-note {
+  color: #ffd479;
+  text-align: center;
+}
+
 /* ---------- objective and transport routes ---------- */
 .route-panel {
   width: 210px;

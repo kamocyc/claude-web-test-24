@@ -1149,6 +1149,33 @@ console.log('zoomed in:', closest);
 await page.keyboard.press('KeyM');
 await until(() => document.querySelector('.worldmap')?.style.display === 'none');
 console.log('map closed');
+// What the map is allowed to draw: the chunks that have been loaded at some point, and
+// nothing else. The one under the player has been surveyed; one four hundred chunks away
+// has not, and the map has to say so rather than draw the terrain the seed would give.
+const surveyed = await evaluate(() => {
+  const game = window.voxelcraft.game;
+  const cx = Math.floor(game.player.x / 16);
+  const cz = Math.floor(game.player.z / 16);
+  return {
+    chunks: game.mapMemory.size,
+    loaded: game.world.chunks.size,
+    here: game.mapMemory.has(cx, cz),
+    // Far enough that no chunk out there has ever been near the player.
+    away: game.mapMemory.has(cx + 400, cz + 400),
+    remembered: game.mapMemory.heightAt(Math.floor(game.player.x), Math.floor(game.player.z)),
+  };
+});
+console.log('surveyed:', JSON.stringify(surveyed));
+if (!surveyed.here || surveyed.away) {
+  throw new Error(`the survey covers the wrong ground: ${JSON.stringify(surveyed)}`);
+}
+// More surveyed than loaded, or the map is only remembering what it can already see.
+if (surveyed.chunks <= surveyed.loaded) {
+  throw new Error(`the survey forgot the chunks that were unloaded: ${JSON.stringify(surveyed)}`);
+}
+if (surveyed.remembered <= 0) {
+  throw new Error(`the survey has no ground under the player: ${JSON.stringify(surveyed)}`);
+}
 // Exactly where they were, not merely near it. What follows lays track by mouse from
 // wherever the player happens to be standing, and its shape is the ground's as much as the
 // player's — putting them back a block and a half off would be changing that test.

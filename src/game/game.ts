@@ -77,12 +77,14 @@ import { bestToolSlot, blockDrops, heldTool, miningTime } from './mining';
 import { Mob } from './mobs/ai';
 import { MobManager, type MobUpdateContext } from './mobs/spawner';
 import { HAULING_KINDS, type MobKind } from './mobs/types';
+import { MapMemory, SurveyedTerrain } from './cartography';
 import { NO_INPUT, PLAYER_HEIGHT, PLAYER_WIDTH, Player, type PlayerInput } from './player';
 import {
   type SaveData,
   SAVE_VERSION,
   decodeEdits,
   decodeWater,
+  downloadSave,
   encodeEdits,
   encodeWater,
   writeSave,
@@ -350,6 +352,11 @@ export interface GameOptions {
 export class Game {
   readonly world: World;
   readonly player = new Player();
+  /** Every chunk the player has ever had loaded, as a surveyed surface, so the maps can
+   *  draw the ground they have walked over long after it was thrown away. */
+  readonly mapMemory = new MapMemory();
+  /** What the maps read: the loaded world first, the survey behind it, nothing beyond. */
+  private readonly surveyed: SurveyedTerrain;
   /** Which difficulty the player has already been told about; null until the first frame
    *  settles it, so loading a world on 平和 does not announce itself. */
   private difficultyAnnounced: Difficulty | null = null;
@@ -486,6 +493,7 @@ export class Game {
 
   constructor(private readonly options: GameOptions) {
     this.world = new World(options.seed);
+    this.surveyed = new SurveyedTerrain(this.world, this.mapMemory);
     this.generator = new TerrainGenerator(options.seed);
     this.light = new LightEngine(this.world);
     this.water = new WaterSimulator(this.world);
@@ -724,7 +732,7 @@ export class Game {
     this.screens.refresh();
     const navigation = this.navigationInfo();
     this.hud.update(dt, this.player, this.debugInfo(), navigation);
-    this.worldMap.update(this.world, this.player.x, this.player.z, this.player.yaw, navigation.overlay);
+    this.worldMap.update(this.surveyed, this.player.x, this.player.z, this.player.yaw, navigation.overlay);
 
     this.villageSearchTimer -= dt;
     if (this.villageSearchTimer <= 0) {
@@ -882,7 +890,7 @@ export class Game {
     for (const porter of shipments) markers.push({ kind: 'porter', x: porter.x, z: porter.z });
     const forecast = this.forecast();
     return {
-      world: this.world,
+      surface: this.surveyed,
       markers,
       showCompass: this.options.settings.compass,
       showMinimap: this.options.settings.minimap,
@@ -1005,6 +1013,8 @@ export class Game {
     for (const chunk of [...this.world.chunks.values()]) {
       const distance = (chunk.cx - pcx) ** 2 + (chunk.cz - pcz) ** 2;
       if (distance <= limit) continue;
+      // Last look at it: whatever the player did here is what the map should remember.
+      this.mapMemory.record(chunk);
       this.chunkRenderer.remove(chunk.key);
       this.riverFlow.forgetChunk(chunk.key);
       this.world.removeChunk(chunk.cx, chunk.cz);
@@ -1027,6 +1037,9 @@ export class Game {
     this.light.seedChunk(chunk);
     this.water.registerChunk(chunk, message.springs ?? []);
     this.riverFlow.registerChunk(chunk, message.weatherSeconds ?? 0);
+    // Surveyed as it arrives as well as as it leaves, so a chunk that is loaded now is
+    // already on the map of a world saved before the player walks away from it.
+    this.mapMemory.record(chunk);
 
     const key = chunkKey(message.cx, message.cz);
     if (!this.populatedChunks.has(key)) {
@@ -1052,6 +1065,13 @@ export class Game {
     const input = this.options.input;
     this.keyHandler = (event) => {
       if (!this.ready) return;
+      // Punctuation goes by the character it produced, not by the key it came off.
+      // `event.code` names a position on a US keyboard, and on a JIS one that position
+      // holds something else: the key that types `[` reports BracketRight there, `]`
+      // reports Backslash, and `＋` is a shifted semicolon. Nothing about the game speed
+      // or the map zoom is about where a key sits, so the letters below are matched on
+      // what was typed, and only the named keys (Escape, F3, the letters) go by code.
+      if (this.punctuation(event)) return;
       switch (event.code) {
         case 'Escape':
           if (this.worldMap.isOpen) this.toggleWorldMap();
@@ -1065,14 +1085,6 @@ export class Game {
           else if (this.screens.isOpen) this.closeScreen();
           else this.openScreen(() => this.screens.openInventory());
           break;
-        case 'BracketLeft':
-          if (this.paused || this.player.isDead || this.uiOpen) break;
-          this.nudgeSpeed(-1);
-          break;
-        case 'BracketRight':
-          if (this.paused || this.player.isDead || this.uiOpen) break;
-          this.nudgeSpeed(1);
-          break;
         case 'KeyH':
           if (this.player.isDead) break;
           this.openHelp();
@@ -1081,14 +1093,6 @@ export class Game {
           if (this.paused || this.player.isDead) break;
           if (this.screens.isOpen || this.warpDialog.isOpen) break;
           this.toggleWorldMap();
-          break;
-        case 'Equal':
-        case 'NumpadAdd':
-          if (this.worldMap.isOpen) this.worldMap.zoom(-1);
-          break;
-        case 'Minus':
-        case 'NumpadSubtract':
-          if (this.worldMap.isOpen) this.worldMap.zoom(1);
           break;
         case 'F3':
           event.preventDefault();
@@ -1150,6 +1154,28 @@ export class Game {
     document.addEventListener('pointerlockchange', this.lockHandler);
   }
 
+  /** The keys that are punctuation rather than a named key, handled by what they type.
+   *  Returns true when the event was one of them and has been dealt with. */
+  private punctuation(event: KeyboardEvent): boolean {
+    switch (event.key) {
+      case '[':
+      case ']':
+        if (this.paused || this.player.isDead || this.uiOpen) return true;
+        this.nudgeSpeed(event.key === '[' ? -1 : 1);
+        return true;
+      // `=` is where `+` lives without the shift key, and both are the zoom in.
+      case '+':
+      case '=':
+        if (this.worldMap.isOpen) this.worldMap.zoom(-1);
+        return true;
+      case '-':
+        if (this.worldMap.isOpen) this.worldMap.zoom(1);
+        return true;
+      default:
+        return false;
+    }
+  }
+
   private readMovement(): PlayerInput {
     const input = this.options.input;
     const wheel = input.takeWheel();
@@ -1164,8 +1190,10 @@ export class Game {
       left: input.isDown('KeyA'),
       right: input.isDown('KeyD'),
       jump: input.isDown('Space'),
-      sprint: input.isDown('ControlLeft') || input.isDown('ControlRight'),
-      sneak: input.isDown('ShiftLeft') || input.isDown('ShiftRight'),
+      // Shift is the key under the little finger and travel is what this world is made
+      // of, so Shift is the dash. Going slowly is the rarer thing, and it is Ctrl.
+      sprint: input.isDown('ShiftLeft') || input.isDown('ShiftRight'),
+      sneak: input.isDown('ControlLeft') || input.isDown('ControlRight'),
     };
   }
 
@@ -1436,7 +1464,10 @@ export class Game {
   private useItem(hit: RaycastHit | null): void {
     const held = this.player.inventory.held;
     const def = held ? itemDef(held.id) : undefined;
-    const sneaking = this.options.input.isDown('ShiftLeft') || this.options.input.isDown('ShiftRight');
+    // Ctrl, not Shift: holding Shift is a dash now, and running up to a chest should
+    // still open it rather than build a wall against it.
+    const sneaking =
+      this.options.input.isDown('ControlLeft') || this.options.input.isDown('ControlRight');
 
     if (hit && !sneaking) {
       const target = this.world.getBlock(hit.x, hit.y, hit.z);
@@ -3723,6 +3754,17 @@ export class Game {
   // --- persistence -----------------------------------------------------------
 
   save(announce = true): boolean {
+    const ok = writeSave(this.snapshot());
+    if (announce) this.hud.toast(ok ? 'セーブしました' : 'セーブに失敗しました');
+    return ok;
+  }
+
+  /** Everything worth keeping about this world, in the shape a save file has. Written to
+   *  local storage by `save`, and handed to the player as a file by `exportSave`. */
+  snapshot(): SaveData {
+    // The survey is written when a chunk arrives and again when it goes; the loaded ones
+    // have done neither since the player last changed anything in them.
+    for (const chunk of this.world.chunks.values()) this.mapMemory.record(chunk);
     const edits: Record<string, string> = {};
     const water: Record<string, string> = {};
     for (const [key, map] of this.world.edits) {
@@ -3787,10 +3829,17 @@ export class Game {
       quest: this.questline.toJSON(),
       pendingVillagers: [...this.pendingVillagers],
       tracks: this.trackNet.toJSON(),
+      explored: this.mapMemory.toJSON(),
     };
-    const ok = writeSave(data);
-    if (announce) this.hud.toast(ok ? 'セーブしました' : 'セーブに失敗しました');
-    return ok;
+    return data;
+  }
+
+  /** Writes the world out as a file the player keeps. Local storage is one slot per
+   *  browser and it is cleared by the things that clear a browser; a file is a world you
+   *  can put somewhere, copy to another machine, or keep a dozen of. */
+  exportSave(): void {
+    const name = downloadSave(this.snapshot());
+    this.hud.toast(`${name} に書き出しました`);
   }
 
   // --- debug helpers ---------------------------------------------------------
@@ -4405,6 +4454,7 @@ export class Game {
 
   private applySave(data: SaveData): void {
     this.day.time = data.time;
+    this.mapMemory.load(data.explored);
     // Saves made before the weather existed simply start the cycle over.
     this.advanceWeather(data.weatherSeconds ?? 0);
     const player = data.player;

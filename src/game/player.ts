@@ -16,7 +16,10 @@ const JUMP_SPEED = 8.4;
 /** Twice a Minecraft walk. The world is large and the villages are hundreds of blocks
  *  apart, so travel is deliberately brisk; sneaking stays slow, which is the point of it. */
 const WALK_SPEED = 8.6;
-const SPRINT_SPEED = 11.2;
+/** A dash is exactly twice the walk. Not a nudge of a few blocks a second: the key is
+ *  held down for whole minutes at a time on the way to the next village, and a difference
+ *  that small would not be worth holding it for. */
+const SPRINT_SPEED = WALK_SPEED * 2;
 const SNEAK_SPEED = 1.8;
 const SWIM_SPEED = 2.6;
 const GROUND_ACCEL = 45;
@@ -50,11 +53,11 @@ export const AUTO_STEP_BLOCKS = 3;
  *
  *  It only has to cover one frame of a deck. The steepest track the solver allows is
  *  MAX_GRADE (0.2), the fastest the player travels is SPRINT_SPEED, and the longest frame
- *  the game hands out is a twentieth of a second, so the deck moves at most 0.11 under
- *  the player in one step. This is three times that, with room for the same frame's
- *  gravity, and still a third of STEP_HEIGHT - so it can never reach a surface the voxel
- *  world would have resolved itself, and never competes with the step logic. Anything
- *  taller is boarded by jumping, which carries over a block of rise. */
+ *  the game hands out is a twentieth of a second, so the deck moves at most 0.18 under
+ *  the player in one step. This is twice that, with room for the same frame's gravity,
+ *  and still a third of STEP_HEIGHT - so it can never reach a surface the voxel world
+ *  would have resolved itself, and never competes with the step logic. Anything taller
+ *  is boarded by jumping, which carries over a block of rise. */
 const SURFACE_REACH = 0.35;
 /** Each climb height to try, shortest first. */
 const AUTO_STEP_HEIGHTS = Array.from(
