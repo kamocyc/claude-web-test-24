@@ -4,6 +4,7 @@ import { MILESTONES, QUEST_STEPS } from '../game/questline';
 import { BLOCKS_PER_PORTER, CART_LOAD, MAX_PORTERS, TRAIN_LOAD } from '../game/transport';
 import { MAX_STOCK, PRODUCE_SECONDS, RANKS, STAGE_POINTS } from '../game/villages';
 import { HEADROOM, MAX_STEP, ROAD_SPEED } from '../game/roads';
+import { MAX_SWITCH_ANGLE } from '../game/tracks';
 
 function view(step: Parameters<typeof helpView>[0]['step'], milestone = 0) {
   return helpView({ step, milestone, objective: null });
@@ -69,6 +70,21 @@ describe('the 遊びかた screen', () => {
     expect(body).toContain(`${PRODUCE_SECONDS} 秒`);
     expect(body).toContain(`${MAX_STOCK} 個`);
     expect(body).toContain(`${BLOCKS_PER_PORTER} ブロックごとに 1 人、最大 ${MAX_PORTERS} 人`);
+  });
+
+  it('explains the two halves of a signalled railway', () => {
+    // The branch and the block are one feature: a signal on a line that cannot pass is a
+    // way of jamming it, so the page has to teach both or neither.
+    const body = text(view('done', 0));
+    expect(body).toContain('分岐 — 途中から割って枝を出す');
+    expect(body).toContain('信号 — 閉塞と、詰まったとき');
+    // The angle comes out of the solver rather than being repeated here, so a change to
+    // the limit moves the manual with it.
+    expect(body).toContain(`${Math.round((MAX_SWITCH_ANGLE * 180) / Math.PI)}°`);
+    expect(body).toContain('鉄インゴット 2 ＋ 木材 2');
+    // The one promise the whole feature stands on.
+    expect(body).toContain('信号を 1 つも置いていない線路は、今までとまったく同じに動く');
+    expect(body).toContain('待避線');
   });
 
   it('documents every key the game binds, including its own', () => {

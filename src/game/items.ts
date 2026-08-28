@@ -166,6 +166,12 @@ item({ id: 'track_tool', label: '線路敷設ツール', tex: 'track_tool', maxS
 // `game.ts` - and taken back by pointing at the station and clicking again.
 item({ id: 'station', label: '駅', tex: 'station', maxStack: 16 });
 
+// The signal. Aimed at the rails like the station, and put down anywhere along them: a
+// signal that could only go where a curve happened to end would be a signal the player
+// has to build their railway around. Pointing at the middle of a run cuts it there first
+// - see `useSignal` in `game.ts`.
+item({ id: 'signal', label: '信号機', tex: 'signal', maxStack: 16 });
+
 // --- armour ------------------------------------------------------------------
 const ARMOR_LABELS: Record<ArmorSlot, string> = {
   helmet: 'ヘルメット',

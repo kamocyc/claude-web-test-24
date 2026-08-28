@@ -40,6 +40,10 @@ export interface RouteView {
    *  puts freight on them. The one fault a player cannot see for themselves: finished
    *  track that carries nothing looks exactly like finished track that does. */
   stationGap: { distance: number; bearing: number } | null;
+  /** Where a train on this line has stopped at a signal and is not going to start again.
+   *  Two trains meeting head on on a single line each hold what the other is waiting for;
+   *  nothing here untangles that, so this is how the player finds out it happened. */
+  stall: { distance: number; bearing: number } | null;
   /** Blocks of up and down, and how much longer the road is than the straight line. */
   /** Blocks of up and down along the way. Not a whole number on a railway: the deck is a
    *  curve and it is measured where it actually runs, not where the blocks under it are. */
@@ -216,6 +220,13 @@ function notes(route: RouteView): Note[] {
     // stops; two villages with no track near either of them have no railhead to report.
     const where = `（${heading(route.railPinch.bearing)}へ ${Math.round(route.railPinch.distance)}m）`;
     out.push({ text: `列車: 線路が途切れている${where}`, tone: 'rail' });
+  }
+  // A line that works and has stopped anyway. First of the railway notes when it happens,
+  // because everything else about the route is fine and this is the only thing anybody
+  // needs to go and look at.
+  if (route.stall) {
+    const where = `（${heading(route.stall.bearing)}へ ${Math.round(route.stall.distance)}m）`;
+    out.push({ text: `列車: 信号待ちで詰まっている${where} — 待避線が要る`, tone: 'rail' });
   }
   if (route.detour > DETOUR_NOTICE) {
     out.push({ text: `遠回り ×${route.detour.toFixed(2)} — 運賃は直線距離ぶん`, tone: 'cost' });

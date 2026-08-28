@@ -1439,6 +1439,124 @@ if (walked.deck === null || Math.abs(walked.y - walked.deck) > 0.05) {
 await frame();
 await shot('07y7-track-standing');
 
+// --- a junction, and signals that hold a train back ---------------------------
+// The two things a railway could not do until now. A branch means a run has to be cut
+// where nobody stopped laying, and the halves have to come back with the same shape they
+// had; a signal means a stretch of line belongs to one train at a time. Both are checked
+// here from the console, because both are answers the world gives rather than pictures.
+const stoodAt = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  return { x: g.player.x, y: g.player.y, z: g.player.z, yaw: g.player.yaw, pitch: g.player.pitch };
+});
+const junction = await evaluate(() => {
+  const v = window.voxelcraft;
+  const g = window.voxelcraft.game;
+  v.clearTracks();
+  v.give('rail', 400);
+  v.give('signal', 8);
+  const x = Math.round(g.player.x);
+  const z = Math.round(g.player.z);
+  const y = g.world.heightAt(x, z) + 5;
+  // A curve, and one that climbs: half of an equal-tangent biarc is not itself one, so a
+  // cut that re-solved each half from its ends would come back a different shape. On a
+  // straight run nothing could go wrong and the check would prove nothing.
+  const trunk = v.layTrack({ x, y, z, yaw: 0 }, { x: x + 30, y: y + 4, z: z - 70, yaw: -0.5 });
+  if (!trunk.ok) return { trunk };
+  // Where the trunk runs, before anybody cuts it. Whatever the halves are, they have to
+  // still run through these — in height as well as on the map.
+  const marks = [0.2, 0.4, 0.5, 0.6, 0.8];
+  const before = marks.map((frac) => v.trackAt(trunk.edge, trunk.length * frac));
+  const cut = v.splitTrack(trunk.edge, trunk.length / 2);
+  if (!cut.ok) return { trunk, cut };
+  const halves = cut.edges.map((id) => v.trackEdges().find((edge) => edge.id === id));
+  const after = marks.map((frac) => {
+    const along = trunk.length * frac;
+    return along <= halves[0].length
+      ? v.trackAt(cut.edges[0], along)
+      : v.trackAt(cut.edges[1], along - halves[0].length);
+  });
+  // And a branch off the cut, angled well inside the limit for a turnout. The trunk's own
+  // heading there is what the angle is measured from, so it is read rather than guessed.
+  const tangent = v.trackTangentAt(cut.edges[1], 0);
+  const along = Math.atan2(-tangent.x, -tangent.z);
+  const yaw = along - 0.4;
+  const branch = v.layTrack(
+    { x: cut.x, y: cut.y, z: cut.z, yaw },
+    { x: cut.x - Math.sin(yaw) * 50, y: cut.y, z: cut.z - Math.cos(yaw) * 50, yaw },
+  );
+  return { trunk, cut, halves, before, after, branch, switches: v.switches(), tracks: v.tracks() };
+});
+console.log('a run cut in two and branched:', JSON.stringify({
+  cut: junction.cut, branch: junction.branch, switches: junction.switches,
+}));
+if (!junction.trunk?.ok) throw new Error(`could not lay the trunk: ${junction.trunk?.fault}`);
+if (!junction.cut?.ok) throw new Error(`could not cut the trunk in two: ${junction.cut?.fault}`);
+if (!junction.branch?.ok) throw new Error(`could not branch off the cut: ${junction.branch?.fault}`);
+// The halves are the trunk. A cut that re-solved each half from its ends alone drifted up
+// to 1.7 blocks from where the track had been, and a train would have ridden the
+// difference; the joint is stored to stop that.
+if (Math.abs(junction.halves[0].length + junction.halves[1].length - junction.trunk.length) > 0.05) {
+  throw new Error(`the two halves do not add up to the run: ${JSON.stringify(junction.halves)}`);
+}
+for (let i = 0; i < junction.before.length; i++) {
+  const was = junction.before[i];
+  const now = junction.after[i];
+  const off = Math.hypot(now.x - was.x, now.y - was.y, now.z - was.z);
+  if (off > 0.05) {
+    throw new Error(`cutting the run moved it ${off.toFixed(3)} blocks at sample ${i}`);
+  }
+}
+if (junction.switches.length !== 1) {
+  throw new Error(`a Y should leave exactly one switch: ${JSON.stringify(junction.switches)}`);
+}
+if (junction.switches[0].ways !== 3 || junction.switches[0].taken !== 3) {
+  throw new Error(`the switch has the wrong number of ways: ${JSON.stringify(junction.switches[0])}`);
+}
+
+// Signals. With none placed the whole network is one block that nobody watches, which is
+// exactly how every railway laid before signals existed has to go on behaving.
+const blocked = await evaluate(() => {
+  const v = window.voxelcraft;
+  const before = v.sections();
+  const edges = v.trackEdges().sort((a, b) => b.length - a.length);
+  const middle = v.trackAt(edges[0].id, edges[0].length / 2);
+  const id = v.putSignal(middle.x, middle.z);
+  return { before, id, after: v.sections(), signals: v.signals(), at: middle };
+});
+console.log('signals and the blocks they make:', JSON.stringify(blocked));
+if (blocked.before.length !== 1 || blocked.before[0].watched) {
+  throw new Error(`an unsignalled railway should be one unwatched block: ${JSON.stringify(blocked.before)}`);
+}
+if (blocked.id === null) throw new Error('a signal could not be built in the middle of a run');
+if (blocked.after.length !== 2 || blocked.after.some((block) => !block.watched)) {
+  throw new Error(`one signal should make two watched blocks: ${JSON.stringify(blocked.after)}`);
+}
+if (blocked.signals.length !== 1) {
+  throw new Error(`the network should hold one signal: ${JSON.stringify(blocked.signals)}`);
+}
+
+// Standing on the line looking up it, which is where the lamp is read from. The picture
+// is the check here: a signal the renderer never heard of would look like clear track.
+await evaluate((at) => {
+  const g = window.voxelcraft.game;
+  g.player.flying = true;
+  g.player.teleportTo(at.x, at.y + 1.2, at.z + 26);
+  g.player.yaw = 0;
+  g.player.pitch = 0.02;
+}, blocked.at);
+await frame();
+await shot('07y7b-track-junction');
+
+// Put it all back the way the next section expects to find it.
+await evaluate((stood) => {
+  const g = window.voxelcraft.game;
+  window.voxelcraft.clearTracks();
+  g.player.teleportTo(stood.x, stood.y, stood.z);
+  g.player.yaw = stood.yaw;
+  g.player.pitch = stood.pitch;
+}, stoodAt);
+await frame();
+
 // --- what the readout says while laying --------------------------------------
 // "Too steep" is not an answer a player can act on until they know it was going up.
 const said = await evaluate(() => {

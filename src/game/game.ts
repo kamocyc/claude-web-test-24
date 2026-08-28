@@ -13,6 +13,7 @@ import {
   type TrackGhostView,
   type TrackMarkerView,
   type TrackPierView,
+  type TrackSignalView,
   type TrackStationView,
   type TrackView,
 } from '../render/trackRenderer';
@@ -109,6 +110,7 @@ import {
   STATION_REACH,
   TrackNetwork,
   freePorts,
+  edgesOf,
   headingOf,
   pointAt,
   railsFor,
@@ -210,6 +212,9 @@ const GUIDE_RAILGAP = 0xb08cff;
 const GUIDE_STATION = 0xff9adf;
 /** The doorway a route loads and unloads at. */
 const GUIDE_DEPOT = 0xffd479;
+/** A railway held at a signal that is never going to clear. Amber, matching the lamp on
+ *  the signal itself, because they are one thing seen from two distances. */
+const GUIDE_STALL = 0xf5c02a;
 /** Blocks of height a laid road may gain or lose per column — deliberately gentler than
  *  the step the index will walk.
  *
@@ -248,6 +253,14 @@ const TRACK_START_MARK = 0xffbb33;
 const TRACK_END_MARK = 0x66ccff;
 /** Where a click would cut a laid run and start a branch out of it. */
 const TRACK_SPLIT_MARK = 0xffa0d8;
+/** How near a jam has to be reported to a signal for that signal to be the one showing
+ *  amber. A shipment stops with its nose at the boundary, so this only has to be wider
+ *  than the step it takes in a frame. */
+const STALL_LIGHT = 6;
+/** How far out along its own heading a free port's marker stands. Far enough that a
+ *  switch's three show as three and not as one smudge, near enough that the one being
+ *  pointed at is unmistakably that node's. */
+const PORT_MARK_OUT = 0.9;
 /** The length of road the sample world starts with, in blocks. Villages sit on a 320
  *  block grid, so this picks a neighbour rather than the village next door. */
 const SAMPLE_ROAD = 400;
@@ -930,6 +943,7 @@ export class Game {
             cartPinch: route.cartPinch ? this.bearingTo(route.cartPinch) : null,
             railPinch: route.railPinch ? this.bearingTo(route.railPinch) : null,
             stationGap: route.stationGap ? this.bearingTo(route.stationGap) : null,
+            stall: route.stall ? this.bearingTo(route.stall) : null,
             climb: route.climb,
             detour: route.detour,
             doorGap: route.doorGap,
@@ -1470,6 +1484,13 @@ export class Game {
       return;
     }
 
+    // A signal, likewise. Unlike a station it may go anywhere along the line and not only
+    // on an end, so it may have to cut the run it is put on first.
+    if (held.id === 'signal') {
+      this.useSignal();
+      return;
+    }
+
     // Buckets look through water rather than at it, so they get their own trace.
     if (held.id === 'bucket' || held.id === 'water_bucket') {
       this.useBucket(held.id === 'bucket');
@@ -1790,6 +1811,23 @@ export class Game {
     return { point, node, run: node ? null : this.runUnderCrosshair(eye, look) };
   }
 
+  /** The point on the network nearest a place on the map, as a run and how far along it.
+   *  What the debug hooks use to aim at track without a crosshair. */
+  private runNearest(x: number, z: number): { edge: number; at: number } | null {
+    let best: { edge: number; at: number } | null = null;
+    let nearest = Infinity;
+    for (const edge of this.trackNet.edgesNear(x, z, TRACK_DRAW)) {
+      for (let s = 0; s <= edge.curve.length; s += 0.25) {
+        const p = pointAt(edge.curve, s);
+        const off = Math.hypot(p.x - x, p.z - z);
+        if (off >= nearest) continue;
+        nearest = off;
+        best = { edge: edge.id, at: s };
+      }
+    }
+    return best;
+  }
+
   /** The laid run the crosshair is on and how far along it, or null. */
   private runUnderCrosshair(eye: TrackPoint, look: TrackPoint): TrackRun | null {
     const edge = this.trackNet.edgeAlongRay(eye, look, TRACK_REACH, TRACK_PICK);
@@ -2068,6 +2106,49 @@ export class Game {
     this.hud.toast(`駅を建てた — どの村にも届いていない（一番近い村まで ${away}m）`);
   }
 
+  /** Puts a signal on the railway, or takes one back down.
+   *
+   *  A station goes on an end of the line because that is what a station is. A signal is
+   *  not: where the blocks want to be divided has nothing to do with where the player
+   *  happened to stop laying, and a signal that could only go on a joint would be a signal
+   *  they had to plan their whole railway around. So pointing at the middle of a run cuts
+   *  it there and puts the signal on what the cut leaves behind — the same one gesture the
+   *  track tool uses to start a branch, for the same reason. */
+  private useSignal(): void {
+    const aim = this.trackAim();
+    const held = this.player.inventory.has('signal', 1) || this.player.inventory.unlimited;
+    if (aim.node?.signal) {
+      this.trackNet.setSignal(aim.node.id, false);
+      this.transport.invalidate();
+      const refund = this.player.inventory.unlimited ? 0 : 1;
+      if (refund > 0 && this.player.inventory.add({ id: 'signal', count: 1 }) > 0) {
+        this.dropAtPlayer({ id: 'signal', count: 1 });
+      }
+      this.hud.toast('信号機を撤去した');
+      return;
+    }
+    if (!aim.node && !aim.run) {
+      this.warn('線路に向けて右クリックすると信号機を建てる');
+      return;
+    }
+    if (!held) {
+      this.warn('信号機が無い（作業台で 鉄インゴット 2 ＋ 木材 2）');
+      return;
+    }
+    let node = aim.node;
+    if (!node) {
+      const cut = this.splitForBranch({ edge: aim.run!.edge.id, at: aim.run!.at });
+      if (!cut) return;
+      node = cut;
+    }
+    this.trackNet.setSignal(node.id, true);
+    this.transport.invalidate();
+    this.player.inventory.remove('signal', 1);
+    const blocks = this.trackNet.sections();
+    const watched = blocks.watched.size;
+    this.hud.toast(watched > 0 ? `信号機を建てた — 閉塞 ${watched} 区間` : '信号機を建てた');
+  }
+
   /** The discovered village a station stands close enough to serve, nearest first. */
   private villageServedBy(place: TrackPoint): { village: VillageRecord; distance: number } | null {
     let best: { village: VillageRecord; distance: number } | null = null;
@@ -2154,15 +2235,22 @@ export class Game {
         this.collectPiers(samples, piers);
       }
       const stations = this.trackStations();
+      const signals = this.trackSignals();
       this.trackViewCache = {
         // The pier count is in here because a pier over an unloaded chunk is skipped:
         // without it, the far end of a long run would never grow its legs. So is what is
-        // waiting on each platform, because that is the one part of this that changes
-        // while nothing about the railway does.
-        key: `${key}:${piers.length}:${stations.map((s) => s.waiting).join(',')}`,
+        // waiting on each platform and what each signal is showing, because those are the
+        // parts of this that change while nothing about the railway does.
+        key: [
+          key,
+          piers.length,
+          stations.map((s) => s.waiting).join(','),
+          signals.map((s) => s.aspect).join(','),
+        ].join(':'),
         edges,
         piers,
         stations,
+        signals,
         markers: [],
         ghost: null,
       };
@@ -2191,13 +2279,56 @@ export class Game {
     return out;
   }
 
+  /** The signals in range and what each is showing.
+   *
+   *  Red is "there is a shipment in the block on the other side of me", which is exactly
+   *  the question a shipment asks itself before it crosses — so the lamp can never be
+   *  telling the player something different from what the railway is doing. Amber is a
+   *  block that has stopped and will not start again by itself, and it is the only one of
+   *  the three that is asking for anything. */
+  private trackSignals(): TrackSignalView[] {
+    const blocks = this.trackNet.sections();
+    const busy = this.transport.busySections();
+    const stalls = this.transport.routes
+      .map((route) => route.stall)
+      .filter((point): point is RoadPoint => point !== null);
+    const out: TrackSignalView[] = [];
+    for (const node of this.trackNet.signals()) {
+      if (Math.hypot(node.x - this.player.x, node.z - this.player.z) > TRACK_DRAW) continue;
+      const stalled = stalls.some(
+        (point) => Math.hypot(point.x - node.x, point.z - node.z) <= STALL_LIGHT,
+      );
+      const held = edgesOf(node).some((id) => {
+        const block = blocks.of.get(id);
+        return block !== undefined && busy.has(block);
+      });
+      out.push({
+        x: node.x, y: node.y, z: node.z, ...headingOf(node),
+        aspect: stalled ? 'stall' : held ? 'stop' : 'clear',
+      });
+    }
+    return out;
+  }
+
   /** Every end a new curve could be joined to, plus the start of the one being laid.
    *  Without these, snapping is a rule the player can only find out about by accident. */
   private trackMarkers(aim: TrackAim | null): TrackMarkerView[] {
     const markers: TrackMarkerView[] = [];
+    // One per free port and not one per node. A switch is an end and a middle at the same
+    // time: it has a way out still open and two that are taken, and a single marker on top
+    // of it would say nothing about which. Each sits a little way out along the way its
+    // own port faces, which is the direction a curve would leave by.
     for (const node of this.trackNet.freeEnds()) {
       if (Math.hypot(node.x - this.player.x, node.z - this.player.z) > TRACK_DRAW) continue;
-      markers.push({ x: node.x, y: node.y, z: node.z, colour: TRACK_END_MARK });
+      for (const port of freePorts(node)) {
+        const way = node.ports[port];
+        markers.push({
+          x: node.x + way.hx * PORT_MARK_OUT,
+          y: node.y + way.grade * PORT_MARK_OUT,
+          z: node.z + way.hz * PORT_MARK_OUT,
+          colour: TRACK_END_MARK,
+        });
+      }
     }
     // And where a click would cut a run in two to make a switch. Its own colour, because
     // it is a different thing from joining onto an end: this one changes track that is
@@ -2475,6 +2606,15 @@ export class Game {
       if (!route.connected || !route.stationGap) continue;
       if (route !== questRoute && !this.nearPlayer(route.stationGap, FAULT_REACH * 2)) continue;
       beams.push({ ...route.stationGap, colour: GUIDE_STATION, height: 12 });
+    }
+    // And a railway that has stopped. Amber, and the only beacon on the list that stands
+    // over something the player built correctly: the line works, there is simply no way
+    // past. Both jammed routes report their own, so a head-on meeting lights both ends of
+    // it and the shape of the problem is visible from the air.
+    for (const route of this.transport.routes) {
+      if (!route.stall) continue;
+      if (route !== questRoute && !this.nearPlayer(route.stall, FAULT_REACH * 2)) continue;
+      beams.push({ ...route.stall, colour: GUIDE_STALL, height: 14 });
     }
     const tiles = this.roads.columnsIn(
       this.player.x - GUIDE_TILE_REACH,
@@ -3975,14 +4115,23 @@ export class Game {
         id: node.id,
         x: Math.round(node.x), y: Math.round(node.y), z: Math.round(node.z),
       })),
-      /** Puts a signal on the end of the line nearest a point, or takes one down. */
+      /** Puts a signal on the railway nearest a point, or takes one down. Cuts a run in
+       *  two where there is no end to put one on, which is what pointing at the middle of
+       *  a run and clicking does. */
       putSignal: (x: number, z: number, built = true): number | null => {
         const near = this.trackNet.nodesNear(x, z, 6);
-        if (near.length === 0) return null;
         near.sort((a, b) => Math.hypot(a.x - x, a.z - z) - Math.hypot(b.x - x, b.z - z));
-        if (!this.trackNet.setSignal(near[0].id, built)) return null;
+        let node = near[0] ?? null;
+        if (!node && built) {
+          const run = this.runNearest(x, z);
+          if (!run) return null;
+          const cut = this.trackNet.splitEdge(run.edge, run.at);
+          if (!cut.ok) return null;
+          node = cut.node;
+        }
+        if (!node || !this.trackNet.setSignal(node.id, built)) return null;
         this.transport.invalidate();
-        return near[0].id;
+        return node.id;
       },
       /** The blocks the signals cut the railway into, and how many runs are in each.
        *  `watched` is the ones a signal actually bounds, which are the only ones anything

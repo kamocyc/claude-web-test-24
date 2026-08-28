@@ -69,6 +69,20 @@ const ROOF_COLOUR = 0xa8503f;
 const CRATE_COLOUR = 0xb99a5e;
 const CRATE_BAND = 0x5f4826;
 
+/** The signal: how far off the centreline the post stands, how thick it is, and how high
+ *  the lamp sits. Head height rather than roof height — a signal that stood above the
+ *  train would be read from the hillside and not from the cab. */
+const SIGNAL_GAP = 0.5;
+const SIGNAL_POST = 0.16;
+const SIGNAL_HEIGHT = 2.4;
+const SIGNAL_LAMP = 0.38;
+const SIGNAL_CASE = 0x2f3238;
+const SIGNAL_CLEAR = 0x46e07a;
+const SIGNAL_STOP = 0xe8443c;
+/** Amber, and only for a line that has stopped and is not going to start again on its
+ *  own. Red means wait; this one means the player has to do something. */
+const SIGNAL_STALL = 0xf5c02a;
+
 const STEEL = 0xb0b4bc;
 const STEEL_TOP = 0xd0d4dc;
 const TIMBER = 0x7a5a38;
@@ -109,6 +123,21 @@ export interface TrackStationView {
   waiting: number;
 }
 
+/** What a signal is showing. Three, because there are three things worth saying: the road
+ *  ahead is yours, somebody else is on it, and somebody else is on it and never leaving. */
+export type SignalAspect = 'clear' | 'stop' | 'stall';
+
+export interface TrackSignalView {
+  /** The node it stands on. */
+  x: number;
+  y: number;
+  z: number;
+  /** The track's heading through it, unit in XZ: the post stands off to one side of this. */
+  hx: number;
+  hz: number;
+  aspect: SignalAspect;
+}
+
 export interface TrackMarkerView {
   x: number;
   y: number;
@@ -132,13 +161,16 @@ export interface TrackView {
   edges: TrackEdgeView[];
   piers: TrackPierView[];
   stations: TrackStationView[];
+  signals: TrackSignalView[];
   markers: TrackMarkerView[];
   ghost: TrackGhostView | null;
 }
 
 type Vec = [number, number, number];
 
-const EMPTY: TrackView = { key: '', edges: [], piers: [], stations: [], markers: [], ghost: null };
+const EMPTY: TrackView = {
+  key: '', edges: [], piers: [], stations: [], signals: [], markers: [], ghost: null,
+};
 
 export class TrackRenderer {
   readonly group = new THREE.Group();
@@ -213,6 +245,7 @@ export class TrackRenderer {
     }
     for (const pier of view.piers) emitPier(positions, colours, pier, PIER_COLOUR);
     for (const station of view.stations) emitStation(positions, colours, station);
+    for (const signal of view.signals) emitSignal(positions, colours, signal);
     replaceGeometry(this.laid, positions, colours, true);
   }
 
@@ -431,6 +464,48 @@ function emitStation(positions: number[], colours: number[], station: TrackStati
     box(positions, colours, CRATE_COLOUR, crate, f, s, u, CRATE / 2, CRATE / 2, CRATE / 2, CRATE / 2);
     box(positions, colours, CRATE_BAND, crate, f, s, u, CRATE / 2 + 0.01, CRATE / 2 + 0.01, 0.04, CRATE / 2);
   }
+}
+
+/** A post beside the rails with a lamp on it.
+ *
+ *  Read from the train's seat and from the hillside both, which is why the lamp is a
+ *  block of flat colour rather than a light: at fifty blocks a green dot and a red dot are
+ *  the difference between "the line is clear" and "go and look", and that has to survive
+ *  being three pixels across. */
+function emitSignal(positions: number[], colours: number[], signal: TrackSignalView): void {
+  const flat = Math.hypot(signal.hx, signal.hz) || 1;
+  const f: Vec = [signal.hx / flat, 0, signal.hz / flat];
+  const s: Vec = [f[2], 0, -f[0]];
+  const u: Vec = [0, 1, 0];
+  // Off the side the platforms are not on, so a signal at a station does not stand in the
+  // middle of the platform roof.
+  const across = -(TRACK_WIDTH / 2 + SIGNAL_GAP);
+  const foot = {
+    x: signal.x + s[0] * across,
+    y: signal.y,
+    z: signal.z + s[2] * across,
+  };
+  // Standing *on* the deck: the offset lifts the middle of the post by half its height, so
+  // its foot is at the rail and its top is where the lamp goes.
+  box(
+    positions, colours, TIMBER, foot, f, s, u,
+    SIGNAL_POST / 2, SIGNAL_POST / 2, SIGNAL_HEIGHT / 2, SIGNAL_HEIGHT / 2,
+  );
+  const head = { x: foot.x, y: foot.y + SIGNAL_HEIGHT, z: foot.z };
+  box(
+    positions, colours, SIGNAL_CASE, head, f, s, u,
+    SIGNAL_LAMP / 2, SIGNAL_LAMP / 2 + 0.07, SIGNAL_LAMP / 2 + 0.07, SIGNAL_LAMP / 2,
+  );
+  // The lamp itself, standing proud of the case *along* the track and inset across it, so
+  // that what a train sees coming up to it is the light and what somebody standing beside
+  // it sees is the casing. Both ends are lit: one signal, read from either direction.
+  const lit = signal.aspect === 'stall'
+    ? SIGNAL_STALL
+    : signal.aspect === 'stop' ? SIGNAL_STOP : SIGNAL_CLEAR;
+  box(
+    positions, colours, lit, head, f, s, u,
+    SIGNAL_LAMP / 2 + 0.05, SIGNAL_LAMP / 2 - 0.06, SIGNAL_LAMP / 2 - 0.06, SIGNAL_LAMP / 2,
+  );
 }
 
 /** The ribbon a refused ghost falls back to: where the track would have run, without

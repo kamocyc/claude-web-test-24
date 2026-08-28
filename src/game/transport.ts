@@ -786,6 +786,16 @@ export class TransportNetwork {
     return t >= span.from && t <= span.to ? 'train' : 'porter';
   }
 
+  /** The blocks of railway that have a shipment in them, as of the last update.
+   *
+   *  What the lamps on the signals are lit from. A signal shows red when the block on the
+   *  other side of it is in here — which is the same question a shipment asks before it
+   *  crosses, so the light is never telling the player something different from what the
+   *  railway is doing. */
+  busySections(): ReadonlySet<number> {
+    return new Set(this.holding.keys());
+  }
+
   /** Which block of railway a point along a route is in, and `UNWATCHED` where no signal
    *  bounds it. The boundaries are in order, so this is the last one already passed. */
   sectionAt(route: Route, t: number): number {
