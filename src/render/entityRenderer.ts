@@ -1,15 +1,28 @@
 import * as THREE from 'three';
 import type { ItemDrop } from '../game/drops';
+import type { CarKind } from '../game/consist';
 import type { Mob } from '../game/mobs/ai';
 import type { Arrow } from '../game/mobs/spawner';
 import { itemDef } from '../game/items';
 import { blockDef } from '../world/blocks';
-import { modelFor, type ModelPart } from './models';
+import { carModel, modelFor, type ModelPart } from './models';
 import type { Atlas } from './textures';
 
 interface MobView {
   group: THREE.Group;
   parts: { mesh: THREE.Mesh; part: ModelPart }[];
+  material: THREE.MeshLambertMaterial[];
+  /** The cars behind the engine, each in its own group.
+   *
+   *  Their own groups and not children of the engine's, because they are not attached to
+   *  it: the game places every car in world coordinates from where the engine has been,
+   *  which is the only way a train longer than the tightest curve stays on the rails. */
+  cars: CarView[];
+}
+
+interface CarView {
+  kind: CarKind;
+  group: THREE.Group;
   material: THREE.MeshLambertMaterial[];
 }
 
@@ -49,6 +62,7 @@ export class EntityRenderer {
       }
       view.group.position.set(mob.x, mob.y, mob.z);
       view.group.rotation.y = mob.yaw;
+      this.syncCars(view, mob);
 
       // Legs and arms swing with how far the mob has walked.
       const swing = Math.sin(mob.walkPhase) * 0.6;
@@ -84,8 +98,7 @@ export class EntityRenderer {
     }
     for (const [id, view] of this.mobViews) {
       if (alive.has(id)) continue;
-      this.group.remove(view.group);
-      for (const material of view.material) material.dispose();
+      this.disposeMobView(view);
       this.mobViews.delete(id);
     }
   }
@@ -103,7 +116,54 @@ export class EntityRenderer {
       parts.push({ mesh, part });
       materials.push(material);
     }
-    return { group, parts, material: materials };
+    return { group, parts, material: materials, cars: [] };
+  }
+
+  /** Puts the cars where the game says they are, building or dropping them when the train
+   *  picks up a different load. */
+  private syncCars(view: MobView, mob: Mob): void {
+    while (view.cars.length > mob.consist.length) this.dropCar(view.cars.pop()!);
+    for (let i = 0; i < mob.consist.length; i++) {
+      const pose = mob.consist[i];
+      const built = view.cars[i];
+      // The coach is always the first car and the wagons follow it, so a train that picks
+      // up a different load only ever grows or loses cars off the back — but a kind that
+      // has changed under an index is built again rather than repainted, because a wagon
+      // and a carriage are not the same boxes in different colours.
+      if (built && built.kind !== pose.kind) this.dropCar(built);
+      const car = built && built.kind === pose.kind ? built : this.createCarView(pose.kind);
+      if (car !== built) {
+        view.cars[i] = car;
+        this.group.add(car.group);
+      }
+      car.group.position.set(pose.x, pose.y, pose.z);
+      car.group.rotation.y = pose.yaw;
+    }
+  }
+
+  private createCarView(kind: CarKind): CarView {
+    const group = new THREE.Group();
+    const materials: THREE.MeshLambertMaterial[] = [];
+    for (const part of carModel(kind)) {
+      const material = new THREE.MeshLambertMaterial({ color: part.color });
+      const mesh = new THREE.Mesh(BOX, material);
+      mesh.scale.set(part.size[0], part.size[1], part.size[2]);
+      mesh.position.set(part.offset[0], part.offset[1], part.offset[2]);
+      group.add(mesh);
+      materials.push(material);
+    }
+    return { kind, group, material: materials };
+  }
+
+  private dropCar(car: CarView): void {
+    this.group.remove(car.group);
+    for (const material of car.material) material.dispose();
+  }
+
+  private disposeMobView(view: MobView): void {
+    this.group.remove(view.group);
+    for (const material of view.material) material.dispose();
+    for (const car of view.cars) this.dropCar(car);
   }
 
   private syncDrops(drops: ItemDrop[], time: number): void {

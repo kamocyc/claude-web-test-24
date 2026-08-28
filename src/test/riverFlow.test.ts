@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RiverFlow } from '../world/riverFlow';
-import { TerrainGenerator } from '../world/generation/terrain';
+import { type ChunkGenResult, TerrainGenerator } from '../world/generation/terrain';
 import { CHUNK_HEIGHT, Chunk } from '../world/chunk';
 import { World } from '../world/world';
 import { Block } from '../world/blocks';
@@ -13,19 +13,32 @@ const SEED = 2061350291;
 const RIVER_X = 6;
 const RIVER_Z = -10;
 
+/** The four chunks `build` lays out, which are a pure function of the seed and a clock
+ *  it never moves. Generating them nine times over was most of this file's runtime. */
+let generated: ChunkGenResult[] | null = null;
+
 function build(): { world: World; flow: RiverFlow; generator: TerrainGenerator } {
   const generator = new TerrainGenerator(SEED);
   const world = new World(SEED);
   const flow = new RiverFlow(world);
+  if (!generated) {
+    generated = [];
+    for (let cz = -1; cz <= 0; cz++) {
+      for (let cx = -1; cx <= 0; cx++) generated.push(generator.generateChunk(cx, cz));
+    }
+  }
+  let i = 0;
   for (let cz = -1; cz <= 0; cz++) {
     for (let cx = -1; cx <= 0; cx++) {
-      const generated = generator.generateChunk(cx, cz);
-      const chunk = new Chunk(cx, cz, generated.blocks, generated.water);
-      chunk.riverSurface = generated.riverSurface;
+      // Copies, always: the chunk takes ownership of what it is handed and `RiverFlow`
+      // writes through it, so what is cached must never leave the cache.
+      const g = generated[i++];
+      const chunk = new Chunk(cx, cz, g.blocks.slice(), g.water.slice());
+      chunk.riverSurface = g.riverSurface.slice();
       chunk.syncWaterMarkers();
       chunk.recomputeHeightMap();
       world.addChunk(chunk);
-      flow.registerChunk(chunk, generated.weatherSeconds);
+      flow.registerChunk(chunk, g.weatherSeconds);
     }
   }
   return { world, flow, generator };
@@ -82,6 +95,9 @@ describe('RiverFlow', () => {
   it('keeps every water cell inside a water block', () => {
     const { world, flow, generator } = build();
     const inland = inlandOfSurface(generator.riverAt(RIVER_X, RIVER_Z).surface);
+    let checked = 0;
+    let mismatched = 0;
+    let first = '';
     for (const index of [1, 3, 5]) {
       flow.seconds = peakOf(index, inland);
       flow.sweepAll();
@@ -90,12 +106,24 @@ describe('RiverFlow', () => {
           for (let y = 40; y < 70; y++) {
             const level = world.getWater(x, y, z);
             const block = world.getBlock(x, y, z);
-            if (level > 0) expect(block).toBe(Block.WATER);
-            else expect(block).not.toBe(Block.WATER);
+            checked++;
+            // Counted rather than asserted per cell: forty thousand expect() calls cost
+            // far more than the sweep that produces them. Only the first mismatch is
+            // formatted, so the message work stays out of the loop too.
+            if (level > 0 === (block === Block.WATER)) continue;
+            mismatched++;
+            first ||=
+              level > 0
+                ? `season ${index}: (${x}, ${y}, ${z}) holds water ${level} in block ${block}`
+                : `season ${index}: (${x}, ${y}, ${z}) is a WATER block with no water in it`;
           }
         }
       }
     }
+    // The bounds are constants, so the exact count is the strongest guard against a
+    // sweep that has quietly stopped covering anything.
+    expect(checked).toBe(3 * 16 * 16 * 30);
+    expect(mismatched, first).toBe(0);
   });
 
   it('never drains water the player has impounded', () => {

@@ -46,13 +46,24 @@ describe('village layout', () => {
   });
 
   it('groups every placement into the chunk that contains it', () => {
+    let checked = 0;
+    let misfiled = 0;
+    let first = '';
     for (const [key, placements] of plan.byChunk) {
       const [cx, cz] = key.split(',').map(Number);
       for (const p of placements) {
-        expect(Math.floor(p.x / 16)).toBe(cx);
-        expect(Math.floor(p.z / 16)).toBe(cz);
+        checked++;
+        // Counted rather than asserted per placement: there are tens of thousands of
+        // them, and the expect() calls cost more than the walk that finds them.
+        if (Math.floor(p.x / 16) === cx && Math.floor(p.z / 16) === cz) continue;
+        misfiled++;
+        first ||= `(${p.x}, ${p.z}) is filed under chunk ${key}`;
       }
     }
+    // The sibling test above establishes the plan is 500-odd placements; this is the
+    // guard that the walk actually reached them.
+    expect(checked, 'the plan had no placements to check').toBeGreaterThan(500);
+    expect(misfiled, first).toBe(0);
   });
 
   it('is deterministic', () => {

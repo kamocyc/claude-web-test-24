@@ -894,6 +894,64 @@ body.screen-open #viewport {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
 }
 
+/* The big map. The same canvas as the corner one, sized to the window rather than to a
+   number of pixels, so it is as large as the screen allows on any display. */
+.worldmap {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(8, 10, 14, 0.88);
+  pointer-events: auto;
+}
+
+.worldmap .worldmap-canvas-wrap {
+  position: relative;
+  width: min(84vh, 84vw);
+  height: min(84vh, 84vw);
+  border: 2px solid rgba(255, 255, 255, 0.24);
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.worldmap .minimap-north {
+  font-size: 14px;
+}
+
+.worldmap-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: #dfe6ef;
+}
+
+.worldmap-readout {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.worldmap-zoom,
+.worldmap-close {
+  font: inherit;
+  color: #eef3f8;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 5px;
+  padding: 3px 12px;
+  cursor: pointer;
+}
+
+.worldmap-zoom:hover,
+.worldmap-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
 .toggle-row {
   cursor: pointer;
 }

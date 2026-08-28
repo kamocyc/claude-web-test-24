@@ -402,6 +402,37 @@ tile('track_tool', (ctx) => {
   }
 });
 
+// The station, as it looks in the hand. A platform with a shelter over it and a crate
+// standing on it: what it is for has to be readable in a hotbar slot, and "somewhere the
+// goods wait" is the half of it a picture can carry.
+tile('station', (ctx) => {
+  iconBase(ctx);
+  // the platform
+  rect(ctx, 1, 11, 14, 3, shade(STONE, 8));
+  rect(ctx, 1, 11, 14, 1, shade(STONE, 40));
+  // posts and a roof over them
+  rect(ctx, 3, 5, 1, 6, shade(BARK, 10));
+  rect(ctx, 12, 5, 1, 6, shade(BARK, 10));
+  rect(ctx, 2, 3, 12, 2, [168, 74, 58]);
+  rect(ctx, 2, 3, 12, 1, [198, 96, 74]);
+  // a crate waiting on it
+  rect(ctx, 6, 7, 5, 4, [160, 122, 70]);
+  rect(ctx, 6, 8, 5, 1, shade(RAIL_TIE, 10));
+});
+
+// The signal, as it looks in the hand. A post with a lamp on it, showing green: the one
+// that means "go", because a hotbar icon should not look like a warning.
+tile('signal', (ctx) => {
+  iconBase(ctx);
+  // the post, standing on a foot
+  rect(ctx, 7, 3, 2, 11, shade(BARK, -6));
+  rect(ctx, 5, 13, 6, 2, shade(STONE, 4));
+  // the lamp head, and the light in it
+  rect(ctx, 3, 2, 6, 7, shade(RAIL_STEEL, -20));
+  rect(ctx, 4, 3, 4, 4, [70, 210, 110]);
+  rect(ctx, 5, 4, 2, 2, [180, 255, 200]);
+});
+
 tile('cactus_top', (ctx, rng) => {
   grain(ctx, rng, [70, 132, 62], 12);
   blob(ctx, rng, 8, 8, 4, [92, 160, 78]);

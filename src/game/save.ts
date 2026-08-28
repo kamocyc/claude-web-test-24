@@ -105,25 +105,47 @@ export interface SavedTrackNode {
   x: number;
   y: number;
   z: number;
+  /** Port zero's heading and slope, under the names they had before ports existed. */
   hx: number;
   hz: number;
   grade: number;
+  /** Whether a station stands on this end. Absent on every node of a railway saved before
+   *  stations existed, and on every end of one that has none. */
+  station?: boolean;
+  /** Whether a signal stands here. Absent for the same reason. */
+  signal?: boolean;
+  /** Every way out, written only for a switch. A node without this is a plain joint whose
+   *  two ports are `(hx, hz, grade)` and its exact reverse — which is every node of every
+   *  railway saved before switches existed. */
+  ports?: { hx: number; hz: number; grade: number }[];
 }
 
 /** Only the pair of ends, and which way round the track runs through each. The curve
  *  between them is a pure function of the two, so it is solved again on load rather than
  *  stored twice — the same bargain SavedRoute makes with the road it lies on. */
+/** Which port of each end the curve is attached to — but only in a save whose
+ *  `SavedTracks.ports` says so. Before ports existed these were `1`/`-1` and meant the
+ *  *side* of a node's single heading, differently at each end of the curve; see
+ *  `legacyStartPort` in `tracks.ts`. */
 export interface SavedTrackEdge {
   a: number;
   b: number;
   dirA: number;
   dirB: number;
+  /** Where the curve's two arcs meet, for one that was cut out of a longer run. Absent on
+   *  every curve a player laid in one gesture: those are the equal-tangent biarc of their
+   *  own ends, which the solver finds again on its own. */
+  jx?: number;
+  jz?: number;
 }
 
 export interface SavedTracks {
   nodes: SavedTrackNode[];
   edges: SavedTrackEdge[];
   nextId: number;
+  /** True in every save written since ports existed, and absent in every one written
+   *  before. It says how to read `SavedTrackEdge.dirA`/`dirB`, and nothing else. */
+  ports?: boolean;
 }
 
 export interface SaveData {

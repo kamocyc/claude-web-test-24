@@ -46,7 +46,16 @@ export const MAX_GRADE = 0.2;
 /** How near an existing free end has to be for a click to mean "join onto that". */
 export const SNAP_RADIUS = 2.0;
 
-/** How near a place an end of the line has to be to serve it.
+/** How far off the through line a branch may leave a switch — and, because it is the same
+ *  fact read the other way, how sharply freight may turn at one.
+ *
+ *  Which direction a train may take a branch in falls out of that single number rather
+ *  than being a rule anybody had to write: arriving at a node is travelling *against* the
+ *  port you came in by, so the turn onto a branch is wide from one side of the switch and
+ *  a reversal from the other. That is a trailing point, and the geometry says so. */
+export const MAX_SWITCH_ANGLE = 0.55;
+
+/** How near a place a station has to be to serve it.
  *
  *  A railway is not a road: it does not have to reach the door, and it should not have to,
  *  because the last thirty blocks of a village are houses. A village is 38 blocks across
@@ -54,6 +63,20 @@ export const SNAP_RADIUS = 2.0;
  *  The walk from there to the depot's door is charged to every trip exactly the way the
  *  walk from a road is - see `doorGap` in `transport.ts`. */
 export const STATION_REACH = 48;
+
+/** The station's platform, as the numbers both the renderer and the player's feet need.
+ *
+ *  Here rather than in the renderer because a platform is something to stand on before it
+ *  is something to look at, and two copies of "how long is a platform" would come apart the
+ *  first time either was changed. The length is a short train's, so a train that stops
+ *  here looks like it fits; the height is a carriage floor's, so stepping aboard is a step
+ *  across rather than a climb — see `CAR_FLOOR` in `consist.ts`, which takes it from here. */
+export const PLATFORM_LONG = 7;
+export const PLATFORM_WIDE = 2.4;
+/** Gap between the edge of the track and the edge of the platform. */
+export const PLATFORM_GAP = 0.15;
+/** Height of the platform surface over the railhead. */
+export const PLATFORM_TOP = 0.85;
 
 /** Rails consumed per block of track. One rail buys two blocks: this track carries
  *  nothing, so it cannot cost what the freight-carrying kind does — but free track would
@@ -139,6 +162,13 @@ export interface TrackRefusal {
 }
 
 export type TrackSolve = { ok: true; curve: TrackCurve } | TrackRefusal;
+
+/** Where a curve's two arcs meet, in plan. Only a curve made by cutting another one needs
+ *  to say: everything else meets where the equal-tangent solve puts it. */
+export interface TrackJoint {
+  x: number;
+  z: number;
+}
 
 // --- the solver ---------------------------------------------------------------
 
@@ -232,8 +262,15 @@ function profileSteepest(curve: Omit<TrackCurve, 'steepest' | 'minRadius'>): num
   return worst;
 }
 
-/** The curve joining two ends, or the reason there is not one. */
-export function solveTrack(from: TrackAnchor, to: TrackAnchor): TrackSolve {
+/** The curve joining two ends, or the reason there is not one.
+ *
+ *  `joint` overrules where the two arcs meet. Left off — which is every curve a player
+ *  lays — the equal-tangent biarc is used, and that is the whole of the shape. It is
+ *  passed only by `splitEdge`, because **half of an equal-tangent biarc is not itself
+ *  one**: cut one past its joint and re-solving the piece moves it by over a blockile, which
+ *  is the player's track visibly walking away from where they built it. Given the joint
+ *  it was cut at, the same two arcs come back exactly. */
+export function solveTrack(from: TrackAnchor, to: TrackAnchor, joint?: TrackJoint): TrackSolve {
   const vx = to.x - from.x;
   const vz = to.z - from.z;
   const t0x = from.hx;
@@ -261,10 +298,12 @@ export function solveTrack(from: TrackAnchor, to: TrackAnchor): TrackSolve {
     // fails the radius check below, which is the honest answer rather than a fudged one.
     d = Math.hypot(vx, vz) / 2;
   }
-  if (!Number.isFinite(d) || d <= 1e-6) return { ok: false, fault: 'behind', value: d };
+  // With a joint given, `d` is not what decides the shape and a degenerate one is not a
+  // refusal — the two ends of a split half can sit anywhere relative to each other.
+  if (!joint && (!Number.isFinite(d) || d <= 1e-6)) return { ok: false, fault: 'behind', value: d };
 
-  const jx = (from.x + to.x) / 2 + (d / 2) * (t0x - t1x);
-  const jz = (from.z + to.z) / 2 + (d / 2) * (t0z - t1z);
+  const jx = joint ? joint.x : (from.x + to.x) / 2 + (d / 2) * (t0x - t1x);
+  const jz = joint ? joint.z : (from.z + to.z) / 2 + (d / 2) * (t0z - t1z);
 
   const first = arcThrough(from.x, from.z, t0x, t0z, jx, jz);
   if (!first) return { ok: false, fault: 'degenerate', value: 0 };
@@ -459,43 +498,78 @@ export function summarise(curve: TrackCurve): TrackSummary {
 
 // --- the network --------------------------------------------------------------
 
-/** Which way round a node an edge runs: +1 along the node's stored heading, -1 against. */
-export type TrackDir = 1 | -1;
+/** Which port of a node an edge is attached to. Zero and one are the two sides of a plain
+ *  joint; two is the branch of a switch.
+ *
+ *  It used to be `1 | -1` — the sign to multiply the node's one stored heading by, which
+ *  is a slot index in disguise and could only ever name two slots. A number names as many
+ *  as a node has. */
+export type TrackDir = number;
+
+/** One way out of a node: the direction a track leaves through it, and the slope it
+ *  leaves at.
+ *
+ *  A node used to hold one heading and a sign, which made every track through it exactly
+ *  collinear — the joint was continuous by construction rather than by tolerance. Ports
+ *  keep that guarantee and stop it being a straitjacket: two ports that are exact
+ *  negations of each other *are* a plain joint, and a third port pointing somewhere else
+ *  is a switch. Nothing else in the file had to learn a new idea. */
+export interface TrackPort {
+  /** Unit in XZ, pointing the way a track leaves the node through this port. */
+  hx: number;
+  hz: number;
+  /** dy/ds leaving through this port. */
+  grade: number;
+  /** The edge attached here, or null while the port is free. */
+  edge: number | null;
+}
 
 export interface TrackNode {
   id: number;
   x: number;
   y: number;
   z: number;
-  /** Undirected through-heading, unit in XZ. Which way a new track may leave is decided
-   *  by the edge already attached, not by this sign. */
-  hx: number;
-  hz: number;
-  /** dy/ds through the node in the +(hx, hz) direction. */
-  grade: number;
-  /** Edge ids. At most two: a third would be a switch, and there are no switches here. */
-  edges: number[];
+  /** The ways out. Two on a plain joint, three on a switch; never one, because a node with
+   *  nothing attached is dropped. */
+  ports: TrackPort[];
+  /** Whether a station stands here. Freight only ever joins or leaves the railway at
+   *  one of these — see `stationsFor`. */
+  station: boolean;
+  /** Whether a signal stands here, which makes this node a block boundary. */
+  signal: boolean;
 }
 
 export interface TrackEdge {
   id: number;
   a: number;
   b: number;
+  /** Which port of `a` and of `b` this edge is attached to. */
   dirA: TrackDir;
   dirB: TrackDir;
   /** Solved from the two nodes; never stored, always reproducible. */
   curve: TrackCurve;
+  /** Where its arcs meet, for a curve that came from cutting another one. Absent on every
+   *  curve a player laid, which is the equal-tangent biarc of its ends and needs no
+   *  telling. Saved and handed back to `solveTrack`, or a split run would come back from
+   *  a save a different shape from the one that went in. */
+  joint?: TrackJoint;
 }
 
-/** An open end a click landed near, and the direction a new track has to leave it in. */
+/** An open end a click landed near, which port of it is free, and the direction a new
+ *  track has to leave it in. */
 export interface TrackSnap {
   node: TrackNode;
+  port: number;
   hx: number;
   hz: number;
   grade: number;
 }
 
 export type TrackLay = { ok: true; edge: TrackEdge } | TrackRefusal;
+
+export type TrackSplit =
+  | { ok: true; node: TrackNode; edges: [TrackEdge, TrackEdge] }
+  | TrackRefusal;
 
 /** How wide a cell of the node index is. Sixteen matches a chunk, which is the size
  *  everything else in the game already thinks in. */
@@ -530,19 +604,103 @@ function cellKey(x: number, z: number): string {
   return `${Math.floor(x / CELL)},${Math.floor(z / CELL)}`;
 }
 
-/** The end of a curve as an anchor again: position from the node, heading and grade
- *  turned round to match the way this edge runs through it. */
+/** The end of a curve as an anchor again: position from the node, heading and grade from
+ *  the port the curve leaves through.
+ *
+ *  **A port points the way out.** An edge occupies the port it leaves the node by, whether
+ *  it is the curve's start or its finish — so at a plain joint the two edges occupy the
+ *  two opposite ports, which is what makes them one line. A curve that *arrives* is
+ *  travelling the other way at that moment, so the solver wants `arrivalOf` there, not
+ *  this. Getting those two round the wrong way is a track that doubles back on itself.
+ *
+ *  A lookup rather than a negation, and that is the whole of what ports bought. Every edge
+ *  at a port reads the same three numbers, so a joint is exactly continuous by
+ *  construction — which is what it always was — and a third direction is now something
+ *  those numbers can say. */
 export function anchorOf(node: TrackNode, dir: TrackDir): TrackAnchor {
-  return {
-    x: node.x,
-    y: node.y,
-    z: node.z,
-    hx: node.hx * dir,
-    hz: node.hz * dir,
-    grade: node.grade * dir,
-  };
+  const port = node.ports[dir] ?? node.ports[0];
+  return { x: node.x, y: node.y, z: node.z, hx: port.hx, hz: port.hz, grade: port.grade };
 }
 
+/** The same port read as the direction a curve is travelling when it arrives here. */
+export function arrivalOf(node: TrackNode, dir: TrackDir): TrackAnchor {
+  const port = node.ports[dir] ?? node.ports[0];
+  return { x: node.x, y: node.y, z: node.z, hx: -port.hx, hz: -port.hz, grade: -port.grade };
+}
+
+/** An anchor turned round: the same line, travelled the other way. */
+export function reversed(anchor: TrackAnchor): TrackAnchor {
+  return { ...anchor, hx: -anchor.hx, hz: -anchor.hz, grade: -anchor.grade };
+}
+
+/** The two ports of a plain joint: a track leaving one way, and one leaving the other. */
+export function throughPorts(anchor: TrackAnchor): TrackPort[] {
+  return [
+    { hx: anchor.hx, hz: anchor.hz, grade: anchor.grade, edge: null },
+    { hx: -anchor.hx, hz: -anchor.hz, grade: -anchor.grade, edge: null },
+  ];
+}
+
+/** Edge ids attached to a node, in port order. The old `node.edges` array, derived. */
+export function edgesOf(node: TrackNode): number[] {
+  const out: number[] = [];
+  for (const port of node.ports) if (port.edge !== null) out.push(port.edge);
+  return out;
+}
+
+/** The line a node lies on, as one heading: its first port's.
+ *
+ *  A plain joint has only one line to speak of, and a switch is drawn and stood on along
+ *  its through line rather than its branch, so the first port is the right answer for
+ *  both. It is what a platform is laid alongside. */
+export function headingOf(node: TrackNode): { hx: number; hz: number } {
+  const port = node.ports[0];
+  return { hx: port.hx, hz: port.hz };
+}
+
+/** Ports with nothing attached yet — the places a new curve may join. */
+export function freePorts(node: TrackNode): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < node.ports.length; i++) if (node.ports[i].edge === null) out.push(i);
+  return out;
+}
+
+
+/** The railway cut into blocks by its signals.
+ *
+ *  `of` is which block each run belongs to; `watched` is the blocks a signal actually
+ *  bounds, which are the only ones anybody waits for. A network with no signals on it has
+ *  one block and an empty `watched`, and behaves exactly as it did before signals. */
+export interface TrackSections {
+  of: Map<number, number>;
+  watched: Set<number>;
+}
+
+/** The block id of a stretch no signal bounds. Real ids are edge ids, which start at one,
+ *  so nothing ever collides with it. Two trains may be in the same unwatched stretch at
+ *  once — that is not a block, it is the rest of the railway. */
+export const UNWATCHED = 0;
+
+/** One state of the walk in `wayBetween`: standing at a node, having come in by a port.
+ *
+ *  The port is half the state and not a detail. At a switch, arriving on the branch and
+ *  arriving on the main line are the same place and different situations — one of them can
+ *  take the turn and the other would have to reverse. */
+interface RailStep {
+  node: number;
+  port: number;
+  /** Blocks of rail travelled to get here. */
+  cost: number;
+  /** The edge come in by, and the node it was entered from. */
+  edge: number;
+  from: number;
+  /** The state before this one, or null at a station the walk set out from. */
+  prev: string | null;
+}
+
+function railKey(node: number, port: number): string {
+  return `${node}:${port}`;
+}
 
 /** A line of rails from one place to another: what the freight actually travels along.
  *
@@ -555,13 +713,21 @@ export interface TrackWay {
   length: number;
   /** Blocks of up and down along the way. */
   climb: number;
+  /** Where along `points` the block changes, and to which — `at` is the index of the
+   *  point the new block starts at, and the first entry is always at zero.
+   *
+   *  `UNWATCHED` for a stretch no signal bounds. Empty on a line with no signals near it
+   *  at all, which is what makes an unsignalled railway behave exactly as it did: whoever
+   *  reads this has nothing to check. */
+  sections: { at: number; id: number }[];
 }
 
 export class TrackNetwork {
   readonly nodes = new Map<number, TrackNode>();
   readonly edges = new Map<number, TrackEdge>();
-  /** Bumped by `lay` and `remove` and by nothing else, so the renderer can decide whether
-   *  to rebuild by comparing one number. */
+  /** Bumped by `lay`, `remove`, `clear` and `setStation` and by nothing else, so the
+   *  renderer and the route survey can each decide whether to do their work again by
+   *  comparing one number. */
   revision = 0;
   private nextId = 1;
   private readonly cells = new Map<string, number[]>();
@@ -571,10 +737,103 @@ export class TrackNetwork {
   private readonly deckCells = new Map<string, DeckPiece[]>();
   private readonly deckIndexed = new Set<number>();
   private deckRevision = -1;
+  private sectionCache: TrackSections | null = null;
+  private sectionRevision = -1;
 
-  /** Open ends, which are the only places a new track may join. */
+  /** Nodes with a port still free, which are the only places a new track may join.
+   *
+   *  No longer a property of the node alone: a switch is an end and a middle at the same
+   *  time, so callers that want to draw or aim at one want `freePorts` as well. */
   freeEnds(): TrackNode[] {
-    return [...this.nodes.values()].filter((node) => node.edges.length < 2);
+    return [...this.nodes.values()].filter((node) => freePorts(node).length > 0);
+  }
+
+  /** Puts a signal on an end, or takes one down. False when there is no such end or it is
+   *  already what it is being asked to become.
+   *
+   *  This moves `revision` for the same reason `setStation` does: it changes what the
+   *  sections are, and the route survey skips itself while nothing it has looked at has
+   *  moved. */
+  setSignal(nodeId: number, built: boolean): boolean {
+    const node = this.nodes.get(nodeId);
+    if (!node || node.signal === built) return false;
+    node.signal = built;
+    this.revision++;
+    return true;
+  }
+
+  /** Every signal on the network. */
+  signals(): TrackNode[] {
+    return [...this.nodes.values()].filter((node) => node.signal);
+  }
+
+  /** Which block each run belongs to.
+   *
+   *  A block is the stretch of railway a train has to have to itself, and its boundaries
+   *  are the signals: two runs are in the same block when you can get from one to the
+   *  other without passing one. So this is a union-find over the runs, joining across
+   *  every node that has no signal on it.
+   *
+   *  **A block with no signal anywhere on its edge is not enforced.** That is what keeps
+   *  every railway built before signals existed running exactly as it did: with none
+   *  placed, the whole network is one unwatched block and nothing waits for anything.
+   *  Put one signal down and the two stretches either side of it become blocks that mean
+   *  something, and nothing else does. */
+  sections(): TrackSections {
+    if (this.sectionCache && this.sectionRevision === this.revision) return this.sectionCache;
+    const owner = new Map<number, number>();
+    for (const id of this.edges.keys()) owner.set(id, id);
+    const find = (id: number): number => {
+      let at = id;
+      while (owner.get(at) !== at) at = owner.get(at)!;
+      // Point everything walked over straight at the root, so the next walk is one hop.
+      for (let up = id; up !== at;) {
+        const next = owner.get(up)!;
+        owner.set(up, at);
+        up = next;
+      }
+      return at;
+    };
+    for (const node of this.nodes.values()) {
+      if (node.signal) continue;
+      const here = edgesOf(node);
+      for (let i = 1; i < here.length; i++) {
+        const a = find(here[0]);
+        const b = find(here[i]);
+        if (a !== b) owner.set(b, a);
+      }
+    }
+    const of = new Map<number, number>();
+    for (const id of this.edges.keys()) of.set(id, find(id));
+    // A block only counts where a signal actually bounds it.
+    const watched = new Set<number>();
+    for (const node of this.nodes.values()) {
+      if (!node.signal) continue;
+      for (const id of edgesOf(node)) watched.add(find(id));
+    }
+    this.sectionRevision = this.revision;
+    this.sectionCache = { of, watched };
+    return this.sectionCache;
+  }
+
+  /** Every station on the network. */
+  stations(): TrackNode[] {
+    return [...this.nodes.values()].filter((node) => node.station);
+  }
+
+  /** Builds or takes down the station on an end. False when there is no such end, or when
+   *  it is already what it is being asked to become — so a caller can charge for the one
+   *  that changed something and nothing for the one that did not.
+   *
+   *  This moves `revision` because it changes what `wayBetween` answers. Without that the
+   *  route survey, which skips itself entirely while nothing it has looked at has moved,
+   *  would not notice a station until somebody happened to lay a curve. */
+  setStation(nodeId: number, built: boolean): boolean {
+    const node = this.nodes.get(nodeId);
+    if (!node || node.station === built) return false;
+    node.station = built;
+    this.revision++;
+    return true;
   }
 
   totalLength(): number {
@@ -607,7 +866,7 @@ export class TrackNetwork {
     const seen = new Set<number>();
     const found: TrackEdge[] = [];
     for (const node of this.nodesNear(x, z, radius + MAX_SPAN)) {
-      for (const id of node.edges) {
+      for (const id of edgesOf(node)) {
         if (seen.has(id)) continue;
         seen.add(id);
         const edge = this.edges.get(id);
@@ -621,17 +880,19 @@ export class TrackNetwork {
    *
    *  It is the *continuation* of whatever is already attached — the tangent that edge
    *  arrives with, carried straight on — not its reverse. Get this backwards and a track
-   *  snapped onto an existing end doubles back along the one already there. */
+   *  snapped onto an existing end doubles back along the one already there.
+   *
+   *  With ports it is a lookup: the free one. Where several are free it is the first, and
+   *  a caller that means a particular one passes it to `snapTo` instead. */
   continuationAt(node: TrackNode): TrackSnap {
-    if (node.edges.length === 0) {
-      return { node, hx: node.hx, hz: node.hz, grade: node.grade };
-    }
-    const edge = this.edges.get(node.edges[0]);
-    if (!edge) return { node, hx: node.hx, hz: node.hz, grade: node.grade };
-    // An edge leaving `a` occupies the side it leaves towards, so the free side is the
-    // other one; an edge arriving at `b` leaves the side it was heading for free.
-    const sign: TrackDir = edge.a === node.id ? (edge.dirA === 1 ? -1 : 1) : edge.dirB;
-    return { node, hx: node.hx * sign, hz: node.hz * sign, grade: node.grade * sign };
+    const free = freePorts(node);
+    return this.snapTo(node, free.length > 0 ? free[0] : 0);
+  }
+
+  /** A node and one of its ports, as somewhere a new curve can leave from. */
+  snapTo(node: TrackNode, port: number): TrackSnap {
+    const at = node.ports[port] ?? node.ports[0];
+    return { node, port, hx: at.hx, hz: at.hz, grade: at.grade };
   }
 
   /** The end of a laid run nearest a point, whatever state it is in.
@@ -657,12 +918,12 @@ export class TrackNetwork {
    *  when there is no end there or the one there has no room left. */
   snapNode(p: TrackPoint, radius = SNAP_RADIUS): TrackSnap | null {
     const node = this.nodeAt(p, radius);
-    return node && node.edges.length < 2 ? this.continuationAt(node) : null;
+    return node && freePorts(node).length > 0 ? this.continuationAt(node) : null;
   }
 
   /** How far along a ray a point sits, and how far off it, or null when it is behind the
    *  eye or beyond the reach. */
-  private static onRay(
+  static onRay(
     origin: TrackPoint, direction: TrackPoint, maxDistance: number, p: TrackPoint,
   ): { along: number; off: number } | null {
     const dx = p.x - origin.x;
@@ -717,11 +978,14 @@ export class TrackNetwork {
 
   /** Joins two ends. When an end resolved to an existing node its stored position,
    *  heading and grade are used *verbatim* rather than whatever the click landed on —
-   *  which is what makes the joint exactly continuous instead of nearly so. */
+   *  which is what makes the joint exactly continuous instead of nearly so.
+   *
+   *  `fromPort`/`toPort` name which way out of an existing node the curve takes. Left off,
+   *  the first free port is used, which is the only one a plain joint has. */
   lay(
     from: TrackAnchor,
     to: TrackAnchor,
-    options: { fromNode?: number; toNode?: number } = {},
+    options: { fromNode?: number; toNode?: number; fromPort?: number; toPort?: number } = {},
   ): TrackLay {
     // An end the caller did not resolve is resolved here. "Match the angle of the track
     // that is already there" then holds however the track was laid — by hand, by the
@@ -736,41 +1000,174 @@ export class TrackNetwork {
     if (startNode && endNode && startNode.id === endNode.id) {
       return { ok: false, fault: 'degenerate', value: 0 };
     }
-    for (const node of [startNode, endNode]) {
-      if (node && node.edges.length >= 2) return { ok: false, fault: 'occupied', value: node.id };
-    }
 
     let startAnchor = from;
-    let dirA: TrackDir = 1;
+    let dirA: TrackDir = 0;
     if (startNode) {
-      const cont = this.continuationAt(startNode);
+      const port = this.portFor(startNode, options.fromPort, from);
+      if (port === null) return { ok: false, fault: 'occupied', value: startNode.id };
+      const cont = this.snapTo(startNode, port);
       startAnchor = { x: startNode.x, y: startNode.y, z: startNode.z, hx: cont.hx, hz: cont.hz, grade: cont.grade };
-      dirA = cont.hx * startNode.hx + cont.hz * startNode.hz > 0 ? 1 : -1;
+      dirA = port;
     }
 
     let endAnchor = to;
-    let dirB: TrackDir = 1;
+    let dirB: TrackDir = 0;
     if (endNode) {
-      // The curve *arrives* here, so it comes in against the continuation.
-      const cont = this.continuationAt(endNode);
-      endAnchor = { x: endNode.x, y: endNode.y, z: endNode.z, hx: -cont.hx, hz: -cont.hz, grade: -cont.grade };
-      dirB = -cont.hx * endNode.hx - cont.hz * endNode.hz > 0 ? 1 : -1;
+      const port = this.portFor(endNode, options.toPort, to, true);
+      if (port === null) return { ok: false, fault: 'occupied', value: endNode.id };
+      // The curve *arrives* here, so it comes in against the port it leaves by.
+      endAnchor = { ...arrivalOf(endNode, port), x: endNode.x, y: endNode.y, z: endNode.z };
+      dirB = port;
     }
 
     const solved = solveTrack(startAnchor, endAnchor);
     if (!solved.ok) return solved;
 
     const a = startNode ?? this.addNode(startAnchor);
-    const b = endNode ?? this.addNode(endAnchor);
+    // A fresh end node is made from the way out, not the way in: the curve leaves it
+    // backwards, and the port it does not occupy is the continuation past it.
+    const b = endNode ?? this.addNode(reversed(endAnchor));
     const edge: TrackEdge = { id: this.nextId++, a: a.id, b: b.id, dirA, dirB, curve: solved.curve };
     this.edges.set(edge.id, edge);
-    a.edges.push(edge.id);
-    b.edges.push(edge.id);
+    a.ports[dirA].edge = edge.id;
+    b.ports[dirB].edge = edge.id;
     this.revision++;
     return { ok: true, edge };
   }
 
-  /** Drops an edge, and any end left holding nothing. */
+  /** Which port of a node a new curve should take, or null when there is none to take.
+   *
+   *  An asked-for port is honoured when it is free. Otherwise the free port that best
+   *  matches the direction the caller wanted, so that clicking an end and turning your
+   *  head picks the side you are looking at rather than the side that happens to be
+   *  first — which is the whole of what a switch needs from this. */
+  private portFor(
+    node: TrackNode, asked: number | undefined, want: TrackAnchor, arriving = false,
+  ): number | null {
+    const free = freePorts(node);
+    // The direction the new curve leaves this node by. A curve that arrives leaves
+    // backwards, so what it wants is the reverse of the way it is travelling.
+    const wx = arriving ? -want.hx : want.hx;
+    const wz = arriving ? -want.hz : want.hz;
+    // Nothing free: this is a line already through, and a track leaving it is a switch.
+    if (free.length === 0) return this.addBranch(node, wx, wz);
+    if (asked !== undefined) return free.includes(asked) ? asked : null;
+    if (free.length === 1) return free[0];
+    let best = free[0];
+    let bestDot = -Infinity;
+    for (const port of free) {
+      const dot = node.ports[port].hx * wx + node.ports[port].hz * wz;
+      if (dot <= bestDot) continue;
+      bestDot = dot;
+      best = port;
+    }
+    return best;
+  }
+
+  /** Cuts a run in two at `s` blocks along it, leaving a node where the cut was.
+   *
+   *  This is how a line gets a place to put a signal, and how a branch gets somewhere to
+   *  leave from: a railway laid in long gestures has nodes only at the ends of them, and a
+   *  switch you can only build where you happened to stop is not a switch you can plan.
+   *
+   *  **The shape does not move.** Each half is handed the joint it was cut at, so the two
+   *  arcs that come back are the two the player already had — see `solveTrack`. The
+   *  profile takes care of itself: it is a cubic in `s`, and a cubic restricted to part of
+   *  its own interval is reproduced exactly by its value and slope at the two ends. */
+  splitEdge(edgeId: number, s: number): TrackSplit {
+    const edge = this.edges.get(edgeId);
+    if (!edge) return { ok: false, fault: 'degenerate', value: 0 };
+    const a = this.nodes.get(edge.a);
+    const b = this.nodes.get(edge.b);
+    if (!a || !b) return { ok: false, fault: 'degenerate', value: 0 };
+    const length = edge.curve.length;
+    const spare = Math.min(s, length - s);
+    // Either half has to be a run in its own right. Under this the solver would refuse it
+    // as too short, and refusing here says which end was too close.
+    if (!(spare >= MIN_SPAN)) return { ok: false, fault: 'short', value: Math.max(0, spare) };
+
+    const at = pointAt(edge.curve, s);
+    const tangent = tangentAt(edge.curve, s);
+    const flat = Math.hypot(tangent.x, tangent.z) || 1;
+    // The way the run is travelling here, which is the way out of the new node towards
+    // `b`. Its other port therefore faces `a`, exactly as a joint laid by hand.
+    const ahead: TrackAnchor = {
+      x: at.x, y: at.y, z: at.z,
+      hx: tangent.x / flat, hz: tangent.z / flat,
+      grade: tangent.y / flat,
+    };
+    // Where the original's arcs met. Clamped into each half: inside one, it is the joint
+    // that half genuinely has; outside, it lands on that half's own end, which collapses
+    // one arc to nothing and leaves the single arc the half actually is.
+    const jointS = edge.curve.plan.length > 1 ? edge.curve.plan[0].length : length / 2;
+    const nearJoint = pointAt(edge.curve, Math.min(jointS, s));
+    const farJoint = pointAt(edge.curve, Math.max(jointS, s));
+
+    const first = solveTrack(anchorOf(a, edge.dirA), ahead, nearJoint);
+    if (!first.ok) return first;
+    const second = solveTrack(ahead, arrivalOf(b, edge.dirB), farJoint);
+    if (!second.ok) return second;
+
+    // Nothing above touched the network, so a refusal leaves it exactly as it was.
+    const node = this.addNode(ahead);
+    this.edges.delete(edge.id);
+    a.ports[edge.dirA].edge = null;
+    b.ports[edge.dirB].edge = null;
+    const near: TrackEdge = {
+      id: this.nextId++, a: a.id, b: node.id, dirA: edge.dirA, dirB: 1,
+      curve: first.curve, joint: nearJoint,
+    };
+    const far: TrackEdge = {
+      id: this.nextId++, a: node.id, b: b.id, dirA: 0, dirB: edge.dirB,
+      curve: second.curve, joint: farJoint,
+    };
+    for (const made of [near, far]) {
+      this.edges.set(made.id, made);
+      this.nodes.get(made.a)!.ports[made.dirA].edge = made.id;
+      this.nodes.get(made.b)!.ports[made.dirB].edge = made.id;
+    }
+    this.revision++;
+    return { ok: true, node, edges: [near, far] };
+  }
+
+  /** Opens a third way out of a node that is already a line through: the branch of a
+   *  switch, pointing where the caller asked.
+   *
+   *  Refused when it is further than `MAX_SWITCH_ANGLE` off one of the two ways the line
+   *  already runs — past that it is not a turnout, it is a track crossing another one —
+   *  and refused outright on a node that already has a branch, because a second one is a
+   *  double slip and there is no shape here for that.
+   *
+   *  The branch takes the *through line's* slope rather than the one it was asked for, so
+   *  the point stays smooth in section. A switch is where a train chooses, not where it
+   *  starts climbing. */
+  private addBranch(node: TrackNode, wx: number, wz: number): number | null {
+    if (node.ports.length !== 2) return null;
+    const flat = Math.hypot(wx, wz);
+    if (flat < 1e-9) return null;
+    const hx = wx / flat;
+    const hz = wz / flat;
+    const limit = Math.cos(MAX_SWITCH_ANGLE);
+    let along = -1;
+    let best = -Infinity;
+    for (let i = 0; i < node.ports.length; i++) {
+      const dot = node.ports[i].hx * hx + node.ports[i].hz * hz;
+      if (dot <= best) continue;
+      best = dot;
+      along = i;
+    }
+    if (best < limit) return null;
+    node.ports.push({ hx, hz, grade: node.ports[along].grade, edge: null });
+    return node.ports.length - 1;
+  }
+
+  /** Drops an edge, and any end left holding nothing.
+   *
+   *  A switch that loses its branch keeps its third port, free and empty — pulling up a
+   *  branch leaves the point behind rather than silently un-making it, so the player can
+   *  lay a different branch from the same place. `dropSpurPorts` tidies the ones nobody
+   *  could use. */
   remove(edgeId: number): boolean {
     const edge = this.edges.get(edgeId);
     if (!edge) return false;
@@ -778,9 +1175,8 @@ export class TrackNetwork {
     for (const id of [edge.a, edge.b]) {
       const node = this.nodes.get(id);
       if (!node) continue;
-      const at = node.edges.indexOf(edgeId);
-      if (at >= 0) node.edges.splice(at, 1);
-      if (node.edges.length === 0) this.dropNode(node);
+      for (const port of node.ports) if (port.edge === edgeId) port.edge = null;
+      if (edgesOf(node).length === 0) this.dropNode(node);
     }
     this.revision++;
     return true;
@@ -809,10 +1205,9 @@ export class TrackNetwork {
       x: anchor.x,
       y: anchor.y,
       z: anchor.z,
-      hx: anchor.hx,
-      hz: anchor.hz,
-      grade: anchor.grade,
-      edges: [],
+      ports: throughPorts(anchor),
+      station: false,
+      signal: false,
     };
     this.nodes.set(node.id, node);
     const key = cellKey(node.x, node.z);
@@ -873,6 +1268,13 @@ export class TrackNetwork {
         });
       }
     }
+    // A switch needs nothing extra here, which is worth saying because it looks as though
+    // it should. Three runs meeting at an angle each stop uncapped at the node, and the
+    // fear is a wedge between them that belongs to none — a hole through the middle of
+    // every point. There is not one: a branch may leave at most `MAX_SWITCH_ANGLE`, and at
+    // that angle the three decks are still overlapping well past where they part. Walking
+    // every sample of every curve of a switch, a half width to either side, finds no gap
+    // anywhere except off the open end of a run, which is where a gap belongs.
   }
 
   private addDeckPiece(piece: DeckPiece): void {
@@ -901,10 +1303,14 @@ export class TrackNetwork {
    *  their whole footprint: you walk off when your middle passes the end of the sleepers,
    *  which is both the simplest rule and the one that looks right. */
   surfaceTopAt(x: number, z: number, low: number, high: number): number | null {
-    if (this.edges.size === 0) return null;
+    const platform = this.platformTopAt(x, z, low, high);
+    if (this.edges.size === 0) return platform;
     this.refreshDeck();
     const cell = this.deckCells.get(`${Math.floor(x / DECK_CELL)},${Math.floor(z / DECK_CELL)}`);
-    if (!cell) return null;
+    // A platform stands beside the track rather than on it, so the point somebody is
+    // standing on may well be in no deck cell at all. Losing it here would make the one
+    // part of a station you have to be able to stand on the one part you fall through.
+    if (!cell) return platform;
     const half = TRACK_WIDTH / 2;
     let best: number | null = null;
     for (const piece of cell) {
@@ -931,27 +1337,83 @@ export class TrackNetwork {
       if (top < low || top > high) continue;
       if (best === null || top > best) best = top;
     }
+    // A platform is deck too. It is the one part of a station a player has to be able to
+    // stand on: the whole of what it is for is being level with a carriage floor, and
+    // being level with something you fall through is being nothing at all.
+    return platform !== null && (best === null || platform > best) ? platform : best;
+  }
+
+  /** The station platform under a point, when its surface is inside the window.
+   *
+   *  A rectangle down one side of the track, oriented with the line, exactly as the
+   *  renderer draws it — both read the same four numbers, so what is drawn and what holds
+   *  the player up cannot come apart. */
+  private platformTopAt(x: number, z: number, low: number, high: number): number | null {
+    let best: number | null = null;
+    for (const node of this.nodesNear(x, z, PLATFORM_LONG)) {
+      if (!node.station) continue;
+      const top = node.y + PLATFORM_TOP;
+      if (top < low || top > high) continue;
+      if (best !== null && top <= best) continue;
+      // Forward along the line, and across it to the side the platform is on. The renderer
+      // takes the same side from the same heading.
+      const line = headingOf(node);
+      const flat = Math.hypot(line.hx, line.hz) || 1;
+      const fx = line.hx / flat;
+      const fz = line.hz / flat;
+      const dx = x - node.x;
+      const dz = z - node.z;
+      const along = dx * fx + dz * fz;
+      // `s` in the renderer's frame is (f.z, -f.x); the platform's middle sits one half
+      // width plus the gap out along it.
+      const across = dx * fz - dz * fx;
+      const middle = TRACK_WIDTH / 2 + PLATFORM_GAP + PLATFORM_WIDE / 2;
+      if (Math.abs(along) > PLATFORM_LONG / 2) continue;
+      if (Math.abs(across - middle) > PLATFORM_WIDE / 2) continue;
+      best = top;
+    }
     return best;
   }
 
 
   // --- the railway as a way between two places ----------------------------------
 
-  /** The ends of the line near enough to a place to serve it, nearest first. */
-  private stationsFor(place: TrackPoint, reach: number): TrackNode[] {
+  /** The ends of the line near enough to a place to be of any use to it, nearest first. */
+  private endsNear(place: TrackPoint, reach: number): TrackNode[] {
     return this.nodesNear(place.x, place.z, reach).sort(
       (a, b) =>
         Math.hypot(a.x - place.x, a.z - place.z) - Math.hypot(b.x - place.x, b.z - place.z),
     );
   }
 
-  /** The rails from one place to another, when there are rails the whole way.
+  /** The stations near enough to a place to serve it, nearest first.
    *
-   *  An end holds at most two curves, so a network is a handful of chains rather than a
-   *  graph with choices in it, and the walk can never arrive at a junction and pick the
-   *  wrong way out of it. It is written as a search anyway: the cost of doing so is a
-   *  queue and a map, and the cost of not doing so is a rewrite on the day this gets
-   *  points and sidings.
+   *  Rails alone are not a service. A line that runs past a village without stopping at
+   *  it is a line that runs past it, and until somebody builds the place where freight
+   *  is put on and taken off, that is all it is. This is the one rule the whole of the
+   *  station is: everything else about it — what it looks like, what it costs, where the
+   *  crates pile up — hangs off the answer to this question. */
+  private stationsFor(place: TrackPoint, reach: number): TrackNode[] {
+    return this.endsNear(place, reach).filter((node) => node.station);
+  }
+
+  /** The rails from one place to another, and the shortest way round if there are
+   *  several.
+   *
+   *  **The state is a node *and the port the train came in by*, not a node.** At a switch
+   *  those are different questions: arriving on the branch and arriving on the main line
+   *  put you at the same place facing different ways, and only one of them can take the
+   *  turn. Which one falls straight out of the geometry — arriving is travelling *against*
+   *  the port you came in by, so a turn wider than `MAX_SWITCH_ANGLE` is refused and a
+   *  reversal is refused hardest of all. That is a trailing point, and nobody had to write
+   *  it down as a rule.
+   *
+   *  **Cheapest by length, not by fewest curves.** On the shapes the solver can build the
+   *  two rules rarely disagree — a port faces outward, so a second way between two ends has
+   *  to loop right round and is longer as well as longer-winded. What counting blocks
+   *  actually buys is the tie-break: counting curves settled ties by the order they
+   *  happened to be laid, and a save preserves neither edge ids nor that order, so the
+   *  freight could take a different route every time the world was opened.
    *
    *  The walk sets out from the *neighbours* of the ends that serve the origin rather
    *  than from those ends themselves, so that whatever it finds is at least one curve
@@ -963,53 +1425,92 @@ export class TrackNetwork {
   wayBetween(from: TrackPoint, to: TrackPoint, reach = STATION_REACH, spacing = 2): TrackWay | null {
     const goals = new Set(this.stationsFor(to, reach).map((node) => node.id));
     if (goals.size === 0) return null;
-    const parents = new Map<number, { node: number; edge: number }>();
-    const queue: number[] = [];
-    const spread = (node: TrackNode): void => {
-      for (const edgeId of node.edges) {
-        const edge = this.edges.get(edgeId);
-        if (!edge) continue;
-        const next = edge.a === node.id ? edge.b : edge.a;
-        if (parents.has(next)) continue;
-        parents.set(next, { node: node.id, edge: edgeId });
-        queue.push(next);
-      }
-    };
     // Nearest first, so that where a village has several ends to choose from, the freight
     // sets out from the one it has the shortest walk to.
     const stations = this.stationsFor(from, reach);
-    const seeds = new Set(stations.map((node) => node.id));
-    for (const node of stations) spread(node);
+    if (stations.length === 0) return null;
 
-    let arrived: number | null = null;
-    for (let head = 0; head < queue.length; head++) {
-      const id = queue[head];
-      if (goals.has(id)) {
-        arrived = id;
+    const best = new Map<string, RailStep>();
+    const open: RailStep[] = [];
+    const settled = new Set<string>();
+    const offer = (step: RailStep): void => {
+      const key = railKey(step.node, step.port);
+      const had = best.get(key);
+      if (had && had.cost <= step.cost) return;
+      best.set(key, step);
+      open.push(step);
+    };
+    /** The state on the far side of an edge, entered from `node`. */
+    const across = (node: TrackNode, edgeId: number, cost: number, prev: string | null): void => {
+      const edge = this.edges.get(edgeId);
+      if (!edge) return;
+      const outward = edge.a === node.id;
+      offer({
+        node: outward ? edge.b : edge.a,
+        port: outward ? edge.dirB : edge.dirA,
+        cost: cost + edge.curve.length,
+        edge: edgeId,
+        from: node.id,
+        prev,
+      });
+    };
+
+    for (const station of stations) {
+      for (const port of station.ports) {
+        if (port.edge !== null) across(station, port.edge, 0, null);
+      }
+    }
+
+    let arrived: RailStep | null = null;
+    while (open.length > 0) {
+      let cheapest = 0;
+      for (let i = 1; i < open.length; i++) if (open[i].cost < open[cheapest].cost) cheapest = i;
+      const step = open.splice(cheapest, 1)[0];
+      const key = railKey(step.node, step.port);
+      if (settled.has(key) || best.get(key) !== step) continue;
+      settled.add(key);
+      if (goals.has(step.node)) {
+        arrived = step;
         break;
       }
-      const node = this.nodes.get(id);
-      if (node) spread(node);
+      const node = this.nodes.get(step.node);
+      if (!node) continue;
+      const came = node.ports[step.port];
+      if (!came) continue;
+      const limit = Math.cos(MAX_SWITCH_ANGLE);
+      for (let port = 0; port < node.ports.length; port++) {
+        if (port === step.port) continue;
+        const out = node.ports[port];
+        if (out.edge === null) continue;
+        // The turn, as the angle between the way in and the way out. A plain joint's two
+        // ports are exact opposites, so this is one and every joint is straight through.
+        if (-came.hx * out.hx - came.hz * out.hz < limit) continue;
+        across(node, out.edge, step.cost, key);
+      }
     }
     if (arrived === null) return null;
 
-    // Back down the parents to the first end that serves the origin, then forwards along
-    // what that walked. Stopping at a seed rather than at a node with no parent matters:
-    // a seed reached from another seed has one, and following it would walk in a circle.
     const chain: { edge: number; from: number }[] = [];
-    for (let id = arrived; ; ) {
-      const step = parents.get(id);
-      if (!step) break;
-      chain.unshift({ edge: step.edge, from: step.node });
-      id = step.node;
-      if (seeds.has(id)) break;
+    for (let step: RailStep | null = arrived; step !== null;) {
+      chain.unshift({ edge: step.edge, from: step.from });
+      step = step.prev === null ? null : best.get(step.prev) ?? null;
     }
+
     const points: TrackPoint[] = [];
+    const blocks = this.sections();
+    const sections: { at: number; id: number }[] = [];
     let length = 0;
     let climb = 0;
     for (const step of chain) {
       const edge = this.edges.get(step.edge);
       if (!edge) continue;
+      // Which block this run is in, before its samples go on: the boundary is the node
+      // between the two runs, which is the point already at the end of `points`.
+      const found = blocks.of.get(edge.id);
+      const id = found !== undefined && blocks.watched.has(found) ? found : UNWATCHED;
+      if (sections.length === 0 || sections[sections.length - 1].id !== id) {
+        sections.push({ at: Math.max(0, points.length - 1), id });
+      }
       // A curve runs from its `a` end to its `b` end; walked the other way it is the same
       // samples backwards.
       const samples = sampleTrack(edge.curve, spacing);
@@ -1022,19 +1523,42 @@ export class TrackNetwork {
       }
       length += edge.curve.length;
     }
-    return points.length < 2 ? null : { points, length, climb };
+    if (points.length < 2) return null;
+    // A way that never leaves an unwatched stretch has no boundaries worth reporting, and
+    // saying so as an empty list is what lets the caller skip the whole question.
+    const watched = sections.some((mark) => mark.id !== UNWATCHED);
+    return { points, length, climb, sections: watched ? sections : [] };
+  }
+
+  /** An end near a place that could be a station and is not.
+   *
+   *  The one thing a player cannot see for themselves. Rails that run to the village and
+   *  carry nothing look exactly like rails that carry something, and "you have built the
+   *  whole railway and forgotten the station" is otherwise a silence. Null once something
+   *  near does serve the place, and null where there is no track near it at all — that
+   *  one is a railway to lay, not a station to build, and `railheadTowards` says so. */
+  stationGapNear(place: TrackPoint, reach = STATION_REACH): TrackNode | null {
+    const near = this.endsNear(place, reach);
+    if (near.length === 0 || near.some((node) => node.station)) return null;
+    return near[0];
   }
 
   /** Where a line that sets out from one place towards another runs out.
    *
-   *  Null when nothing serves `from` at all: a village with no station has no railway to
-   *  report the end of, and a beacon over every village in the world would be answering a
-   *  question nobody asked. Otherwise it is the end of the line nearest the far village -
-   *  which is the place to stand and keep laying. */
+   *  Asked of the ends rather than of the stations, so that a player laying towards a
+   *  village they have not built a station at yet is still shown where their own line
+   *  has got to. Null when there is no track near `from` at all: a beacon over every
+   *  village in the world would be answering a question nobody asked. Otherwise it is the
+   *  open end nearest the far village - which is the place to stand and keep laying.
+   *
+   *  Open, not merely near. A branched network has nodes in the middle of it that are
+   *  nearer the destination than any of its ends, and pointing a player at the middle of
+   *  their own main line and calling it the railhead would be sending them to build track
+   *  where there is already track. */
   railheadTowards(from: TrackPoint, to: TrackPoint, reach = STATION_REACH): TrackPoint | null {
     const seen = new Set<number>();
     const queue: number[] = [];
-    for (const node of this.stationsFor(from, reach)) {
+    for (const node of this.endsNear(from, reach)) {
       if (seen.has(node.id)) continue;
       seen.add(node.id);
       queue.push(node.id);
@@ -1045,11 +1569,11 @@ export class TrackNetwork {
       const node = this.nodes.get(queue[head]);
       if (!node) continue;
       const gap = Math.hypot(node.x - to.x, node.z - to.z);
-      if (gap < bestGap) {
+      if (gap < bestGap && freePorts(node).length > 0) {
         bestGap = gap;
         best = node;
       }
-      for (const edgeId of node.edges) {
+      for (const edgeId of edgesOf(node)) {
         const edge = this.edges.get(edgeId);
         if (!edge) continue;
         const next = edge.a === node.id ? edge.b : edge.a;
@@ -1064,12 +1588,28 @@ export class TrackNetwork {
   toJSON(): SavedTracks {
     return {
       nodes: [...this.nodes.values()].map((node) => ({
-        id: node.id, x: node.x, y: node.y, z: node.z, hx: node.hx, hz: node.hz, grade: node.grade,
+        id: node.id,
+        x: node.x, y: node.y, z: node.z,
+        // Port zero, under the names a save written before ports existed used. A plain
+        // joint is fully described by them, so its bytes have not moved.
+        hx: node.ports[0].hx, hz: node.ports[0].hz, grade: node.ports[0].grade,
+        // Written only where there is one, so a save from before stations existed and a
+        // save of a railway with none are the same bytes.
+        ...(node.station ? { station: true } : {}),
+        ...(node.signal ? { signal: true } : {}),
+        // And only for a switch. Two ports are always exact opposites — that is what a
+        // plain joint *is* — so writing them out would be writing down a negation.
+        ...(node.ports.length > 2
+          ? { ports: node.ports.map((port) => ({ hx: port.hx, hz: port.hz, grade: port.grade })) }
+          : {}),
       })),
       edges: [...this.edges.values()].map((edge) => ({
         a: edge.a, b: edge.b, dirA: edge.dirA, dirB: edge.dirB,
+        // Only a run that was cut out of a longer one has a joint worth writing down.
+        ...(edge.joint ? { jx: edge.joint.x, jz: edge.joint.z } : {}),
       })),
       nextId: this.nextId,
+      ports: true,
     };
   }
 
@@ -1079,7 +1619,16 @@ export class TrackNetwork {
   static fromJSON(data: SavedTracks): TrackNetwork {
     const net = new TrackNetwork();
     for (const saved of data.nodes) {
-      const node: TrackNode = { ...saved, edges: [] };
+      // A railway saved before stations existed comes back with none, which reads as
+      // "the line is built and the stations are not" — true, and the panel says so. The
+      // same goes for signals, and for ports: a node without them is a plain joint, which
+      // is exactly what every node in every save written before switches existed was.
+      const node: TrackNode = {
+        id: saved.id, x: saved.x, y: saved.y, z: saved.z,
+        ports: (saved.ports ?? throughPorts(saved)).map((port) => ({ ...port, edge: null })),
+        station: saved.station === true,
+        signal: saved.signal === true,
+      };
       net.nodes.set(node.id, node);
       const key = cellKey(node.x, node.z);
       const cell = net.cells.get(key);
@@ -1091,21 +1640,45 @@ export class TrackNetwork {
       const a = net.nodes.get(saved.a);
       const b = net.nodes.get(saved.b);
       if (!a || !b) continue;
-      const dirA: TrackDir = saved.dirA < 0 ? -1 : 1;
-      const dirB: TrackDir = saved.dirB < 0 ? -1 : 1;
-      const solved = solveTrack(anchorOf(a, dirA), anchorOf(b, dirB));
+      const dirA = data.ports ? saved.dirA : legacyStartPort(saved.dirA);
+      const dirB = data.ports ? saved.dirB : legacyEndPort(saved.dirB);
+      if (!a.ports[dirA] || !b.ports[dirB]) continue;
+      const joint = saved.jx === undefined || saved.jz === undefined
+        ? undefined
+        : { x: saved.jx, z: saved.jz };
+      const solved = solveTrack(anchorOf(a, dirA), arrivalOf(b, dirB), joint);
       if (!solved.ok) continue;
-      const edge: TrackEdge = { id: net.nextId++, a: a.id, b: b.id, dirA, dirB, curve: solved.curve };
+      const edge: TrackEdge = {
+        id: net.nextId++, a: a.id, b: b.id, dirA, dirB, curve: solved.curve,
+        ...(joint ? { joint } : {}),
+      };
       net.edges.set(edge.id, edge);
-      a.edges.push(edge.id);
-      b.edges.push(edge.id);
+      a.ports[dirA].edge = edge.id;
+      b.ports[dirB].edge = edge.id;
     }
     // Orphaned by a dropped edge, and no longer an end of anything.
     for (const node of [...net.nodes.values()]) {
-      if (node.edges.length === 0) net.dropNode(node);
+      if (edgesOf(node).length === 0) net.dropNode(node);
     }
     return net;
   }
+}
+
+/** Reading a save written before ports existed.
+ *
+ *  Back then a node had one heading and an edge carried a sign per end, and the two signs
+ *  did not mean the same thing: at the curve's *start* the sign was the side the edge
+ *  occupied, and at its *finish* it was the side it left free. `SavedTracks.ports` marks
+ *  the saves that mean port numbers instead; without it, these two undo that asymmetry.
+ *
+ *  Port zero is the node's stored `(hx, hz, grade)` and port one is its exact reverse, so
+ *  a plain joint round-trips through the old fields exactly. */
+function legacyStartPort(sign: number): number {
+  return sign < 0 ? 1 : 0;
+}
+
+function legacyEndPort(sign: number): number {
+  return sign < 0 ? 0 : 1;
 }
 
 /** A straight run of samples between two points, for showing a player where a curve the

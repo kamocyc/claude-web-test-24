@@ -1,19 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { World } from '../world/world';
-import { CHUNK_HEIGHT, Chunk } from '../world/chunk';
+import { CHUNK_HEIGHT, Chunk, chunkKey } from '../world/chunk';
 import { Block } from '../world/blocks';
 import { LightEngine } from '../world/lighting';
 
-function flatWorld(groundY = 20): { world: World; light: LightEngine } {
+const GROUND_Y = 20;
+
+/** The settled blocks and light of one 3x3 flat world. Seeding the skylight is a flood
+ *  fill over four hundred thousand cells, and every test in this file wanted the same
+ *  answer out of it, so it is worked out once and copied. Each test still builds its own
+ *  `World`, `LightEngine` and `Chunk`s, so nothing is shared between them at run time. */
+const settled = new Map<string, { blocks: Uint16Array; light: Uint8Array }>();
+
+beforeAll(() => {
   const world = new World(1);
   const light = new LightEngine(world);
-  world.onBlockChange((x, y, z, prev, next) => light.onBlockChanged(x, y, z, prev, next));
   for (let cz = -1; cz <= 1; cz++) {
     for (let cx = -1; cx <= 1; cx++) {
       const chunk = new Chunk(cx, cz);
       for (let z = 0; z < 16; z++) {
         for (let x = 0; x < 16; x++) {
-          for (let y = 0; y <= groundY; y++) chunk.set(x, y, z, Block.STONE);
+          for (let y = 0; y <= GROUND_Y; y++) chunk.set(x, y, z, Block.STONE);
         }
       }
       world.addChunk(chunk);
@@ -21,6 +28,29 @@ function flatWorld(groundY = 20): { world: World; light: LightEngine } {
   }
   for (const chunk of world.chunks.values()) light.seedChunk(chunk);
   light.flush();
+  for (const chunk of world.chunks.values()) {
+    settled.set(chunk.key, { blocks: chunk.blocks.slice(), light: chunk.light.slice() });
+  }
+});
+
+function flatWorld(): { world: World; light: LightEngine } {
+  const world = new World(1);
+  const light = new LightEngine(world);
+  world.onBlockChange((x, y, z, prev, next) => light.onBlockChanged(x, y, z, prev, next));
+  for (let cz = -1; cz <= 1; cz++) {
+    for (let cx = -1; cx <= 1; cx++) {
+      const chunk = new Chunk(cx, cz);
+      // Looked up by key rather than by loop order: an array indexed by position is one
+      // reordered loop away from handing a chunk somebody else's light.
+      const cached = settled.get(chunkKey(cx, cz))!;
+      chunk.blocks.set(cached.blocks);
+      chunk.light.set(cached.light);
+      chunk.lit = true;
+      world.addChunk(chunk);
+    }
+  }
+  // `flush` has already drained the queues that seeding filled, so a fresh engine with
+  // empty queues is the same state the old per-test seed-and-flush left behind.
   return { world, light };
 }
 

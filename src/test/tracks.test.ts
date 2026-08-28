@@ -13,9 +13,13 @@ import {
   summarise,
   TrackNetwork,
   TRACK_WIDTH,
+  edgesOf,
+  freePorts,
+  UNWATCHED,
   type TrackAnchor,
   type TrackCurve,
   type TrackEdge,
+  type TrackPoint,
 } from '../game/tracks';
 
 /** An end at (x, y, z) running along the unit heading (hx, hz). */
@@ -294,16 +298,93 @@ describe('the track network', () => {
     expect(leaving.z).toBeCloseTo(-forward.z, 9);
   });
 
-  it('refuses a third run into an end that is already full', () => {
+  it('takes a third run onto a line already through, as a switch', () => {
     const { net } = eastward();
     const second = net.lay(end(30, 64, 0, 1, 0), end(70, 64, 14, 1, 0));
     if (!second.ok) throw new Error(`could not join on: ${second.fault}`);
     // Naming the end outright is the path the placement code takes once it has snapped.
     const third = net.lay(end(70, 64, 14, 1, 0), end(110, 64, 26, 1, 0), { fromNode: second.edge.b });
     expect(third.ok).toBe(true);
-    const crowded = net.lay(end(30, 64, 0, 1, 0), end(30, 64, 40, 0, 1));
-    expect(crowded.ok).toBe(false);
-    if (!crowded.ok) expect(crowded.fault).toBe('occupied');
+
+    // The middle node is a line through, and a run leaving it along that line is a
+    // turnout: it diverges from where the two tracks part rather than crossing them.
+    const joint = net.nodes.get(second.edge.a)!;
+    expect(freePorts(joint), 'the joint had a side spare after all').toHaveLength(0);
+    const branch = net.lay(end(30, 64, 0, 1, 0), end(66, 64, -22, 1, 0));
+    expect(branch.ok, 'a turnout off a through line was refused').toBe(true);
+    expect(joint.ports).toHaveLength(3);
+    expect(edgesOf(joint)).toHaveLength(3);
+  });
+
+  it('refuses a branch that is not a turnout but a crossing', () => {
+    const { net } = eastward();
+    const on = net.lay(end(30, 64, 0, 1, 0), end(70, 64, 14, 1, 0));
+    if (!on.ok) throw new Error(`could not join on: ${on.fault}`);
+    // Square across the line it is leaving. A point cannot be that sharp; what this
+    // describes is one railway crossing another, and there is no shape here for that.
+    const across = net.lay(end(30, 64, 0, 0, 1), end(30, 64, 40, 0, 1));
+    expect(across.ok).toBe(false);
+    if (!across.ok) expect(across.fault).toBe('occupied');
+    expect(net.nodes.get(on.edge.a)!.ports, 'a refused branch left a port behind')
+      .toHaveLength(2);
+  });
+
+  it('can be walked over, all three ways', () => {
+    // The thing a switch could plausibly break: three runs meeting at an angle each stop
+    // uncapped at the node, and a wedge between them belonging to none would be a hole
+    // through the middle of every point. The decks overlap far enough past the divergence
+    // that there is not one — but that is a fact about `MAX_SWITCH_ANGLE`, so it is worth
+    // a test that fails if anybody widens it.
+    const net = new TrackNetwork();
+    const west = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
+    if (!west.ok) throw new Error('could not lay the line');
+    const east = net.lay(end(60, 64, 0, 1, 0), end(120, 64, 0, 1, 0));
+    if (!east.ok) throw new Error('could not carry on');
+    const branch = net.lay(end(60, 64, 0, 1, 0), end(100, 64, -24, 1, 0));
+    if (!branch.ok) throw new Error(`could not lay the branch: ${branch.fault}`);
+    for (const edge of net.edges.values()) {
+      for (const at of sampleTrack(edge.curve, 0.25)) {
+        const flat = Math.hypot(at.tx, at.tz) || 1;
+        for (const across of [-0.9, -0.45, 0, 0.45, 0.9]) {
+          // Off the open end of a run there is deliberately no deck; everywhere else on
+          // the track there has to be some.
+          if (Math.hypot(at.x - 60, at.z) > 20) continue;
+          const px = at.x + (at.tz / flat) * across;
+          const pz = at.z - (at.tx / flat) * across;
+          expect(net.surfaceTopAt(px, pz, 60, 70), `a hole at (${px.toFixed(1)}, ${pz.toFixed(1)})`)
+            .not.toBeNull();
+        }
+      }
+    }
+    // And the line the switch was cut into still holds somebody up after it is pulled up.
+    net.remove(branch.edge.id);
+    expect(net.surfaceTopAt(60, 0, 60, 70), 'the line under the old switch went away')
+      .toBe(64);
+  });
+
+  it('refuses a second branch, which would be a double slip', () => {
+    const { net } = eastward();
+    const on = net.lay(end(30, 64, 0, 1, 0), end(70, 64, 14, 1, 0));
+    if (!on.ok) throw new Error(`could not join on: ${on.fault}`);
+    const first = net.lay(end(30, 64, 0, 1, 0), end(66, 64, -22, 1, 0));
+    expect(first.ok).toBe(true);
+    const second = net.lay(end(30, 64, 0, 1, 0), end(60, 64, -30, 1, 0));
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.fault).toBe('occupied');
+  });
+
+  it('gives a branch the through line\'s slope, not the one it was asked for', () => {
+    // A switch is where a train chooses, not where it starts climbing: a branch leaving on
+    // a different gradient would put a kink in the line's section at the point.
+    const net = new TrackNetwork();
+    const flat = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
+    if (!flat.ok) throw new Error('could not lay the line');
+    const on = net.lay(end(60, 64, 0, 1, 0), end(120, 64, 0, 1, 0));
+    if (!on.ok) throw new Error('could not carry on');
+    const climbing = net.lay(end(60, 64, 0, 1, 0, 0.15), end(100, 68, -22, 1, 0));
+    expect(climbing.ok).toBe(true);
+    const joint = net.nodes.get(flat.edge.b)!;
+    expect(joint.ports[2].grade, 'the branch left on its own gradient').toBeCloseTo(0, 9);
   });
 
   it('refuses to join an end to itself', () => {
@@ -524,15 +605,32 @@ describe('the deck as something to stand on', () => {
 });
 
 describe('the railway as a way between two places', () => {
+  /** Puts a station on the end of the line nearest each place, which is what a player
+   *  pointing at that end and clicking does. Every way between two places wants this: rails
+   *  on their own are a line that runs past a village rather than one that serves it. */
+  function stationsAt(net: TrackNetwork, ...places: { x: number; z: number }[]): void {
+    for (const place of places) {
+      const near = net.nodesNear(place.x, place.z, 8);
+      if (near.length === 0) throw new Error(`no end near (${place.x}, ${place.z})`);
+      near.sort(
+        (a, b) =>
+          Math.hypot(a.x - place.x, a.z - place.z) - Math.hypot(b.x - place.x, b.z - place.z),
+      );
+      net.setStation(near[0].id, true);
+    }
+  }
+
   /** Three runs laid end to end, east from the origin: (0,0) to (180,0), through joints
    *  at 60 and 120. The middle one is deliberately laid from its far end backwards, so
-   *  the walk has to turn a curve round to follow it. */
+   *  the walk has to turn a curve round to follow it. Both ends get a station, because a
+   *  line without them carries nothing. */
   function line(): TrackNetwork {
     const net = new TrackNetwork();
     const first = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
     const last = net.lay(end(180, 64, 0, -1, 0), end(120, 64, 0, -1, 0));
     const middle = net.lay(end(60, 64, 0, 1, 0), end(120, 64, 0, 1, 0));
     if (!first.ok || !last.ok || !middle.ok) throw new Error('could not lay the line');
+    stationsAt(net, { x: 0, z: 0 }, { x: 180, z: 0 });
     return net;
   }
 
@@ -564,6 +662,73 @@ describe('the railway as a way between two places', () => {
     }
   });
 
+  it('carries nothing until both ends have a station on them', () => {
+    // The whole of the rule. Rails that run past a village serve it exactly as much as a
+    // road that runs past one: not at all.
+    const net = new TrackNetwork();
+    for (const run of [
+      net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0)),
+      net.lay(end(60, 64, 0, 1, 0), end(120, 64, 0, 1, 0)),
+      net.lay(end(120, 64, 0, 1, 0), end(180, 64, 0, 1, 0)),
+    ]) {
+      if (!run.ok) throw new Error('could not lay the line');
+    }
+    expect(net.wayBetween(west, east), 'rails alone joined the two').toBeNull();
+    stationsAt(net, { x: 0, z: 0 });
+    expect(net.wayBetween(west, east), 'one station was enough').toBeNull();
+    stationsAt(net, { x: 180, z: 0 });
+    expect(net.wayBetween(west, east)).not.toBeNull();
+  });
+
+  it('forgets the way again when a station is taken down', () => {
+    const net = line();
+    const station = net.stations().find((node) => node.x < 1);
+    expect(station, 'the fixture built no station at the west end').toBeDefined();
+    expect(net.setStation(station!.id, false)).toBe(true);
+    expect(net.wayBetween(west, east)).toBeNull();
+    // And a second attempt changes nothing, so a caller can charge for the one that did.
+    expect(net.setStation(station!.id, false)).toBe(false);
+  });
+
+  it('moves the revision when a station is built, so the survey notices', () => {
+    // The route survey skips itself entirely while nothing it has looked at has moved. A
+    // station that did not move this would not be seen until somebody laid a curve.
+    const net = line();
+    const before = net.revision;
+    const spare = net.nodes.values().next().value!;
+    net.setStation(spare.id, !spare.station);
+    expect(net.revision).toBeGreaterThan(before);
+  });
+
+  it('points at the end to build the station on, and stops once one is there', () => {
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the line');
+    const gap = net.stationGapNear(west);
+    expect(gap?.x).toBeCloseTo(0, 6);
+    stationsAt(net, { x: 0, z: 0 });
+    expect(net.stationGapNear(west), 'still asked for a station it already has').toBeNull();
+    // And nothing at all where there is no track: that one is a railway to lay, and
+    // `railheadTowards` is what says so.
+    expect(net.stationGapNear({ x: 900, y: 64, z: 0 })).toBeNull();
+  });
+
+  it('keeps its stations across a save, and opens an older one with none', () => {
+    const net = line();
+    const reloaded = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(net.toJSON())));
+    expect(reloaded.stations()).toHaveLength(2);
+    expect(reloaded.wayBetween(west, east)).not.toBeNull();
+
+    // A railway saved before stations existed. It comes back as a built line with none of
+    // them, which is true, and the panel says so rather than the line quietly carrying on.
+    const older = net.toJSON();
+    for (const node of older.nodes) delete node.station;
+    const opened = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(older)));
+    expect(opened.stations()).toHaveLength(0);
+    expect(opened.wayBetween(west, east)).toBeNull();
+    expect(opened.edges.size).toBe(net.edges.size);
+  });
+
   it('says nothing when the rails do not reach one of the places', () => {
     const net = line();
     expect(net.wayBetween(west, { x: 600, y: 64, z: 0 })).toBeNull();
@@ -576,6 +741,7 @@ describe('the railway as a way between two places', () => {
     // that serve the origin, or it arrives before it has left and the pair reads as
     // having no railway between them at all.
     const { net } = eastward();
+    stationsAt(net, { x: 0, z: 0 }, { x: 30, z: 0 });
     const way = net.wayBetween({ x: 0, y: 64, z: 0 }, { x: 26, y: 64, z: 0 });
     expect(way).not.toBeNull();
     expect(way!.points[0].x).toBeCloseTo(0, 6);
@@ -587,6 +753,7 @@ describe('the railway as a way between two places', () => {
     // origin is the far end of the run. The freight should still start where its own
     // village would put it on board.
     const { net } = eastward();
+    stationsAt(net, { x: 0, z: 0 }, { x: 30, z: 0 });
     const way = net.wayBetween({ x: 28, y: 64, z: 0 }, { x: 2, y: 64, z: 0 });
     expect(way!.points[0].x).toBeCloseTo(30, 6);
     expect(way!.points[way!.points.length - 1].x).toBeCloseTo(0, 6);
@@ -598,6 +765,7 @@ describe('the railway as a way between two places', () => {
     if (!up.ok) throw new Error('could not lay the climb');
     const down = net.lay(end(40, 68, 0, 1, 0), end(80, 64, 0, 1, 0));
     if (!down.ok) throw new Error('could not lay the descent');
+    stationsAt(net, { x: 0, z: 0 }, { x: 80, z: 0 });
     // A reach of five, so that the summit forty blocks along is not itself close enough
     // to both ends to count as the station for either of them.
     const way = net.wayBetween({ x: 0, y: 64, z: 0 }, { x: 80, y: 64, z: 0 }, 5);
@@ -630,5 +798,362 @@ describe('the railway as a way between two places', () => {
     net.remove(middle!.id);
     expect(net.wayBetween(west, east)).toBeNull();
     expect(net.railheadTowards(west, east)?.x).toBeCloseTo(60, 6);
+  });
+});
+
+describe('a railway saved before ports existed', () => {
+  /** A network in the shape the old code wrote: one heading per node, and a sign per end
+   *  of each curve — where the sign at a curve's *start* named the side it occupied and
+   *  the sign at its *finish* named the side it left free. Two runs laid end to end, so
+   *  the middle node holds one of each and the asymmetry is what is under test.
+   *
+   *  Written out by hand rather than produced by `toJSON`, because nothing writes this
+   *  shape any more. If the reader ever stops understanding it, every railway anybody
+   *  built before switches existed comes back as a heap of disconnected stubs. */
+  const legacy = {
+    nodes: [
+      { id: 1, x: 0, y: 64, z: 0, hx: 1, hz: 0, grade: 0 },
+      { id: 2, x: 30, y: 64, z: 0, hx: 1, hz: 0, grade: 0 },
+      { id: 3, x: 60, y: 64, z: 0, hx: 1, hz: 0, grade: 0, station: true },
+    ],
+    edges: [
+      { a: 1, b: 2, dirA: 1, dirB: 1 },
+      { a: 2, b: 3, dirA: 1, dirB: 1 },
+    ],
+    nextId: 4,
+  };
+
+  it('comes back as one line rather than two stubs', () => {
+    const net = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(legacy)));
+    expect(net.nodes.size).toBe(3);
+    expect(net.edges.size).toBe(2);
+    // The middle node carries both runs, one per port, which is what makes it a joint.
+    const middle = net.nodes.get(2)!;
+    expect(edgesOf(middle)).toHaveLength(2);
+    expect(freePorts(middle), 'the joint has a side left over').toHaveLength(0);
+    // And the two outer nodes are ends with one side each still open.
+    expect(freePorts(net.nodes.get(1)!)).toHaveLength(1);
+    expect(freePorts(net.nodes.get(3)!)).toHaveLength(1);
+  });
+
+  it('keeps the shape the old numbers described', () => {
+    const net = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(legacy)));
+    for (const edge of net.edges.values()) {
+      // Both runs are the straight line the old file said they were, not a loop back on
+      // itself — which is what a port read the wrong way round would produce.
+      expect(edge.curve.length).toBeCloseTo(30, 6);
+      expect(edge.curve.minRadius).toBe(Infinity);
+    }
+    // The free end at the far side still carries on the way the line was going.
+    const on = net.continuationAt(net.nodes.get(3)!);
+    expect(on.hx).toBeCloseTo(1, 6);
+  });
+
+  it('keeps the station it was saved with', () => {
+    const net = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(legacy)));
+    expect(net.stations().map((node) => node.id)).toEqual([3]);
+  });
+
+  it('and a network saved now says which way its numbers should be read', () => {
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(30, 64, 0, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the run');
+    expect(net.toJSON().ports, 'a new save did not mark itself').toBe(true);
+  });
+});
+
+describe('cutting a run in two', () => {
+  /** Shapes worth cutting: one that collapses to a single arc, and two real biarcs whose
+   *  joint sits somewhere in the middle. The second kind is the whole difficulty — half of
+   *  an equal-tangent biarc is not itself one. */
+  function shapes(): { name: string; from: TrackAnchor; to: TrackAnchor }[] {
+    return [
+      { name: 'quarter turn', from: end(0, 64, 0, 1, 0), to: end(40, 64, 40, 0, 1) },
+      { name: 'gentle bend', from: end(0, 64, 0, 1, 0), to: end(60, 64, 20, 1, 0) },
+      { name: 'S bend', from: end(0, 64, 0, 1, 0), to: end(60, 64, 24, 1, 0) },
+      { name: 'a climb', from: end(0, 64, 0, 1, 0, 0.05), to: end(60, 72, 18, 1, 0, 0.05) },
+    ];
+  }
+
+  /** How far a point on the halves is from where the original run put it. */
+  function drift(net: TrackNetwork, was: TrackCurve, ids: number[]): number {
+    let worst = 0;
+    let walked = 0;
+    for (const id of ids) {
+      const half = net.edges.get(id)!;
+      for (let s = 0; s <= half.curve.length; s += 0.5) {
+        const here = pointAt(half.curve, s);
+        const there = pointAt(was, Math.min(walked + s, was.length));
+        worst = Math.max(worst, Math.hypot(here.x - there.x, here.y - there.y, here.z - there.z));
+      }
+      walked += half.curve.length;
+    }
+    return worst;
+  }
+
+  it('leaves the track exactly where the player built it', () => {
+    // The reason a curve remembers its joint. Without it, a cut past the joint re-solves
+    // to a different biarc through the same ends and the run visibly walks sideways — by
+    // over a block and a half on an S bend, which is not something a player would forgive.
+    for (const shape of shapes()) {
+      for (const f of [0.2, 0.35, 0.5, 0.65, 0.8]) {
+        const net = new TrackNetwork();
+        const laid = net.lay(shape.from, shape.to);
+        if (!laid.ok) throw new Error(`could not lay the ${shape.name}: ${laid.fault}`);
+        const was = laid.edge.curve;
+        const cut = net.splitEdge(laid.edge.id, was.length * f);
+        if (!cut.ok) throw new Error(`could not cut the ${shape.name} at ${f}: ${cut.fault}`);
+        const moved = drift(net, was, cut.edges.map((edge) => edge.id));
+        expect(moved, `the ${shape.name} moved when cut at ${f}`).toBeLessThan(0.01);
+      }
+    }
+  });
+
+  it('keeps the two halves adding up to the whole', () => {
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 24, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the run');
+    const was = laid.edge.curve.length;
+    const cut = net.splitEdge(laid.edge.id, was * 0.7);
+    if (!cut.ok) throw new Error(`could not cut: ${cut.fault}`);
+    const total = cut.edges[0].curve.length + cut.edges[1].curve.length;
+    expect(total).toBeCloseTo(was, 4);
+    expect(cut.edges[0].curve.length).toBeCloseTo(was * 0.7, 4);
+  });
+
+  it('leaves a joint with both sides taken and nothing free', () => {
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the run');
+    const cut = net.splitEdge(laid.edge.id, 30);
+    if (!cut.ok) throw new Error(`could not cut: ${cut.fault}`);
+    expect(net.edges.size).toBe(2);
+    expect(edgesOf(cut.node)).toHaveLength(2);
+    expect(freePorts(cut.node), 'a cut left a side of the line open').toHaveLength(0);
+    // And the line is still one line: the far end walks through the cut to the near one.
+    expect(net.edgesNear(30, 0, 1)).toHaveLength(2);
+  });
+
+  it('refuses a cut too near either end to be a run', () => {
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the run');
+    expect(net.splitEdge(laid.edge.id, MIN_SPAN - 0.1).ok).toBe(false);
+    expect(net.splitEdge(laid.edge.id, 60 - MIN_SPAN + 0.1).ok).toBe(false);
+    // And nothing was touched on the way to saying no.
+    expect(net.edges.size).toBe(1);
+    expect(net.nodes.size).toBe(2);
+  });
+
+  it('comes back the same shape from a save', () => {
+    // The halves are not the equal-tangent biarcs of their own ends, so the joint has to
+    // survive the round trip or a saved railway opens bent.
+    const net = new TrackNetwork();
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(60, 64, 24, 1, 0));
+    if (!laid.ok) throw new Error('could not lay the run');
+    const was = laid.edge.curve;
+    const cut = net.splitEdge(laid.edge.id, was.length * 0.75);
+    if (!cut.ok) throw new Error(`could not cut: ${cut.fault}`);
+    const back = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(net.toJSON())));
+    expect(back.edges.size).toBe(2);
+    const ids = [...back.edges.values()].sort((x, y) => x.a - y.a).map((edge) => edge.id);
+    expect(drift(back, was, ids), 'the run bent on its way through a save').toBeLessThan(0.01);
+  });
+});
+
+describe('finding a way through a switch', () => {
+  /** A trunk running east with a village at each end, and a branch off the middle heading
+   *  south-east to a third. What a triangle of villages looks like once somebody has built
+   *  one railway instead of three.
+   *
+   *  The reach is deliberately small. At the real `STATION_REACH` of 48 these three ends
+   *  are all inside each other's, which is a different thing being tested elsewhere. */
+  const REACH = 10;
+
+  function junction(): { net: TrackNetwork; west: TrackPoint; east: TrackPoint; south: TrackPoint } {
+    const net = new TrackNetwork();
+    const trunk = net.lay(end(0, 64, 0, 1, 0), end(90, 64, 0, 1, 0));
+    if (!trunk.ok) throw new Error('could not lay the trunk');
+    const cut = net.splitEdge(trunk.edge.id, 30);
+    if (!cut.ok) throw new Error(`could not cut the trunk: ${cut.fault}`);
+    // Leaves the switch heading east, so a train running east takes it and one running
+    // west cannot: a facing point one way round is a trailing point the other.
+    const branch = net.lay(end(30, 64, 0, 1, 0), end(66, 64, 34, 1, 1));
+    if (!branch.ok) throw new Error(`could not lay the branch: ${branch.fault}`);
+    for (const at of [{ x: 0, z: 0 }, { x: 90, z: 0 }, { x: 66, z: 34 }]) {
+      const near = net.nodesNear(at.x, at.z, 4);
+      if (near.length === 0) throw new Error(`no end near (${at.x}, ${at.z})`);
+      net.setStation(near[0].id, true);
+    }
+    return {
+      net,
+      west: { x: 0, y: 64, z: 0 },
+      east: { x: 90, y: 64, z: 0 },
+      south: { x: 66, y: 64, z: 34 },
+    };
+  }
+
+  it('serves a third village off the middle of one railway', () => {
+    // The whole point of a branch. Before it, a third village needed its own line.
+    const { net, west, east, south } = junction();
+    expect(net.wayBetween(west, east, REACH), 'the trunk stopped carrying').not.toBeNull();
+    expect(net.wayBetween(west, south, REACH), 'the branch carries nothing').not.toBeNull();
+  });
+
+  it('goes down the branch rather than on along the trunk', () => {
+    const { net, west, south } = junction();
+    const way = net.wayBetween(west, south, REACH)!;
+    const last = way.points[way.points.length - 1];
+    expect(last.x).toBeCloseTo(66, 0);
+    expect(last.z).toBeCloseTo(34, 0);
+  });
+
+  it('will not reverse a train at a point to take a trailing one', () => {
+    // From the east the branch faces the wrong way: taking it means stopping at the switch
+    // and backing down it. A train does not do that, so for this pair there is no railway
+    // and the road carries the goods — which is the honest answer, and the reason a player
+    // laying a branch has to think about which way round they lay it.
+    const { net, east, south } = junction();
+    expect(net.wayBetween(east, south, REACH), 'a train reversed at the point').toBeNull();
+  });
+
+  it('picks the same way after a save, not whichever was laid first', () => {
+    // Edge ids are re-issued on load and the ports are rebuilt in save order, so a search
+    // that settled ties by insertion order would send the freight a different way every
+    // time the world was opened.
+    const { net, west, south } = junction();
+    const before = net.wayBetween(west, south, REACH)!;
+    const back = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(net.toJSON())));
+    const after = back.wayBetween(west, south, REACH)!;
+    expect(after.length).toBeCloseTo(before.length, 6);
+    expect(after.points).toHaveLength(before.points.length);
+  });
+
+  it('points at the open end of a half built branch, not the middle of the main line', () => {
+    const { net } = junction();
+    // Heading for somewhere far to the south east. The switch itself is nearer to it than
+    // the trunk's west end is, and sending the player there would be sending them to lay
+    // track where there already is some.
+    const head = net.railheadTowards({ x: 0, y: 64, z: 0 }, { x: 400, y: 64, z: 400 })!;
+    expect(head.x).toBeCloseTo(66, 0);
+    expect(head.z).toBeCloseTo(34, 0);
+  });
+});
+
+describe('cutting the railway into blocks', () => {
+  /** Three runs end to end, east from the origin through joints at 60 and 120, with a
+   *  station on each end. The same shape as the way-between fixture, and the simplest
+   *  thing a signal can be put in the middle of. */
+  function chain(): TrackNetwork {
+    const net = new TrackNetwork();
+    for (const run of [
+      net.lay(end(0, 64, 0, 1, 0), end(60, 64, 0, 1, 0)),
+      net.lay(end(60, 64, 0, 1, 0), end(120, 64, 0, 1, 0)),
+      net.lay(end(120, 64, 0, 1, 0), end(180, 64, 0, 1, 0)),
+    ]) {
+      if (!run.ok) throw new Error('could not lay the line');
+    }
+    for (const x of [0, 180]) {
+      const at = net.nodesNear(x, 0, 4)[0];
+      net.setStation(at.id, true);
+    }
+    return net;
+  }
+
+  /** The node at a place, which on this fixture is a joint between two runs. */
+  function nodeAt(net: TrackNetwork, x: number): number {
+    const near = net.nodesNear(x, 0, 4);
+    if (near.length === 0) throw new Error(`no end near ${x}`);
+    return near[0].id;
+  }
+
+  const west = { x: 0, y: 64, z: 0 };
+  const east = { x: 180, y: 64, z: 0 };
+
+  it('leaves an unsignalled railway as one stretch that nobody watches', () => {
+    // The rule the whole feature stands on. Every world built before signals existed has
+    // no signals in it, and must keep running exactly as it did.
+    const net = chain();
+    const blocks = net.sections();
+    expect(new Set(blocks.of.values()).size, 'the line broke up on its own').toBe(1);
+    expect(blocks.watched.size).toBe(0);
+    expect(net.wayBetween(west, east)!.sections).toEqual([]);
+  });
+
+  it('splits the line in two at a signal, and watches both halves', () => {
+    const net = chain();
+    expect(net.setSignal(nodeAt(net, 120), true)).toBe(true);
+    const blocks = net.sections();
+    const ids = [...net.edges.values()].map((edge) => blocks.of.get(edge.id)!);
+    expect(new Set(ids).size, 'one signal did not make two blocks').toBe(2);
+    // Both of them are bounded by that signal, so both are enforced.
+    expect(blocks.watched.size).toBe(2);
+  });
+
+  it('joins runs across a joint with no signal on it', () => {
+    // A block is not a run. Three runs with one signal is two blocks, not three.
+    const net = chain();
+    net.setSignal(nodeAt(net, 120), true);
+    const blocks = net.sections();
+    const first = [...net.edges.values()].filter((edge) => edge.curve.length < 61);
+    expect(first).toHaveLength(3);
+    const west60 = blocks.of.get(first[0].id);
+    const mid = blocks.of.get(first[1].id);
+    expect(mid, 'the joint at 60 broke the block without a signal on it').toBe(west60);
+  });
+
+  it('tells a way where along itself the block changes', () => {
+    const net = chain();
+    net.setSignal(nodeAt(net, 120), true);
+    const way = net.wayBetween(west, east)!;
+    expect(way.sections).toHaveLength(2);
+    expect(way.sections[0].at, 'the first block does not start at the start').toBe(0);
+    expect(way.sections[0].id).not.toBe(UNWATCHED);
+    expect(way.sections[1].id).not.toBe(way.sections[0].id);
+    // And the boundary really is the signal, not somewhere else along the line.
+    expect(way.points[way.sections[1].at].x).toBeCloseTo(120, 0);
+  });
+
+  it('leaves another line elsewhere in the world alone', () => {
+    // Signalling one railway must not start enforcing every other one. A player who puts
+    // a signal on the branch line near their town has not asked for the main line across
+    // the map to start queueing.
+    const net = chain();
+    net.setSignal(nodeAt(net, 120), true);
+    const far = net.lay(end(0, 64, 400, 1, 0), end(60, 64, 400, 1, 0));
+    if (!far.ok) throw new Error('could not lay the second line');
+    const blocks = net.sections();
+    expect(blocks.watched.has(blocks.of.get(far.edge.id)!)).toBe(false);
+    expect(blocks.watched.size, 'the far line joined a block it is not attached to').toBe(2);
+  });
+
+  it('takes a signal down again, and says so only when something changed', () => {
+    const net = chain();
+    const joint = nodeAt(net, 120);
+    expect(net.setSignal(joint, true)).toBe(true);
+    expect(net.setSignal(joint, true), 'building the same signal twice both counted').toBe(false);
+    expect(net.setSignal(joint, false)).toBe(true);
+    expect(net.sections().watched.size).toBe(0);
+  });
+
+  it('moves the revision, so the route survey looks again', () => {
+    // Without this a signal would not be noticed until somebody happened to lay a curve,
+    // and the block it makes would not be enforced until then.
+    const net = chain();
+    const before = net.revision;
+    net.setSignal(nodeAt(net, 120), true);
+    expect(net.revision).toBeGreaterThan(before);
+    expect(net.signals().map((node) => Math.round(node.x))).toEqual([120]);
+  });
+
+  it('survives a save, because a signal is on a node and node ids are kept', () => {
+    // Edge ids are re-issued on load. A signal recorded against one would come back
+    // somewhere else along the line, which is worse than losing it.
+    const net = chain();
+    net.setSignal(nodeAt(net, 120), true);
+    const back = TrackNetwork.fromJSON(JSON.parse(JSON.stringify(net.toJSON())));
+    expect(back.signals().map((node) => Math.round(node.x))).toEqual([120]);
+    expect(back.sections().watched.size).toBe(2);
+    expect(back.wayBetween(west, east)!.sections).toHaveLength(2);
   });
 });

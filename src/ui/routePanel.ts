@@ -36,6 +36,14 @@ export interface RouteView {
   vehicle: 'porter' | 'cart' | 'train';
   cartPinch: { distance: number; bearing: number } | null;
   railPinch: { distance: number; bearing: number } | null;
+  /** Where to build the station, when the rails have reached a village and nothing there
+   *  puts freight on them. The one fault a player cannot see for themselves: finished
+   *  track that carries nothing looks exactly like finished track that does. */
+  stationGap: { distance: number; bearing: number } | null;
+  /** Where a train on this line has stopped at a signal and is not going to start again.
+   *  Two trains meeting head on on a single line each hold what the other is waiting for;
+   *  nothing here untangles that, so this is how the player finds out it happened. */
+  stall: { distance: number; bearing: number } | null;
   /** Blocks of up and down, and how much longer the road is than the straight line. */
   /** Blocks of up and down along the way. Not a whole number on a railway: the deck is a
    *  curve and it is measured where it actually runs, not where the blocks under it are. */
@@ -122,6 +130,7 @@ export class RoutePanel {
         Math.round(r.doorGap), r.nearMiss, r.faults.length,
         r.cartPinch ? Math.round(r.cartPinch.distance) : '',
         r.railPinch ? Math.round(r.railPinch.distance) : '',
+        r.stationGap ? Math.round(r.stationGap.distance) : '',
         r.nearest ? `${Math.round(r.nearest.distance)},${Math.round(r.nearest.bearing / 45)}` : '',
       ].join(':'))
       .join('|');
@@ -199,11 +208,25 @@ function notes(route: RouteView): Note[] {
       : '';
     out.push({ text: `荷車: 幅が足りない${where}`, tone: 'narrow' });
   }
-  // And only a pair somebody has started laying a railway between gets told where it
-  // stops; two villages with no track near either of them have no railhead to report.
-  if (route.vehicle !== 'train' && route.railPinch) {
+  // The rails are there and the station is not, which is the one railway fault that
+  // looks like nothing at all from the outside. It goes before the railhead because it is
+  // the nearer job: a player told to lay more track when what they actually need is a
+  // station would build the wrong thing.
+  if (route.vehicle !== 'train' && route.stationGap) {
+    const where = `（${heading(route.stationGap.bearing)}へ ${Math.round(route.stationGap.distance)}m）`;
+    out.push({ text: `列車: 線路の端に駅が無い${where}`, tone: 'rail' });
+  } else if (route.vehicle !== 'train' && route.railPinch) {
+    // And only a pair somebody has started laying a railway between gets told where it
+    // stops; two villages with no track near either of them have no railhead to report.
     const where = `（${heading(route.railPinch.bearing)}へ ${Math.round(route.railPinch.distance)}m）`;
     out.push({ text: `列車: 線路が途切れている${where}`, tone: 'rail' });
+  }
+  // A line that works and has stopped anyway. First of the railway notes when it happens,
+  // because everything else about the route is fine and this is the only thing anybody
+  // needs to go and look at.
+  if (route.stall) {
+    const where = `（${heading(route.stall.bearing)}へ ${Math.round(route.stall.distance)}m）`;
+    out.push({ text: `列車: 信号待ちで詰まっている${where} — 待避線が要る`, tone: 'rail' });
   }
   if (route.detour > DETOUR_NOTICE) {
     out.push({ text: `遠回り ×${route.detour.toFixed(2)} — 運賃は直線距離ぶん`, tone: 'cost' });

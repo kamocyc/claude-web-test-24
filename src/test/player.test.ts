@@ -6,16 +6,27 @@ import { WATER_FULL } from '../world/water';
 import { AUTO_STEP_BLOCKS, MAX_AIR, NO_INPUT, Player, movementDirection } from '../game/player';
 import { TrackNetwork, type TrackAnchor } from '../game/tracks';
 
+/** Blocks for one flat chunk per ground height. All twenty-five chunks of a flat world
+ *  are identical, so they are filled once and copied rather than written cell by cell. */
+const flatColumns = new Map<number, Uint16Array>();
+
 function flatWorld(groundY = 20): World {
+  let template = flatColumns.get(groundY);
+  if (!template) {
+    const filled = new Chunk(0, 0);
+    for (let z = 0; z < CHUNK_SIZE; z++) {
+      for (let x = 0; x < CHUNK_SIZE; x++) {
+        for (let y = 0; y <= groundY; y++) filled.set(x, y, z, Block.STONE);
+      }
+    }
+    template = filled.blocks;
+    flatColumns.set(groundY, template);
+  }
   const world = new World(1);
   for (let cz = -2; cz <= 2; cz++) {
     for (let cx = -2; cx <= 2; cx++) {
       const chunk = new Chunk(cx, cz);
-      for (let z = 0; z < CHUNK_SIZE; z++) {
-        for (let x = 0; x < CHUNK_SIZE; x++) {
-          for (let y = 0; y <= groundY; y++) chunk.set(x, y, z, Block.STONE);
-        }
-      }
+      chunk.blocks.set(template);
       world.addChunk(chunk);
     }
   }
@@ -62,9 +73,13 @@ function walkEast(world: World, autoStep: boolean, groundY = 20): Player {
   return player;
 }
 
+/** The ground `walk` runs on. The player never writes to the world, so one flat world
+ *  serves every yaw instead of laying 25 chunks again for each one. */
+let walkGround: World | null = null;
+
 /** Runs the player for a second and reports how far, and in which direction, it moved. */
 function walk(yaw: number, keys: Partial<typeof NO_INPUT>): { x: number; z: number } {
-  const world = flatWorld();
+  const world = (walkGround ??= flatWorld());
   const player = new Player();
   player.x = 0.5;
   player.y = 21;
