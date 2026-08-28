@@ -1276,17 +1276,35 @@ await evaluate(() => {
   g.player.yaw = 0;
   // Shallow, so the crosshair lands a dozen blocks out rather than at their feet.
   g.player.pitch = -0.13;
-  // And the tool actually in hand. A dozen console steps stand between here and where it
-  // was selected, and a mouse test that quietly runs with a shovel out proves nothing.
-  const inv = g.player.inventory;
-  if (inv.held?.id !== 'track_tool') {
-    window.voxelcraft.give('track_tool', 1);
-    for (let i = 0; i < 9; i++) if (inv.slots[i]?.id === 'track_tool') inv.selected = i;
-  }
 });
 await settled(60000);
+/** The tool, in hand, now. A dozen console steps stand between here and where it was
+ *  selected, and a mouse test that quietly runs with a shovel out proves nothing.
+ *
+ *  Re-established before every attempt rather than once before the loop. The loop is here
+ *  because a press can be swallowed, and this ran with a shovel out often enough to fail
+ *  the run — whatever it was, one more selection costs nothing and a flaky suite costs a
+ *  great deal. The slot is written straight into the hotbar: `give` puts a tool in the
+ *  first free slot anywhere, and a tool in the backpack is a tool the mouse cannot use. */
+const toolInHand = () => evaluate(() => {
+  const inv = window.voxelcraft.game.player.inventory;
+  if (inv.held?.id === 'track_tool') return true;
+  const hotbar = inv.slots.slice(0, 9);
+  let at = hotbar.findIndex((slot) => slot?.id === 'track_tool');
+  if (at < 0) {
+    const free = hotbar.findIndex((slot) => !slot);
+    at = free < 0 ? 8 : free;
+    inv.set(at, { id: 'track_tool', count: 1 });
+  }
+  inv.selected = at;
+  return inv.held?.id === 'track_tool';
+});
+if (!(await toolInHand())) throw new Error('could not get the track tool into the hotbar');
 let placed = await rightClick();
-for (let attempt = 1; attempt < 5 && !placed.pending && placed.edges === 0; attempt++) placed = await rightClick();
+for (let attempt = 1; attempt < 5 && !placed.pending && placed.edges === 0; attempt++) {
+  await toolInHand();
+  placed = await rightClick();
+}
 if (!placed.pending) {
   const why = await evaluate(() => ({
     held: window.voxelcraft.game.player.inventory.held?.id ?? null,
