@@ -9,6 +9,17 @@
  *  widen — so the page is ordered that way rather than by which module owns what. */
 
 import { itemLabel } from '../game/items';
+import { USE_LABELS } from '../game/buildings';
+import {
+  CELL_STOCK,
+  COMMUTE_SECONDS,
+  HOME_PEOPLE,
+  HOUSEHOLD_GOODS,
+  JOURNEY_SECONDS,
+  SHOP_GOODS,
+  SHOP_JOBS,
+  WORKS_JOBS,
+} from '../game/townEconomy';
 import { MILESTONES, QUEST_STEPS, type QuestStep } from '../game/questline';
 import {
   GAUGE,
@@ -334,6 +345,27 @@ export function helpView(state: HelpState): HelpView {
         '発展した村は空いた区画に家と畑を建てるが、道が通っている区画には建てない。敷いた道はそのまま残る。',
       ],
       table: { head: ['段階', '必要な発展度', '変わること'], rows: stageRows() },
+    },
+    {
+      heading: '町の中 — 住宅・商店・工場',
+      notes: [
+        `村の建物には用途がある: ${USE_LABELS.residential} / ${USE_LABELS.commercial} / ${USE_LABELS.industrial}。村が育つと商店と工場が建つ（工場は煙突で分かる）。`,
+        `${USE_LABELS.residential}には人が住み、${COMMUTE_SECONDS} 秒に 1 人ずつ${USE_LABELS.commercial}や${USE_LABELS.industrial}へ働きに出る。近くに立っていれば実際に歩いているのが見える。`,
+        `**人が来た建物だけが品物を使う。** 誰も通ってきていない商店は何も欲しがらないし、何も売らない。`,
+        `${USE_LABELS.residential}が欲しがる物: ${HOUSEHOLD_GOODS.map(itemLabel).join('・')}。${USE_LABELS.commercial}が欲しがる物: ${SHOP_GOODS.map(itemLabel).join('・')}。${USE_LABELS.industrial}はその村の原料を待つ。`,
+        `1 つの建物が持てるのは 1 品目につき ${CELL_STOCK} 個まで。倉庫ではないので、届けた物はいずれ切れてまた欲しがる。`,
+        `品物が届かない町は止まらない — 遅くなる。人の出入りも旅立ちも鈍るだけで、育った村が縮むことはない。`,
+        `${JOURNEY_SECONDS} 秒に 1 人ほど、隣の町へ行きたい人が出る。**その人たちは荷の無い便に乗る** — 荷が優先で、空で帰るはずだった便に乗るので、運ぶ物を減らさない。`,
+        '台帳（L）に、立っている町の建物が一覧で出る。建物を見れば、何を待っているかがその場に出る。',
+      ],
+      table: {
+        head: ['用途', '中にいる人（集落）', 'すること'],
+        rows: [
+          [USE_LABELS.residential, `${HOME_PEOPLE}`, '人が住む。働きに出る。旅に出たい人が生まれる'],
+          [USE_LABELS.commercial, `${SHOP_JOBS}`, '人が来ると品物が売れる'],
+          [USE_LABELS.industrial, `${WORKS_JOBS}`, '人が来ると原料を使う'],
+        ],
+      },
     },
     {
       heading: '操作',

@@ -73,6 +73,9 @@ export const CRAFTS: readonly { input: GoodId; output: GoodId }[] = [
  *  what a trainload of people should go through. Somebody who wanted to travel and got
  *  there is worth what a crate that was wanted is worth. */
 export const PASSENGER: GoodId = 'passenger';
+/** What to call them. `itemLabel` cannot answer, because this is the one good that is not
+ *  an item — so anything naming a cargo has to ask this first. */
+export const PASSENGER_LABEL = '人';
 
 /** Goods a settled village consumes whatever it makes. Every one of them is either a
  *  workshop's output or something the land yields, so demand always has a supplier. */

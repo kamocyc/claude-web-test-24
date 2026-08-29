@@ -31,6 +31,10 @@ export interface RouteView {
   load: number;
   /** True when the far end has asked for what this route carries. */
   wanted: boolean;
+  /** What is actually on the line right now, when it is not the route's own headline
+   *  good. Today that means people: a line with nothing to ship carries whoever wanted to
+   *  travel, and a row that still said 「麦」 would be describing the wrong trip. */
+  carrying: string | null;
   /** What hauls it, and — when a cart or a train cannot — how far away the place to go
    *  and fix is. A railway runs out somewhere; a road pinches somewhere. */
   vehicle: 'porter' | 'cart' | 'train';
@@ -127,6 +131,7 @@ export class RoutePanel {
         Math.round(r.missing), r.porters, r.grade, r.load, r.wanted, r.stock,
         r.fromDepot, r.toDepot, r.vehicle, Math.round(r.climb), Math.round(r.detour * 20),
         r.idle ? `${r.idle.kind}${r.idle.village}${r.idle.wants ?? ''}` : '',
+        r.carrying ?? '',
         Math.round(r.doorGap), r.nearMiss, r.faults.length,
         r.cartPinch ? Math.round(r.cartPinch.distance) : '',
         r.railPinch ? Math.round(r.railPinch.distance) : '',
@@ -159,8 +164,9 @@ export class RoutePanel {
       if (route.connected) {
         const between =
           route.fromDepot && route.toDepot ? `${route.fromDepot} → ${route.toDepot} · ` : '';
+        const load = route.carrying ? `${route.carrying}を運んでいる · ` : '';
         const cargo = route.nearest
-          ? `${between}荷運び ${route.porters} · ${heading(route.nearest.bearing)}へ ${Math.round(route.nearest.distance)}m`
+          ? `${between}${load}荷運び ${route.porters} · ${heading(route.nearest.bearing)}へ ${Math.round(route.nearest.distance)}m`
           : `${between}${idleText(route)}`;
         row.appendChild(el('div', `route-cargo ${route.nearest ? 'moving' : 'waiting'}`, cargo));
       }

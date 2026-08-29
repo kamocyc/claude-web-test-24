@@ -23,6 +23,35 @@ export interface LedgerVillage {
   distance: number;
   /** True when a workshop has nothing to work with, which is the interesting failure. */
   starved: boolean;
+  /** People living and working in the town, and how many of them are waiting for a way
+   *  out of it. A queue with nowhere to go is a route worth opening. */
+  people: number;
+  waiting: number;
+  /** What the buildings themselves are short of, most wanted first. Different from
+   *  `needs`, which is what the village as a whole asks for: this is the shopping list of
+   *  the homes and shops inside it, and it is what makes a town quiet when it is unmet. */
+  wants: string[];
+}
+
+/** One building of the town the player is standing in. */
+export interface LedgerBuilding {
+  label: string;
+  use: string;
+  /** People who live here, or jobs here. */
+  people: number;
+  /** Jobs currently filled by somebody who walked in. A shop with nobody in it sells
+   *  nothing, which is the whole reason the walking is simulated. */
+  staff: number;
+  /** What it is waiting for, and how much of it is in. */
+  wants: { good: string; held: number; of: number }[];
+}
+
+/** The town the player is standing in, when they are standing in one. */
+export interface LedgerTown {
+  name: string;
+  people: number;
+  waiting: number;
+  buildings: LedgerBuilding[];
 }
 
 export interface LedgerRoute {
@@ -53,6 +82,9 @@ export interface LedgerRoute {
 export interface LedgerView {
   villages: LedgerVillage[];
   routes: LedgerRoute[];
+  /** The town underfoot, so the player can read the place they are in rather than only
+   *  the network they are building. Null anywhere else. */
+  town: LedgerTown | null;
   /** Emeralds the network has paid the player so far. */
   earnings: number;
   objective: { title: string; detail: string } | null;
@@ -90,7 +122,9 @@ export function buildLedger(view: LedgerView): HTMLElement {
 
   root.appendChild(el('div', 'ledger-heading', '村'));
   const villages = el('div', 'ledger-table');
-  villages.appendChild(row('ledger-row head', ['村', '種類', '生産', '在庫', '求めている物', '発展', '距離']));
+  villages.appendChild(
+    row('ledger-row head', ['村', '種類', '生産', '在庫', '求めている物', '人口', '発展', '距離']),
+  );
   if (view.villages.length === 0) {
     villages.appendChild(el('div', 'ledger-empty', 'まだ村を見つけていない。コンパスの村マーカーを目指そう。'));
   }
@@ -105,6 +139,9 @@ export function buildLedger(view: LedgerView): HTMLElement {
       produces,
       village.input ? `${village.stock}（材料 ${village.inputStock}）` : `${village.stock}`,
       village.needs.length > 0 ? village.needs.join('・') : '—',
+      // The queue only shows where there is one: a village nobody can leave is the normal
+      // case until somebody opens a route, and a column of zeroes would say nothing.
+      village.waiting > 0 ? `${village.people}（待ち ${village.waiting}）` : `${village.people}`,
       grow,
       `${Math.round(village.distance)}m`,
     ]);
@@ -112,6 +149,36 @@ export function buildLedger(view: LedgerView): HTMLElement {
     villages.appendChild(node);
   }
   root.appendChild(villages);
+
+  if (view.town) {
+    root.appendChild(el('div', 'ledger-heading', `${view.town.name}の建物`));
+    const summary = el('div', 'ledger-summary');
+    summary.append(
+      el('div', 'ledger-stat', `人口 ${view.town.people}`),
+      el('div', 'ledger-stat', `旅に出たい人 ${view.town.waiting}`),
+    );
+    root.appendChild(summary);
+    const table = el('div', 'ledger-table');
+    table.appendChild(row('ledger-row head', ['建物', '用途', '人', '働いている人', '待っている物']));
+    for (const building of view.town.buildings) {
+      const wants = building.wants.length > 0
+        ? building.wants.map((w) => `${w.good} ${w.held}/${w.of}`).join('・')
+        : '—';
+      // A shop with nobody in it is not broken and it is not selling either, and the
+      // difference between those two is the one thing this table is here to say.
+      const idle = building.people > 0 && building.staff === 0 && building.use !== '住宅';
+      const node = row(`ledger-row${idle ? ' starved' : ''}`, [
+        building.label,
+        building.use,
+        `${building.people}`,
+        building.use === '住宅' ? '—' : `${building.staff} / ${building.people}`,
+        wants,
+      ]);
+      if (idle) node.title = 'まだ誰も来ていないので、何も売れていない';
+      table.appendChild(node);
+    }
+    root.appendChild(table);
+  }
 
   root.appendChild(el('div', 'ledger-heading', '輸送路'));
   const routes = el('div', 'ledger-table');
@@ -148,7 +215,9 @@ export function buildLedger(view: LedgerView): HTMLElement {
         '線路が両方の村に届いていれば列車が走り、速さも積む量も上がる（道は関係ない）。' +
         '登りは時間を食い、遠回りしても運賃は増えない（運賃は直線距離ぶん）。' +
         '荷は在庫のあるほうの村から出る（在庫 1 個から出発する）。工房は原料が届くまで何も作らない。' +
-        '荷は村の「集荷所」の戸口から出て戸口へ入る — 建物を見て F キーで変えられる。',
+        '荷は村の「集荷所」の戸口から出て戸口へ入る — 建物を見て F キーで変えられる。' +
+        '町の住宅からは人が働きに出る。人が来た商店・工場だけが品物を使うので、' +
+        '通う人がいない建物は何も欲しがらない。旅に出たい人は、荷の無い便に乗って隣の町へ行く。',
     ),
   );
   return root;

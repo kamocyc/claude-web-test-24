@@ -142,6 +142,7 @@ import {
 } from './transport';
 import {
   PASSENGER,
+  PASSENGER_LABEL,
   STAGE_POINTS,
   VillageRegistry,
   displayName,
@@ -153,8 +154,8 @@ import {
   type VillageId,
   type VillageRecord,
 } from './villages';
-import { TownEconomy, type Commute } from './townEconomy';
-import type { LedgerView } from '../ui/ledger';
+import { CELL_STOCK, TownEconomy, type Commute } from './townEconomy';
+import type { LedgerTown, LedgerView } from '../ui/ledger';
 import type { RouteIdle } from '../ui/routePanel';
 import { helpView, type HelpView } from '../ui/help';
 import { applyGrowth, growthChunks, growthFor, growthVillagers, outpostBuildings, ownPaving, roadCrosses } from './villageGrowth';
@@ -165,6 +166,7 @@ import {
   describeBuilding,
   pathAroundPlots,
   pointAlongPath,
+  useLabel,
   type VillageBuilding,
 } from './buildings';
 import { outpostRecord, outpostSite } from './outpost';
@@ -936,6 +938,7 @@ export class Game {
             grade: route.grade,
             load: this.transport.loadOf(route),
             wanted: this.villages.get(route.to)?.needs.includes(route.good) ?? false,
+            carrying: this.carryingOn(route),
             vehicle: route.vehicle,
             cartPinch: route.cartPinch ? this.bearingTo(route.cartPinch) : null,
             railPinch: route.railPinch ? this.bearingTo(route.railPinch) : null,
@@ -1201,9 +1204,29 @@ export class Game {
     const depot = this.depotFor(village);
     const isDepot = depot?.id === building.id;
     return {
-      title: describeBuilding(building, village, isDepot),
+      title: describeBuilding(building, village, isDepot, this.buildingNote(village, building)),
       hint: isDepot ? 'ここから荷が出入りする' : '[F] この村の集荷所にする',
     };
+  }
+
+  /** What the building under the crosshair is waiting for, in one clause.
+   *
+   *  This is where the town economy is legible without opening anything: a works with no
+   *  raw material and a shop with no customers look identical from the street, and they
+   *  are two entirely different jobs for the player. */
+  private buildingNote(village: VillageRecord, building: VillageBuilding): string | undefined {
+    const cell = this.towns.get(village.id)?.cells.get(building.id);
+    if (!cell) return undefined;
+    if (cell.use === 'residential') {
+      const empty = [...cell.wants].filter(([, held]) => held <= 0).map(([good]) => good);
+      if (empty.length > 0) return `${empty.map((g) => this.goodName(g)).join('・')}が切れている`;
+      return `${cell.people} 人が住んでいる`;
+    }
+    if (cell.wants.size === 0) return undefined;
+    if (cell.staff <= 0) return 'まだ誰も通ってきていない';
+    const empty = [...cell.wants].filter(([, held]) => held <= 0).map(([good]) => good);
+    if (empty.length > 0) return `${empty.map((g) => this.goodName(g)).join('・')}を待っている`;
+    return `${cell.staff} 人が働いている`;
   }
 
   /** Moves a village's loading and unloading to the building being looked at. */
@@ -2987,15 +3010,19 @@ export class Game {
             received: village.received,
             distance: Math.hypot(village.x - this.player.x, village.z - this.player.z),
             starved: village.input !== null && village.inputStock <= 0,
+            people: this.towns.populationOf(village.id),
+            waiting: this.villages.waiting(village.id),
+            wants: this.towns.shortOf(village.id).map((entry) => this.goodName(entry.good)),
           };
         })
         .sort((a, b) => a.distance - b.distance),
+      town: this.townLedger(),
       routes: this.transport.routes.map((route) => ({
         from: this.villages.get(route.from)?.name ?? '?',
         to: this.villages.get(route.to)?.name ?? '?',
         fromDepot: this.depotLabel(route.from),
         toDepot: this.depotLabel(route.to),
-        good: route.good ? itemLabel(route.good) : '—',
+        good: route.good ? this.goodName(route.good) : '—',
         connected: route.connected,
         length: route.length,
         missing: route.missing,
@@ -3009,6 +3036,49 @@ export class Game {
         detour: route.detour,
       })),
     };
+  }
+
+  /** The town the player is standing in, building by building. Null anywhere else — the
+   *  ledger is about the network everywhere except here, and here it is about the place. */
+  private townLedger(): LedgerTown | null {
+    const here = this.villages.at(this.player.x, this.player.z);
+    if (!here) return null;
+    const town = this.towns.get(here.id);
+    if (!town) return null;
+    const buildings = this.buildingsFor(here);
+    return {
+      name: displayName(here),
+      people: this.towns.populationOf(here.id),
+      waiting: town.waiting,
+      buildings: [...town.cells.values()]
+        .map((cell) => ({
+          label: buildings.find((b) => b.id === cell.id)?.label ?? cell.id,
+          use: useLabel(cell.use),
+          people: cell.people,
+          staff: cell.staff,
+          wants: [...cell.wants].map(([good, held]) => ({
+            good: this.goodName(good),
+            held,
+            of: CELL_STOCK,
+          })),
+        }))
+        // Homes first, then the places they walk to, which is the order the loop runs in.
+        .sort((a, b) => a.use.localeCompare(b.use) || a.label.localeCompare(b.label)),
+    };
+  }
+
+  /** What a line is carrying right now, when it is something other than the route's own
+   *  headline good. Only people qualify today, and only they are worth a row: a line the
+   *  player built for crates that is quietly running passengers should say so. */
+  private carryingOn(route: Route): string | null {
+    if (route.porters.some((porter) => porter.good === PASSENGER)) return PASSENGER_LABEL;
+    return null;
+  }
+
+  /** What to call a cargo. People are the one good that is not an item, so `itemLabel`
+   *  cannot answer for them. */
+  private goodName(good: GoodId): string {
+    return good === PASSENGER ? PASSENGER_LABEL : itemLabel(good);
   }
 
   /** Where every train's cars are, and what there is to stand on because of them.
