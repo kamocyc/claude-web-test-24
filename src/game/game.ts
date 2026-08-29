@@ -153,6 +153,7 @@ import {
   type VillageId,
   type VillageRecord,
 } from './villages';
+import { TownEconomy, type Commute } from './townEconomy';
 import type { LedgerView } from '../ui/ledger';
 import type { RouteIdle } from '../ui/routePanel';
 import { helpView, type HelpView } from '../ui/help';
@@ -162,6 +163,8 @@ import {
   buildingsOf,
   depotOf,
   describeBuilding,
+  pathAroundPlots,
+  pointAlongPath,
   type VillageBuilding,
 } from './buildings';
 import { outpostRecord, outpostSite } from './outpost';
@@ -199,6 +202,12 @@ const GUIDE_NARROW = 0xffc457;
 /** Where the railway runs out. Violet, because amber already means "too narrow" and red
  *  already means "does not count" — three different jobs need three different colours. */
 const GUIDE_RAILGAP = 0xb08cff;
+/** How near the player has to be for the people walking across a town to be worth
+ *  drawing. Shorter than a porter's `PORTER_VISIBLE`, because a commute is a walk between
+ *  two doorways rather than a line across the map: somebody outside this is not just far
+ *  away, they are in a town the player is not standing in. */
+const COMMUTE_VISIBLE = 48;
+
 /** The station that is not built yet. A warmer violet than the railhead's, because the
  *  two are next door to each other and the answer to them is not the same. */
 const GUIDE_STATION = 0xff9adf;
@@ -465,6 +474,13 @@ export class Game {
   /** The village economy: who makes what, which roads link them, and what the tutorial
    *  is currently asking for. */
   private readonly villages: VillageRegistry;
+  /** What is going on inside those villages: who lives where, what each building wants,
+   *  and who is walking across town to work. */
+  private readonly towns: TownEconomy;
+  /** Commuter mobs by the commute they are drawing, keyed the way porters are. */
+  private readonly commuterMobs = new Map<number, Mob>();
+  /** The walk each commute is following. Weak, so it goes when the commute does. */
+  private readonly commutePaths = new WeakMap<Commute, { x: number; y: number; z: number }[]>();
   private readonly roads: RoadNetwork;
   private readonly transport: TransportNetwork;
   private readonly questline = new Questline();
@@ -483,7 +499,17 @@ export class Game {
     this.generator = new TerrainGenerator(options.seed);
     this.light = new LightEngine(this.world);
     this.water = new WaterSimulator(this.world);
-    this.villages = new VillageRegistry(options.seed, this.generator);
+    // The town is built first and handed to the registry, so a delivery reaches the
+    // buildings that asked for it without the registry ever learning what a building is.
+    // `buildingsOf` is read through a closure rather than captured because the building
+    // list is rebuilt whenever a road block moves.
+    this.towns = new TownEconomy(options.seed, {
+      buildingsOf: (id) => {
+        const village = this.villages.get(id);
+        return village ? this.buildingsFor(village) : [];
+      },
+    });
+    this.villages = new VillageRegistry(options.seed, this.generator, this.towns);
     this.roads = new RoadNetwork(this.world);
     this.world.onBlockChange((x, y, z, previous, next) => {
       this.light.onBlockChanged(x, y, z, previous, next);
@@ -2414,7 +2440,11 @@ export class Game {
       this.linkQuestVillages();
     }
     this.villages.produce(dt);
+    // The town runs on the same clock as the village it is inside, and before transport:
+    // whoever decided to travel this frame should be on the platform when the line asks.
+    this.towns.update(dt, this.villages.byId.values());
     this.transport.update(dt, this.player.x, this.player.z);
+    this.updateCommuters();
     // The tutorial's road step is finished by the *event* of a route joining up, so a
     // player who lays the road before being told to — the shortest road in the game runs
     // between two villages fifty blocks apart — would reach the step with the event
@@ -3138,6 +3168,108 @@ export class Game {
     this.removePorter(id);
   }
 
+  /** Draws the people walking across whatever town the player is standing in.
+   *
+   *  A commute is a number in `townEconomy.ts` and this is its view, exactly as a porter
+   *  is the view of a shipment: the villager is put where the commute has got to, and
+   *  dropped the moment the player is too far away for it to be worth drawing. Nothing a
+   *  villager does can hold a commute up — the same rule, and for the same reason, as the
+   *  one written out at length at the top of `transport.ts`.
+   *
+   *  Only the town the player is in costs anything: the walk between two doorways is a
+   *  breadth-first search around the plots, and running one for every town in the world
+   *  every frame would be a search nobody could see the result of. */
+  private updateCommuters(): void {
+    const live = new Set<number>();
+    for (const town of this.towns.towns.values()) {
+      const village = this.villages.get(town.id);
+      if (!village) continue;
+      const away = Math.hypot(village.x - this.player.x, village.z - this.player.z);
+      if (away > COMMUTE_VISIBLE + radiusOf(village)) continue;
+      const buildings = this.buildingsFor(village);
+      for (const commute of town.commutes) {
+        const path = this.commutePath(commute, buildings);
+        const here = path ? pointAlongPath(path, commute.t) : null;
+        if (!here) continue;
+        const near = Math.hypot(here.x - this.player.x, here.z - this.player.z) <= COMMUTE_VISIBLE;
+        const mob = commute.mobId === null ? null : this.liveCommuter(commute.mobId);
+        if (mob && near) {
+          mob.follow = { x: here.x + 0.5, z: here.z + 0.5 };
+          live.add(commute.mobId!);
+          continue;
+        }
+        if (mob) {
+          this.removeCommuter(commute.mobId!);
+          commute.mobId = null;
+        } else if (commute.mobId !== null) {
+          // Killed, or never drawn. Either way nothing is showing this commute now.
+          commute.mobId = null;
+        }
+        if (!near) continue;
+        commute.mobId = this.spawnCommuter(village, here);
+        if (commute.mobId !== null) live.add(commute.mobId);
+      }
+    }
+    // A commute that ended — or a town that stopped existing — leaves its villager behind,
+    // and a villager is the one mob the spawner never clears up by distance.
+    for (const id of [...this.commuterMobs.keys()]) {
+      if (!live.has(id)) this.removeCommuter(id);
+    }
+  }
+
+  /** The walk between the two doorways of a commute, going round the houses rather than
+   *  through them. Kept per commute because a breadth-first search across a village is not
+   *  something to run sixty times a second, and thrown away with the commute itself. */
+  private commutePath(
+    commute: Commute,
+    buildings: readonly VillageBuilding[],
+  ): { x: number; y: number; z: number }[] | null {
+    const cached = this.commutePaths.get(commute);
+    if (cached) return cached;
+    const from = buildings.find((b) => b.id === commute.from);
+    const to = buildings.find((b) => b.id === commute.to);
+    if (!from || !to) return null;
+    const plots = buildings.filter((b) => b.id !== from.id && b.id !== to.id);
+    const walk = pathAroundPlots(from.outside, to.outside, plots)
+      // No way round at all — a doorway somebody has walled in. The straight line is at
+      // least somewhere to go, and the villager's own step and hop deal with the rest.
+      ?? [{ ...from.outside }, { ...to.outside }];
+    this.commutePaths.set(commute, walk);
+    return walk;
+  }
+
+  private spawnCommuter(village: VillageRecord, at: { x: number; y: number; z: number }): number | null {
+    if (!this.world.hasChunk(toChunkCoord(at.x), toChunkCoord(at.z))) return null;
+    const mob = new Mob('villager', at.x + 0.5, at.y + 1, at.z + 0.5);
+    // Home is the village rather than the house, which is what `ensureVillageTrades` and
+    // the tutorial's villagers both read: somebody walking to work is still somebody the
+    // player can stop and talk to.
+    mob.homeX = village.x;
+    mob.homeZ = village.z;
+    mob.follow = { x: mob.x, z: mob.z };
+    this.mobs.add(mob);
+    this.commuterMobs.set(mob.id, mob);
+    return mob.id;
+  }
+
+  private liveCommuter(id: number): Mob | null {
+    const mob = this.commuterMobs.get(id);
+    if (!mob) return null;
+    if (mob.isDead || !this.mobs.mobs.includes(mob)) {
+      this.commuterMobs.delete(id);
+      return null;
+    }
+    return mob;
+  }
+
+  private removeCommuter(id: number): void {
+    const mob = this.commuterMobs.get(id);
+    this.commuterMobs.delete(id);
+    if (!mob) return;
+    const index = this.mobs.mobs.indexOf(mob);
+    if (index >= 0) this.mobs.mobs.splice(index, 1);
+  }
+
   /** The porter mob behind an id, or nothing when the mob manager has taken it away.
    *  Without the second check a despawned porter would keep answering from wherever it
    *  last stood. */
@@ -3771,7 +3903,10 @@ export class Game {
       chests,
       furnaces,
       villagers: this.mobs.mobs
-        .filter((mob) => mob.kind === 'villager')
+        // A commuter is a view of a walk the town re-derives on its own, exactly as a
+        // porter is a view of a shipment. Saving one would put a second villager in the
+        // street every time the world was opened.
+        .filter((mob) => mob.kind === 'villager' && !this.commuterMobs.has(mob.id))
         .map((mob) => ({
           x: mob.x,
           y: mob.y,
@@ -3982,6 +4117,44 @@ export class Game {
             depot: b.id === depot?.id,
           })),
         };
+      },
+      /** The town inside the village the player is standing in: who lives where, what
+       *  each building is waiting for, and who is walking across it right now. */
+      town: () => {
+        const here = this.villages.at(this.player.x, this.player.z);
+        if (!here) return null;
+        const town = this.towns.get(here.id);
+        if (!town) return null;
+        const buildings = this.buildingsFor(here);
+        return {
+          village: here.name,
+          people: this.towns.populationOf(here.id),
+          waiting: town.waiting,
+          short: this.towns.shortOf(here.id),
+          buildings: [...town.cells.values()].map((cell) => ({
+            id: cell.id,
+            label: buildings.find((b) => b.id === cell.id)?.label ?? cell.id,
+            use: cell.use,
+            people: cell.people,
+            staff: cell.staff,
+            wants: [...cell.wants].map(([good, held]) => ({ good, held })),
+          })),
+        };
+      },
+      /** Everybody walking across the town the player is in, and whether a villager is
+       *  currently drawing each of them. A commute with no mob is one happening out of
+       *  sight, which is the thing worth being able to see from here. */
+      commutes: () => {
+        const here = this.villages.at(this.player.x, this.player.z);
+        const town = here ? this.towns.get(here.id) : undefined;
+        if (!town) return [];
+        return town.commutes.map((commute) => ({
+          from: commute.from,
+          to: commute.to,
+          t: Number(commute.t.toFixed(3)),
+          dir: commute.dir,
+          drawn: commute.mobId !== null,
+        }));
       },
       /** What the crosshair is on, and the key that would claim it. */
       lookingAt: () => this.buildingPrompt(),
@@ -4377,6 +4550,10 @@ export class Game {
     // After the edits are in place: the road index is built from them, not from the
     // world, which is what lets a road be surveyed while its chunks are still unloaded.
     this.villages.loadJSON(data.villages);
+    // Nothing about a town is saved, so the towns of the world being closed have to go:
+    // they are laid out again, hungry, from the villages that just came back.
+    this.towns.clear();
+    for (const id of [...this.commuterMobs.keys()]) this.removeCommuter(id);
     this.roads.seedFromEdits();
     this.transport.loadJSON(data.routes);
     this.questline.loadJSON(data.quest);

@@ -7,6 +7,7 @@ import {
   depotOf,
   describeBuilding,
   pathAroundPlots,
+  pointAlongPath,
   useLabel,
 } from '../game/buildings';
 import {
@@ -265,5 +266,37 @@ describe('what a building is for', () => {
     const line = describeBuilding(buildings[0], record, false, '麦を待っている');
     expect(line).toContain(useLabel(buildings[0].use));
     expect(line).toContain('麦を待っている');
+  });
+});
+
+describe('walking along a path', () => {
+  const path = [
+    { x: 0, y: 60, z: 0 },
+    { x: 0, y: 60, z: 4 },
+    { x: 8, y: 64, z: 4 },
+  ];
+
+  it('lands on the ends at 0 and 1', () => {
+    expect(pointAlongPath(path, 0)).toEqual(path[0]);
+    expect(pointAlongPath(path, 1)).toEqual(path[2]);
+  });
+
+  it('walks between the corners in between', () => {
+    // Halfway is the middle corner, because the fraction is of the corners rather than of
+    // the distance — a town's streets are short and the two are close enough.
+    expect(pointAlongPath(path, 0.5)).toEqual(path[1]);
+    const quarter = pointAlongPath(path, 0.25)!;
+    expect(quarter.z).toBeGreaterThan(0);
+    expect(quarter.z).toBeLessThan(4);
+  });
+
+  it('holds at the ends rather than running off them', () => {
+    expect(pointAlongPath(path, -3)).toEqual(path[0]);
+    expect(pointAlongPath(path, 9)).toEqual(path[2]);
+  });
+
+  it('answers for a path that is one point, and for one that is none', () => {
+    expect(pointAlongPath([path[0]], 0.5)).toEqual(path[0]);
+    expect(pointAlongPath([], 0.5)).toBeNull();
   });
 });

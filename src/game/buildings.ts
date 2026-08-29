@@ -159,6 +159,29 @@ export function describeBuilding(
  *  many steps is not being blocked by a house. */
 const AROUND_LIMIT = 48;
 
+/** Where along a walked path a fraction lands, in world coordinates.
+ *
+ *  The same arithmetic `transport.ts` does along a route, and here for the same reason: a
+ *  walk across town is a list of corners, and what is moving along it is a number. Kept
+ *  next to `pathAroundPlots` because that is what produces the list. */
+export function pointAlongPath(
+  path: readonly { x: number; y: number; z: number }[],
+  t: number,
+): { x: number; y: number; z: number } | null {
+  if (path.length === 0) return null;
+  if (path.length === 1) return { ...path[0] };
+  const at = Math.max(0, Math.min(1, t)) * (path.length - 1);
+  const i = Math.min(path.length - 2, Math.floor(at));
+  const f = at - i;
+  const a = path[i];
+  const b = path[i + 1];
+  return {
+    x: a.x + (b.x - a.x) * f,
+    y: Math.round(a.y + (b.y - a.y) * f),
+    z: a.z + (b.z - a.z) * f,
+  };
+}
+
 /** A way from one point to another that does not go through a building.
  *
  *  A depot's doorway is never on the road: the last leg of every trip is a walk across the
