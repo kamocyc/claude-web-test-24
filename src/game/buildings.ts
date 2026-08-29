@@ -154,10 +154,14 @@ export function describeBuilding(
   return `${village.name}の${building.label} — ${role}${tail}`;
 }
 
-/** How far out of its way the walk from a doorway to the road may go. A village is 76
- *  blocks across and its houses stand in rows, so anything a door cannot reach in this
- *  many steps is not being blocked by a house. */
-const AROUND_LIMIT = 48;
+/** How far out of its way the walk from a doorway to the road may go.
+ *
+ *  A town is a grid of blocks about sixty across, and the walk is four-neighbour: a door
+ *  on one corner and a road arriving at the opposite one is a hundred and twenty steps
+ *  before any detour, and the detours are what this is for. Under that the walk quietly
+ *  fails and the caller falls back to a straight line — which is a line through the middle
+ *  of everybody's house, and the reason this function exists. */
+const AROUND_LIMIT = 160;
 
 /** Where along a walked path a fraction lands, in world coordinates.
  *

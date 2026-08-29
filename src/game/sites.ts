@@ -59,7 +59,7 @@ export function networkSites(
       return townAt(at) !== undefined;
     },
 
-    load(at: Stop, capacity: number, wanted: readonly GoodId[]): Cargo | null {
+    load(at: Stop, capacity: number, _wanted: readonly GoodId[]): Cargo | null {
       const works = worksAt(at);
       // An industry first where a stop serves both. A stop between a town and its own
       // colliery is a stop the player built to move ore, and the town's own output has a
@@ -70,9 +70,11 @@ export function networkSites(
       }
       const town = townAt(at);
       if (!town) return null;
-      // Nothing leaves a town that the far end has no use for, unless the far end is a
-      // town — a town banks what it did not ask for, an industry has nowhere to put it.
-      if (wanted.length > 0 && !wanted.includes(town.produces)) return null;
+      // `wanted` is a preference and never a gate. A town banks whatever arrives — what it
+      // did not ask for is worth less and is still worth something — and refusing to load
+      // anything else leaves a pair of towns with no use for each other's goods reading
+      // 「在庫 5 · まもなく出発」 for ever, which is the worst state a panel can be in: a
+      // finished line, stock at both ends, and nothing to say about why nothing moves.
       const count = villages.takeStock(town.id, capacity);
       return count > 0 ? { good: town.produces, count } : null;
     },

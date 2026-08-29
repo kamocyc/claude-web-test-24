@@ -156,7 +156,7 @@ import {
 } from './villages';
 import { CELL_STOCK, TownEconomy, type Commute } from './townEconomy';
 import { LineNetwork, MAX_LINE_STOPS, STOP_TOWN_REACH, type Stop } from './lines';
-import { networkSites } from './sites';
+import { networkSites, STOP_SITE_REACH } from './sites';
 import {
   INDUSTRY_TYPES,
   IndustryRegistry,
@@ -2246,7 +2246,7 @@ export class Game {
     this.player.inventory.remove('stop', 1);
     this.buildStopMarker(placed.stop);
     this.syncLines();
-    const works = this.industries.near(at.x, at.z, STOP_TOWN_REACH);
+    const works = this.industries.near(at.x, at.z, STOP_SITE_REACH);
     if (town) this.hud.toast(`${placed.stop.name}を置いた（${displayName(town)}）`);
     else if (works) this.hud.toast(`${placed.stop.name}を置いた（${works.name}）`);
     else this.hud.toast(`${placed.stop.name}を置いた — まだ町も産業も無い場所`);
@@ -2818,7 +2818,7 @@ export class Game {
   private stopLabel(stop: Stop): string {
     const town = this.townOf(stop);
     if (town) return displayName(town);
-    const works = this.industries.near(stop.x, stop.z, STOP_TOWN_REACH);
+    const works = this.industries.near(stop.x, stop.z, STOP_SITE_REACH);
     return works ? works.name : stop.name;
   }
 
@@ -2925,7 +2925,7 @@ export class Game {
   private readyAt(stop: Stop): number {
     const town = this.townOf(stop);
     if (town) return town.stock;
-    return this.industries.near(stop.x, stop.z, STOP_TOWN_REACH)?.stock ?? 0;
+    return this.industries.near(stop.x, stop.z, STOP_SITE_REACH)?.stock ?? 0;
   }
 
   /** Why a joined route has nothing moving on it, when it has nothing moving on it.
@@ -2941,7 +2941,7 @@ export class Game {
       if (!village) {
         // A stop serving nothing at all. Worth saying plainly: it is the one failure a
         // player can make that looks exactly like a finished line.
-        if (!this.industries.near(stop.x, stop.z, STOP_TOWN_REACH)) {
+        if (!this.industries.near(stop.x, stop.z, STOP_SITE_REACH)) {
           return { kind: 'nosite', village: stop.name, wants: null };
         }
         continue;
@@ -3311,7 +3311,7 @@ export class Game {
   private stopPlace(stop: Stop): string {
     const town = this.townOf(stop);
     if (town) return `${displayName(town)}（${itemLabel(town.produces)}）`;
-    const works = this.industries.near(stop.x, stop.z, STOP_TOWN_REACH);
+    const works = this.industries.near(stop.x, stop.z, STOP_SITE_REACH);
     if (works) return `${works.name}（${itemLabel(works.good)}）`;
     return '町も産業も無い';
   }
@@ -3386,7 +3386,7 @@ export class Game {
         stock: works.stock,
         full: works.stock >= MAX_INDUSTRY_STOCK,
         shipped: works.shipped,
-        served: this.lines.stopNear(works.x, works.z, STOP_TOWN_REACH) !== null,
+        served: this.lines.stopNear(works.x, works.z, STOP_SITE_REACH) !== null,
         distance: Math.hypot(works.x - this.player.x, works.z - this.player.z),
       })),
       routes: this.transport.routes.map((route) => ({
@@ -4763,10 +4763,26 @@ export class Game {
        *  afternoon, not the browser test's. */
       widenRoad: (fromId?: string, toId?: string): number =>
         this.debugBuildRoad(fromId, toId, undefined, 3),
-      /** Lays a road between the quest's two villages. Building 300 blocks of it by hand
+      /** Lays a road between the quest's two towns. Building 300 blocks of it by hand
        *  is the player's job, not the smoke test's. */
       buildRoad: (fromId?: string, toId?: string, surface?: string): number =>
         this.debugBuildRoad(fromId, toId, surface),
+      /** The same, between two arbitrary points — which is what a road to an industry is,
+       *  since an industry is somewhere the player chose rather than a place on the grid.
+       *  Each end is snapped to the nearest street of whatever town it stands in, so a
+       *  road to a town still arrives on its street rather than through its houses. */
+      pave: (ax: number, az: number, bx: number, bz: number, surface?: string, width = 1): number => {
+        const block = surface ? itemDef(surface)?.placesBlock ?? Block.DIRT_PATH : Block.DIRT_PATH;
+        const end = (x: number, z: number, towards: { x: number; z: number }): RoadPoint => {
+          const town = this.villages.at(x, z);
+          if (town) return this.roads.streetPoint(townPlace(town), towards.x, towards.z);
+          const at = { x: Math.round(x), z: Math.round(z) };
+          return { ...at, y: this.groundHeightAt(at.x, at.z) };
+        };
+        const from = end(ax, az, { x: bx, z: bz });
+        const to = end(bx, bz, { x: ax, z: az });
+        return this.runRoad(from, to, block, from.y, to.y, width);
+      },
       /** Lays a railway from one village to the other, which is what puts a train on the
        *  route. Curves, piers and all — the same builder the sample world uses, with
        *  nothing left open at the near end. */

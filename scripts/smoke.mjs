@@ -46,12 +46,13 @@ const closeScreen = async () => {
   }
 };
 const debugText = () => page.locator('.debug').textContent();
-/** The tutorial's own route, looked up by its two villages. `routes()` is ordered by
- *  discovery, so a third village joining the network is enough to shuffle the indices. */
+/** The tutorial's own leg, looked up by the two towns its stops serve. `routes()` is
+ *  ordered by line, so a second service is enough to shuffle the indices. */
 const QUEST_ROUTE = `(() => {
   const q = window.voxelcraft.quest();
   return window.voxelcraft.routes().find((r) =>
-    (r.from === q.origin && r.to === q.target) || (r.from === q.target && r.to === q.origin)) ?? null;
+    (r.fromTown === q.origin && r.toTown === q.target)
+    || (r.fromTown === q.target && r.toTown === q.origin)) ?? null;
 })()`;
 /** Stands the player on flat, open, loaded ground and drops a villager in front of them.
  *  Spawning where a teleport landed risks a roof, a wall, or an unloaded chunk, and a
@@ -292,14 +293,16 @@ console.log('buildings:', JSON.stringify({
 if (!stock.list.some((b) => b.depot)) throw new Error('no village building takes the goods');
 
 // Stand outside a different building, look at it, and claim it with the key a player has.
+// Two blocks out, not four: a town's streets are three wide, so four steps back from a
+// doorway is across the road and standing on somebody else's roof.
 const claimed = await evaluate(() => {
   const g = window.voxelcraft.game;
   const list = window.voxelcraft.buildings().list;
   const target = list.find((b) => !b.depot) ?? list[0];
   const dx = target.outside.x - target.door.x;
   const dz = target.outside.z - target.door.z;
-  const x = target.door.x + dx * 4 + 0.5;
-  const z = target.door.z + dz * 4 + 0.5;
+  const x = target.door.x + dx * 2 + 0.5;
+  const z = target.door.z + dz * 2 + 0.5;
   g.player.teleportTo(x, g.world.heightAt(Math.floor(x), Math.floor(z)) + 1, z);
   g.player.yaw = Math.atan2(-(target.door.x + 0.5 - x), -(target.door.z + 0.5 - z));
   g.player.pitch = 0.05;
@@ -455,6 +458,41 @@ console.log('accepted:', JSON.stringify({
   )),
 }));
 await closeScreen();
+
+// --- the service ------------------------------------------------------------
+// The change this whole build is about: a finished road carries nothing until the player
+// has put stops down and named them on a line. So before anything else, check that a
+// perfectly good pair of towns with no service between them runs nothing at all.
+console.log('legs before any line:', JSON.stringify(await evaluate(() => window.voxelcraft.routes())));
+const stopsPlaced = await evaluate(() => {
+  const q = window.voxelcraft.quest();
+  const g = window.voxelcraft.game;
+  const origin = g.villages.get(q.origin);
+  const target = g.villages.get(q.target);
+  return [
+    window.voxelcraft.placeStop(origin.x, origin.z),
+    window.voxelcraft.placeStop(target.x, target.z),
+  ];
+});
+console.log('stops placed:', JSON.stringify(stopsPlaced));
+if (!stopsPlaced.every((stop) => stop.ok)) throw new Error('the stops would not go down');
+// Two stops and still no service: a stop is a place, not a line.
+const beforeLine = await evaluate(() => window.voxelcraft.routes());
+console.log('legs with stops and no line:', JSON.stringify(beforeLine));
+if (beforeLine.length !== 0) throw new Error('something ran without a line saying it should');
+console.log('line drawn:', JSON.stringify(await evaluate(() => {
+  const stops = window.voxelcraft.stops();
+  return window.voxelcraft.makeLine(stops.map((stop) => stop.id), '本線');
+})));
+console.log('lines:', JSON.stringify(await evaluate(() => window.voxelcraft.lines())));
+
+// The panel the player actually designs in.
+await page.keyboard.press('KeyN');
+await until(() => window.voxelcraft.game.screens.kind === 'lines');
+console.log('line panel:', JSON.stringify(await page.locator('.lines').innerText()));
+await shot('07w0-line-panel');
+await closeScreen();
+
 // The pair is watched from the village timer, and surveyed once it is.
 await until(`${QUEST_ROUTE}?.missing > 0`, null, 30000);
 const unpaved = await evaluate(() => window.voxelcraft.routes());
@@ -546,6 +584,12 @@ console.log('delivered and learned:', JSON.stringify(await evaluate(() => ({
       : null,
 }))));
 
+// The stops and the line are already down, so the two steps that watch for them fall
+// straight through — but they still have to be *seen* to fall through, because neither is
+// an event anybody fires.
+await until(() => window.voxelcraft.quest().step === 'build_road', null, 30000);
+console.log('tutorial reached:', await evaluate(() => window.voxelcraft.quest().step));
+
 // Lay the road. By hand this is a few hundred blocks, which is a walk, not a smoke test.
 console.log('road blocks laid:', await evaluate(() => window.voxelcraft.buildRoad()));
 await page.waitForFunction(`${QUEST_ROUTE}?.connected === true`, null, { timeout: 30000 });
@@ -560,7 +604,7 @@ await shot('07x-route-linked');
 const throughWalls = await evaluate(() => {
   const g = window.voxelcraft.game;
   const here = window.voxelcraft.village();
-  const route = g.transport.routes.find((r) => r.from === here.id || r.to === here.id);
+  const route = g.transport.routes.find((r) => r.from.town === here.id || r.to.town === here.id);
   if (!route || route.waypoints.length === 0) return null;
   const solid = (x, y, z) => g.world.getBlock(x, y, z) !== 0 && g.world.getBlock(x, y, z) !== 9;
   /** Somewhere near `y` to stand, with two clear cells over it. The line's height is
@@ -594,12 +638,106 @@ if (throughWalls && throughWalls.blocked > 0) {
   throw new Error(`the shipment's line runs through ${throughWalls.blocked} cells nobody can stand in`);
 }
 
-// Every village wants particular goods, and a workshop cannot work without its input.
-// Which pair of villages is worth joining follows from that, so it is worth showing.
+// Every town wants particular goods, and its works cannot work without every one of its
+// raw materials. Which places are worth joining follows from that, so it is worth showing.
 console.log('demand:', JSON.stringify(await evaluate(() =>
   window.voxelcraft.villages().filter((v) => v.discovered).map((v) => ({
-    name: v.name, rank: v.rank, kind: v.kind, makes: v.produces, from: v.input, needs: v.needs,
+    name: v.name, rank: v.rank, makes: v.produces, from: v.inputs,
+    held: v.inputStock, needs: v.needs,
   })))));
+
+// --- a primary industry ------------------------------------------------------
+// The other half of the change. A town makes nothing out of nothing, so every raw material
+// on the map comes from somewhere the player chose to dig — and the tool that chooses is
+// the survey, which counts what is actually in the ground rather than taking the player's
+// word for it.
+await evaluate(() => {
+  const here = window.voxelcraft.village();
+  window.voxelcraft.teleport(here.x, here.z);
+});
+await settled();
+const site = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const here = window.voxelcraft.village();
+  // Outside the town — an industry may not stand on its plateau — and near enough that a
+  // road to it is a road rather than an expedition.
+  for (let radius = 70; radius <= 110; radius += 10) {
+    for (let step = 0; step < 12; step++) {
+      const angle = (step * Math.PI) / 6;
+      const x = Math.round(here.x + Math.cos(angle) * radius);
+      const z = Math.round(here.z + Math.sin(angle) * radius);
+      if (g.world.heightAt(x, z) <= 0) continue;
+      const found = window.voxelcraft.survey(x, z);
+      if (found.length > 0) return { x, z, found };
+    }
+  }
+  return null;
+});
+console.log('deposit found:', JSON.stringify(site));
+if (!site) throw new Error('nowhere within reach of the town supports an industry');
+// The survey is a real judgement, not a formality: a place has to hold enough of the
+// resource *and* hold it densely enough.
+if (site.found.some((d) => d.count <= 0 || d.density <= 0)) {
+  throw new Error(`a deposit reported nothing in it: ${JSON.stringify(site.found)}`);
+}
+const works = await evaluate(([x, z]) => window.voxelcraft.placeIndustry(x, z), [site.x, site.z]);
+console.log('industry built:', JSON.stringify(works));
+if (!works.ok) throw new Error(`the industry would not go up: ${JSON.stringify(works)}`);
+// And no second one on the same deposit: one seam pays once.
+const twice = await evaluate(([x, z]) => window.voxelcraft.placeIndustry(x + 6, z), [site.x, site.z]);
+console.log('a second one on the same deposit:', JSON.stringify(twice));
+if (twice.ok || twice.why !== 'too-close') {
+  throw new Error('two industries were allowed to share one deposit');
+}
+await evaluate(([x, z]) => window.voxelcraft.teleport(x, z + 12), [site.x, site.z]);
+await settled();
+await evaluate(() => {
+  window.voxelcraft.game.player.pitch = -0.1;
+});
+await frame();
+await shot('07z-industry');
+
+// It digs whether or not anybody has come to collect, and says so by filling up.
+await until(() => window.voxelcraft.industries()[0].stock > 0, null, 60000);
+console.log('digging:', JSON.stringify(await evaluate(() => window.voxelcraft.industries())));
+// Nothing can leave it until a stop stands there — the ledger says exactly that.
+const unserved = await evaluate(() => window.voxelcraft.ledger().industries);
+console.log('industry before a stop:', JSON.stringify(unserved));
+if (unserved[0].served) throw new Error('an industry with no stop near it claims to be served');
+
+// A stop at the works, a road to the town, and the works on the town's line.
+const spur = await evaluate(([x, z]) => {
+  const q = window.voxelcraft.quest();
+  const g = window.voxelcraft.game;
+  const town = g.villages.get(q.origin);
+  const stop = window.voxelcraft.placeStop(x, z);
+  if (!stop.ok) return { stop };
+  const blocks = window.voxelcraft.pave(x, z, town.x, town.z, 'gravel', 1);
+  const line = window.voxelcraft.makeLine(
+    [stop.id, window.voxelcraft.stops().find((s) => s.town === q.origin).id],
+    '原料線',
+  );
+  return { stop, blocks, line };
+}, [site.x, site.z]);
+console.log('the raw material line:', JSON.stringify(spur));
+if (!spur.stop.ok) throw new Error(`no stop would go down at the works: ${JSON.stringify(spur)}`);
+await page.waitForFunction(
+  `window.voxelcraft.lines().find((l) => l.name === '原料線')?.legs[0]?.connected === true`,
+  null,
+  { timeout: 60000 },
+);
+console.log('lines now:', JSON.stringify(await evaluate(() => window.voxelcraft.lines())));
+// And the whole point of all of it: the raw material actually reaches the town.
+await page.waitForFunction(
+  `window.voxelcraft.industries()[0].shipped > 0`,
+  null,
+  { timeout: 180000 },
+);
+console.log('the chain running:', JSON.stringify(await evaluate(() => ({
+  industry: window.voxelcraft.industries()[0],
+  town: window.voxelcraft.villages().find((v) => v.id === window.voxelcraft.quest().origin),
+}))));
+await shot('07z2-industry-line');
 
 // Repaving the same road: the route must actually get faster and carry more.
 const dirtRoute = await evaluate(QUEST_ROUTE);
@@ -770,7 +908,11 @@ const strips = await evaluate(() => {
   found.sort((a, b) => a.spread - b.spread);
   const picked = [];
   for (const spot of found) {
-    if (picked.every((p) => Math.hypot(p.x - spot.x, p.z - spot.z) > 50)) picked.push(spot);
+    if (!picked.every((p) => Math.hypot(p.x - spot.x, p.z - spot.z) > 50)) continue;
+    // Virgin ground, too. What the sweep is checked on is that it leaves *one* run, and a
+    // strip with somebody's road already at the edge of it starts with two.
+    if (window.voxelcraft.roadColumnsNear(spot.x, spot.z, 44).length > 0) continue;
+    picked.push(spot);
     if (picked.length === 2) break;
   }
   return picked;
@@ -1025,6 +1167,17 @@ if (pulled) {
   await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'train'`, null, { timeout: 60000 });
   console.log('running again:', await evaluate(QUEST_ROUTE).then((r) => r.vehicle));
 }
+
+// Both of the next two are drawn from where the player is standing — the platforms and the
+// freight on them are only built within drawing distance — so stand at one first. The
+// railway now runs the length of the walk to the hamlet, which is further than the view
+// reaches from wherever the road work left the player.
+await evaluate(() => {
+  const station = window.voxelcraft.stations()[0];
+  if (station) window.voxelcraft.teleport(station.x, station.z + 6);
+});
+await settled();
+await frame();
 
 // And the freight really is out on the rails rather than walking along under them: the
 // mob is a picture of the shipment, and the shipment is where the deck is.
@@ -1859,7 +2012,11 @@ if (back.left !== 2 || back.unlimited !== false || back.badge !== 'none') {
 const ends = await evaluate(() => {
   const g = window.voxelcraft.game;
   const q = window.voxelcraft.quest();
-  const route = g.transport.find(q.origin, q.target);
+  const route = g.transport.routes.find(
+    (r) => (r.from.town === q.origin && r.to.town === q.target)
+      || (r.from.town === q.target && r.to.town === q.origin),
+  );
+  if (!route) return null;
   return {
     fromDoor: route.fromDoor,
     toDoor: route.toDoor,
@@ -1869,7 +2026,8 @@ const ends = await evaluate(() => {
   };
 });
 console.log('route ends:', JSON.stringify(ends));
-if (!ends.startsAtDoor || !ends.endsAtDoor) throw new Error('a route does not run door to door');
+if (!ends) throw new Error('the tutorial leg has gone');
+if (!ends.startsAtDoor || !ends.endsAtDoor) throw new Error('a leg does not run door to door');
 
 // Standing on the road while a shipment runs is the case that used to hang: a visible
 // porter drove the clock, so a mob caught on the ground stopped the line for exactly as
@@ -1985,7 +2143,8 @@ if (!survived?.connected) {
     const g = window.voxelcraft.game;
     const q = window.voxelcraft.quest();
     const route = g.transport.routes.find((r) =>
-      (r.from === q.origin && r.to === q.target) || (r.from === q.target && r.to === q.origin));
+      (r.fromTown === q.origin && r.toTown === q.target)
+      || (r.fromTown === q.target && r.toTown === q.origin));
     if (!route) return null;
     const at = route.gapFrom ?? route.gapTo;
     if (!at) return { gapFrom: route.gapFrom, gapTo: route.gapTo, missing: route.missing };

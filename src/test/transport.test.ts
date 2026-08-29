@@ -703,6 +703,38 @@ describe('transport routes', () => {
     expect(transport.routes[0].connected).toBe(true);
   });
 
+  it('ships to a town that never asked for the goods', () => {
+    const { transport, registry, events, link } = build();
+    // Neither end is on the other's list. That is an ordinary pair of towns — most pairs
+    // are — and a leg between them still has to carry something, or a finished line with
+    // stock at both ends sits reading 「まもなく出発」 for ever with nothing to explain it.
+    registry.get(ID_A)!.needs = [];
+    registry.get(ID_B)!.needs = [];
+    link();
+    run(transport, 3);
+    registry.produce(600);
+    run(transport, 400);
+    expect(events.arrivals.length).toBeGreaterThan(0);
+    // Worth less than a delivery somebody asked for, and worth something.
+    expect(events.arrivals.every((a) => !a.needed)).toBe(true);
+    expect(events.arrivals.every((a) => a.pay > 0)).toBe(true);
+  });
+
+  it('sends nothing to a stop with nothing at it', () => {
+    const { transport, registry, network, link, stopA } = build();
+    const bare = network.addStop({ x: 120, y: GROUND, z: 0 }, null);
+    if (!bare.ok) throw new Error('the fixture could not put its stop down');
+    link(stopA, bare.stop);
+    run(transport, 3);
+    registry.produce(600);
+    const before = registry.get(ID_A)?.stock ?? 0;
+    run(transport, 400);
+    // A junction takes nothing, so a trip that ended there would be a trip whose cargo
+    // stopped existing. Nothing is loaded for it at all.
+    expect(registry.get(ID_A)?.stock).toBe(before);
+    expect(transport.routes[0].delivered).toBe(0);
+  });
+
   it('runs nothing at all until a line says so', () => {
     const { transport } = build();
     // The road is finished and perfect. Nothing has been drawn on it, so nothing moves —

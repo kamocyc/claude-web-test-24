@@ -49,7 +49,7 @@ export const HAUL_COUNT = STAGE_POINTS[0] - 2;
  *  the whole thing is, which is what somebody opening the manual is asking — and keeping
  *  the two in one file is what stops them drifting apart. */
 export const QUEST_STEPS: readonly { step: QuestStep; label: string; detail: string }[] = [
-  { step: 'find_village', label: '村を見つける', detail: 'コンパスの ⌗ を目指して歩く。台地に踏み込むと村名・生産品・欲しがっている物が分かる' },
+  { step: 'find_village', label: '町を見つける', detail: 'コンパスの ⌗ を目指して歩く。台地に踏み込むと町名・工場の加工・欲しがっている物が分かる' },
   { step: 'accept_haul', label: '運搬を引き受ける', detail: '村人に話しかけると、取引画面の一番上に頼み事が出る。積み荷はその場で持たせてくれる' },
   { step: 'deliver_by_hand', label: '人力で運ぶ', detail: `${HAUL_COUNT} 個を担いで分村まで歩き、向こうの村人に納める。分村も地図に載る` },
   { step: 'learn_roads', label: '運送の話を聞く', detail: 'もう一度話しかけると「停留所と路線さえあれば我々が自分で運ぶ」と言う' },
@@ -209,7 +209,7 @@ function best(state: NetworkState, of: (v: VillageRecord) => number): number {
 export const MILESTONES: readonly Milestone[] = [
   {
     id: 'second_route',
-    title: '輸送路をもう 1 本ひらく',
+    title: '路線をもう 1 本ひらく',
     detail: (s) => {
       // Two different situations wear the same title, and only one of them is "lay road".
       // Saying which one it is now is the whole difference between a goal and a number
@@ -260,30 +260,30 @@ export const MILESTONES: readonly Milestone[] = [
   },
   {
     id: 'pave',
-    title: '路線を砂利以上に舗装する',
+    title: '区間を砂利以上に舗装する',
     detail: () => '砂利・丸石・木材・石レンガを道に敷くと荷運びが速くなり、一度に運ぶ量も増える',
     reward: 10,
     done: (s) => linked(s).some((r) => r.quality >= 1.2),
   },
   {
     id: 'grow_big',
-    title: `村を「${RANKS[2]}」に育てる`,
-    detail: (s) => `一番育っている村は今 ${RANKS[Math.min(best(s, (v) => v.stage), RANKS.length - 1)]}`,
+    title: `町を「${RANKS[2]}」に育てる`,
+    detail: (s) => `一番育っている町は今 ${RANKS[Math.min(best(s, (v) => v.stage), RANKS.length - 1)]}`,
     reward: 10,
     done: (s) => s.villages.some((v) => v.stage >= 2),
     marker: (s) => nearest(s, (v) => v.stage === best(s, (w) => w.stage)),
   },
   {
     id: 'three_served',
-    title: '3 つの村を輸送路でつなぐ',
-    detail: (s) => `輸送路につながっている村 ${servedVillages(s).size} / 3`,
+    title: '3 つの町を路線でつなぐ',
+    detail: (s) => `路線につながっている町 ${servedVillages(s).size} / 3`,
     reward: 12,
     done: (s) => servedVillages(s).size >= 3,
   },
   {
     id: 'town',
     title: `${RANKS[3]}をつくる`,
-    detail: (s) => `一番育っている村は今 ${RANKS[Math.min(best(s, (v) => v.stage), RANKS.length - 1)]}`,
+    detail: (s) => `一番育っている町は今 ${RANKS[Math.min(best(s, (v) => v.stage), RANKS.length - 1)]}`,
     reward: 16,
     done: (s) => s.villages.some((v) => v.stage >= 3),
     marker: (s) => nearest(s, (v) => v.stage === best(s, (w) => w.stage)),
@@ -310,7 +310,7 @@ export const MILESTONES: readonly Milestone[] = [
   {
     id: 'capital',
     title: `${RANKS[MAX_STAGE]}をつくる`,
-    detail: (s) => `${RANKS[MAX_STAGE]}になるには何本もの輸送路が要る。今 ${linked(s).length} 本`,
+    detail: (s) => `${RANKS[MAX_STAGE]}になるには何本もの路線が要る。今 ${linked(s).length} 区間`,
     reward: 24,
     done: (s) => s.villages.some((v) => v.stage >= MAX_STAGE),
     marker: (s) => nearest(s, (v) => v.stage === best(s, (w) => w.stage)),
@@ -322,7 +322,7 @@ export const MILESTONES: readonly Milestone[] = [
   {
     id: 'railway',
     title: '鉄道を敷く（線路でつなぎ、両端に駅を建てる）',
-    detail: () => '線路が両方の村に届き、その両端に駅が建つと列車が走る。速さも一度に運ぶ量も上がる',
+    detail: () => '線路が両方の停留所に届き、その両端に駅が建つと列車が走る。速さも一度に運ぶ量も上がる',
     reward: 20,
     done: (s) => linked(s).some((r) => r.vehicle === 'train'),
   },

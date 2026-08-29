@@ -23,7 +23,7 @@
 
 import { blockDef, Block, type BlockId } from '../world/blocks';
 import { CHUNK_SIZE, blockIndex, parseChunkKey, toChunkCoord, toLocalCoord } from '../world/chunk';
-import { VILLAGE_RADIUS } from '../world/generation/village';
+import { OUTPOST_PAD, VILLAGE_RADIUS } from '../world/generation/village';
 import { nearestStreet, onStreet, townExtent } from '../world/generation/districts';
 import type { VillageRecord } from './villages';
 
@@ -44,17 +44,55 @@ export interface SurveyPlace {
   /** The town whose generated streets count as this place's own road. Null for a stop
    *  standing on open ground, which is seeded from the road columns beside it instead. */
   town: VillageRecord | null;
+  /** How far a road column may be from a place with no streets and still be its own.
+   *  Ignored where there is a town, whose streets answer instead. */
+  reach?: number;
 }
 
-/** A town, as a place to survey from. */
+/** Where a road coming from a point first meets a place that has no streets.
+ *
+ *  The rim of its ground, not the middle of it. A stop is a post and the two are the same
+ *  thing; a hamlet is two houses on a pad, and arriving at the middle of one means the
+ *  goods are walked *through* a house to get to the doorway on its far side. */
+function rimOf(place: SurveyPlace, x: number, z: number): RoadPoint {
+  const reach = place.reach ?? STOP_SEED_REACH;
+  const dx = x - place.x;
+  const dz = z - place.z;
+  const distance = Math.hypot(dx, dz);
+  if (distance <= reach || distance === 0) return { x: Math.round(x), z: Math.round(z), y: place.baseY };
+  return {
+    x: Math.round(place.x + (dx / distance) * reach),
+    z: Math.round(place.z + (dz / distance) * reach),
+    y: place.baseY,
+  };
+}
+
+/** A town, as a place to survey from.
+ *
+ *  A hamlet is not one. It has a name and a record like a town's, and none of the street
+ *  grid: it is two houses on a level pad, and handing it a town's twenty-nine blocks of
+ *  generated street means the survey ends at a street that was never built — somewhere out
+ *  on the hillside, at the hamlet's own height rather than the ground's, which is a walk
+ *  drawn seven blocks in the air. So a hamlet is a *place*, and a road arrives at it by
+ *  reaching it. */
 export function townPlace(village: VillageRecord): SurveyPlace {
-  return { id: village.id, x: village.x, z: village.z, baseY: village.baseY, town: village };
+  return {
+    id: village.id,
+    x: village.x,
+    z: village.z,
+    baseY: village.baseY,
+    town: village.outpost ? null : village,
+    ...(village.outpost ? { reach: OUTPOST_REACH } : {}),
+  };
 }
 
 /** How far from a stop a road column may be and still be that stop's own. A stop is a
  *  thing the player put down beside a road, not on one, so the seed has to reach the road
  *  it was put down beside. */
 export const STOP_SEED_REACH = 4;
+/** The same, for a hamlet — which is a handful of buildings on a levelled pad rather than
+ *  a post in the ground, so a road that reaches the pad has reached it. */
+export const OUTPOST_REACH = OUTPOST_PAD;
 
 /** Blocks a player lays to make a road, and how fast a porter walks on each. Bare stone
  *  and dirt are deliberately absent: they are what the world is already made of, so they
@@ -474,7 +512,7 @@ export class RoadNetwork {
   /** Where a road has to arrive to have arrived at a place: the nearest cell of its
    *  town's street grid, or the stop itself when it has no town. */
   private nearestStreet(place: SurveyPlace, x: number, z: number): RoadPoint {
-    if (!place.town) return { x: place.x, z: place.z, y: place.baseY };
+    if (!place.town) return rimOf(place, x, z);
     const at = nearestStreet(place.town, x, z);
     return { x: at.x, z: at.z, y: place.baseY };
   }
@@ -490,9 +528,11 @@ export class RoadNetwork {
    *  of the index. Touching any street is arriving; the road does not have to reach the
    *  middle, and with a grid there is no single arm to reach for. */
   private touchesVillage(place: SurveyPlace, column: RoadPoint): boolean {
-    // A stop with no town owns the road columns beside it and nothing else.
+    // A place with no town owns the road columns beside it and nothing else. One block of
+    // slack past the rim, because the rim is where a road *ends*: requiring the column to
+    // land exactly on it would refuse a road that arrived and stopped.
     if (!place.town) {
-      return Math.hypot(column.x - place.x, column.z - place.z) <= STOP_SEED_REACH;
+      return Math.hypot(column.x - place.x, column.z - place.z) <= (place.reach ?? STOP_SEED_REACH) + 1;
     }
     if (onStreet(place.town, column.x, column.z)) return true;
     const street = this.nearestStreet(place, column.x, column.z);
@@ -539,7 +579,7 @@ export class RoadNetwork {
     const seeds: string[] = [];
     // How far out it is worth looking at all. A town's streets reach across its plateau; a
     // lone stop owns the handful of columns beside it.
-    const reach = place.town ? VILLAGE_RADIUS + 2 : STOP_SEED_REACH;
+    const reach = place.town ? VILLAGE_RADIUS + 2 : (place.reach ?? STOP_SEED_REACH) + 1;
     for (const k of this.columns.keys()) {
       const column = this.point(k);
       if (Math.hypot(column.x - place.x, column.z - place.z) > reach) continue;
