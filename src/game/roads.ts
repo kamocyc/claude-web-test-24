@@ -27,6 +27,35 @@ import { VILLAGE_RADIUS } from '../world/generation/village';
 import { nearestStreet, onStreet, townExtent } from '../world/generation/districts';
 import type { VillageRecord } from './villages';
 
+/** One end of a survey.
+ *
+ *  A village used to be the only thing a road could run between, so the survey took one.
+ *  Now a line's leg runs between two *stops*, and a stop may be in a town or out in the
+ *  country beside an industry — so what the survey needs is the smaller idea: somewhere
+ *  with a name and a position, which may or may not have a town's streets around it.
+ *
+ *  A town is still a place: `townPlace` wraps one, and everything behaves exactly as it
+ *  did. `id` is only a cache key; it has to be stable and unique per place, nothing more. */
+export interface SurveyPlace {
+  id: string;
+  x: number;
+  z: number;
+  baseY: number;
+  /** The town whose generated streets count as this place's own road. Null for a stop
+   *  standing on open ground, which is seeded from the road columns beside it instead. */
+  town: VillageRecord | null;
+}
+
+/** A town, as a place to survey from. */
+export function townPlace(village: VillageRecord): SurveyPlace {
+  return { id: village.id, x: village.x, z: village.z, baseY: village.baseY, town: village };
+}
+
+/** How far from a stop a road column may be and still be that stop's own. A stop is a
+ *  thing the player put down beside a road, not on one, so the seed has to reach the road
+ *  it was put down beside. */
+export const STOP_SEED_REACH = 4;
+
 /** Blocks a player lays to make a road, and how fast a porter walks on each. Bare stone
  *  and dirt are deliberately absent: they are what the world is already made of, so they
  *  could not be told apart from it.
@@ -442,24 +471,31 @@ export class RoadNetwork {
 
   /** Nearest cell of a village's street cross to an arbitrary point. Derived from the
    *  geometry `planVillage` lays down, so no plan has to be built to ask. */
-  private nearestStreet(village: VillageRecord, x: number, z: number): RoadPoint {
-    const at = nearestStreet(village, x, z);
-    return { x: at.x, z: at.z, y: village.baseY };
+  /** Where a road has to arrive to have arrived at a place: the nearest cell of its
+   *  town's street grid, or the stop itself when it has no town. */
+  private nearestStreet(place: SurveyPlace, x: number, z: number): RoadPoint {
+    if (!place.town) return { x: place.x, z: place.z, y: place.baseY };
+    const at = nearestStreet(place.town, x, z);
+    return { x: at.x, z: at.z, y: place.baseY };
   }
 
   /** The cell of a village's street cross nearest a point: where a road has to arrive,
    *  and so where one worth building starts. */
-  streetPoint(village: VillageRecord, x: number, z: number): RoadPoint {
-    return this.nearestStreet(village, x, z);
+  streetPoint(place: SurveyPlace, x: number, z: number): RoadPoint {
+    return this.nearestStreet(place, x, z);
   }
 
   /** A road has arrived when it runs up against the town's own streets — which are
    *  generated, not recorded, so they are read off the grid that laid them rather than out
    *  of the index. Touching any street is arriving; the road does not have to reach the
    *  middle, and with a grid there is no single arm to reach for. */
-  private touchesVillage(village: VillageRecord, column: RoadPoint): boolean {
-    if (onStreet(village, column.x, column.z)) return true;
-    const street = this.nearestStreet(village, column.x, column.z);
+  private touchesVillage(place: SurveyPlace, column: RoadPoint): boolean {
+    // A stop with no town owns the road columns beside it and nothing else.
+    if (!place.town) {
+      return Math.hypot(column.x - place.x, column.z - place.z) <= STOP_SEED_REACH;
+    }
+    if (onStreet(place.town, column.x, column.z)) return true;
+    const street = this.nearestStreet(place, column.x, column.z);
     return this.touches(street, column);
   }
 
@@ -493,20 +529,24 @@ export class RoadNetwork {
     this.cartCache.clear();
   }
 
-  /** The columns that touch a village's own streets: where its road starts, and equally
-   *  where somebody else's road has to end to have arrived. */
-  private seedsFor(village: VillageRecord): string[] {
+  /** The columns that touch a place's own ground: a town's streets, or the few blocks
+   *  around a stop standing on its own. Where its road starts, and equally where somebody
+   *  else's road has to end to have arrived. */
+  private seedsFor(place: SurveyPlace): string[] {
     this.freshen();
-    const cached = this.seedCache.get(village.id);
+    const cached = this.seedCache.get(place.id);
     if (cached) return cached;
     const seeds: string[] = [];
+    // How far out it is worth looking at all. A town's streets reach across its plateau; a
+    // lone stop owns the handful of columns beside it.
+    const reach = place.town ? VILLAGE_RADIUS + 2 : STOP_SEED_REACH;
     for (const k of this.columns.keys()) {
       const column = this.point(k);
-      if (Math.hypot(column.x - village.x, column.z - village.z) > VILLAGE_RADIUS + 2) continue;
-      if (!this.touchesVillage(village, column)) continue;
+      if (Math.hypot(column.x - place.x, column.z - place.z) > reach) continue;
+      if (!this.touchesVillage(place, column)) continue;
       seeds.push(k);
     }
-    this.seedCache.set(village.id, seeds);
+    this.seedCache.set(place.id, seeds);
     return seeds;
   }
 
@@ -528,12 +568,12 @@ export class RoadNetwork {
    *  with the fewest hops stopped being the same thing once climbing cost something. The
    *  whole graph is what the player laid, so this is a few hundred nodes on a finished
    *  road and none at all in a world where nobody has picked up a shovel. */
-  private reachFrom(village: VillageRecord): Map<string, Reached> {
+  private reachFrom(place: SurveyPlace): Map<string, Reached> {
     this.freshen();
-    const cached = this.reachCache.get(village.id);
+    const cached = this.reachCache.get(place.id);
     if (cached) return cached;
-    const reached = this.walk(this.seedsFor(village), null);
-    this.reachCache.set(village.id, reached);
+    const reached = this.walk(this.seedsFor(place), null);
+    this.reachCache.set(place.id, reached);
     return reached;
   }
 
@@ -544,7 +584,7 @@ export class RoadNetwork {
    *  streets are three across, generated, and so never in the index to be counted. Both
    *  ends of every road would otherwise be too narrow for the cart that just drove the
    *  length of it. */
-  private cartReachFrom(from: VillageRecord, to: VillageRecord): Map<string, Reached> {
+  private cartReachFrom(from: SurveyPlace, to: SurveyPlace): Map<string, Reached> {
     this.freshen();
     const pair = `${from.id}|${to.id}`;
     const cached = this.cartCache.get(pair);
@@ -657,7 +697,7 @@ export class RoadNetwork {
   }
 
   /** Walks the road from one village to the other, or reports where it runs out. */
-  survey(from: VillageRecord, to: VillageRecord): SurveyResult {
+  survey(from: SurveyPlace, to: SurveyPlace): SurveyResult {
     const reachFrom = this.reachFrom(from);
     // Arriving means reaching any column that touches the far village's streets, and
     // those are exactly that village's own seeds. Intersecting two sets beats testing
@@ -700,7 +740,7 @@ export class RoadNetwork {
   /** Whether a cart can be pulled the whole way, over the same search restricted to
    *  columns wide enough for one. When it cannot, the pinch is where the wide network
    *  stops on its way to the far village — the place to go and widen. */
-  private surveyCart(from: VillageRecord, to: VillageRecord): CartResult {
+  private surveyCart(from: SurveyPlace, to: SurveyPlace): CartResult {
     const reached = this.cartReachFrom(from, to);
     const arrival = this.arrivalIn(reached, this.seedsFor(to));
     if (arrival !== null) {
@@ -725,10 +765,10 @@ export class RoadNetwork {
    *  road has not been started at all. */
   private frontier(
     reached: Map<string, Reached>,
-    village: VillageRecord,
-    towards: VillageRecord,
+    place: SurveyPlace,
+    towards: SurveyPlace,
   ): RoadPoint {
-    let best = this.nearestStreet(village, towards.x, towards.z);
+    let best = this.nearestStreet(place, towards.x, towards.z);
     let bestDistance = Math.hypot(best.x - towards.x, best.z - towards.z);
     for (const k of reached.keys()) {
       const column = this.point(k);

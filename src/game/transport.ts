@@ -21,7 +21,7 @@
  *  road. */
 
 import { pathAroundPlots } from './buildings';
-import { roadGrade, toWaypoints, type RoadNetwork, type RoadPoint, type SurveyResult } from './roads';
+import { roadGrade, toWaypoints, townPlace, type RoadNetwork, type RoadPoint, type SurveyResult } from './roads';
 import { PASSENGER, type GoodId, type VillageId, type VillageRegistry } from './villages';
 
 /** What is doing the hauling. A cart only runs where the road is three columns wide the
@@ -536,7 +536,7 @@ export class TransportNetwork {
       return true;
     }
 
-    const result: SurveyResult = this.roads.survey(from, to);
+    const result: SurveyResult = this.roads.survey(townPlace(from), townPlace(to));
     if (result.connected) {
       route.connected = true;
       route.everConnected = true;

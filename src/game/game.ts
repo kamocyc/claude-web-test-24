@@ -99,6 +99,7 @@ import {
   ROAD_SPEED,
   RoadNetwork,
   faultText,
+  townPlace,
   type RoadFault,
   type RoadPoint,
 } from './roads';
@@ -3450,8 +3451,8 @@ export class Game {
     // From one village's street to the other's, not centre to centre: the middle of a
     // village is its well and its houses, and a road ploughed through them is neither
     // what a player would build nor pleasant to arrive in.
-    const start = this.roads.streetPoint(from, to.x, to.z);
-    const end = this.roads.streetPoint(to, from.x, from.z);
+    const start = this.roads.streetPoint(townPlace(from), to.x, to.z);
+    const end = this.roads.streetPoint(townPlace(to), from.x, from.z);
     return this.runRoad(start, end, block, start.y, end.y, width);
   }
 
@@ -3461,8 +3462,8 @@ export class Game {
     const to = this.villages.get(toId ?? this.questline.targetId ?? '');
     if (!from || !to) return 0;
     const built = this.layRailway(
-      this.roads.streetPoint(from, to.x, to.z),
-      this.roads.streetPoint(to, from.x, from.z),
+      this.roads.streetPoint(townPlace(from), to.x, to.z),
+      this.roads.streetPoint(townPlace(to), from.x, from.z),
     );
     this.transport.invalidate();
     return Math.round(built.length);
@@ -3756,8 +3757,8 @@ export class Game {
       return null;
     }
 
-    const start = this.roads.streetPoint(from, to.x, to.z);
-    const end = this.roads.streetPoint(to, from.x, from.z);
+    const start = this.roads.streetPoint(townPlace(from), to.x, to.z);
+    const end = this.roads.streetPoint(townPlace(to), from.x, from.z);
     const blocks = this.runRoad(start, end, Block.DIRT_PATH, start.y, end.y, SAMPLE_WIDTH);
     // Then a railway beside it, which is the other half of the demonstration: the same
     // two villages joined by something that does not touch the ground at all. The stretch
@@ -3915,8 +3916,8 @@ export class Game {
    *  street, counted the way `runRoad` walks it, and what fraction of them would be
    *  bridge rather than road. */
   private roadRun(from: VillageRecord, to: VillageRecord): { blocks: number; water: number } {
-    const start = this.roads.streetPoint(from, to.x, to.z);
-    const end = this.roads.streetPoint(to, from.x, from.z);
+    const start = this.roads.streetPoint(townPlace(from), to.x, to.z);
+    const end = this.roads.streetPoint(townPlace(to), from.x, from.z);
     // A road goes up, down, left and right, so its length is the two legs added together
     // rather than the longer of them. Counting the way it used to be walked would pick a
     // pair whose finished road is half again as long as the sample is meant to be.
