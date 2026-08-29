@@ -633,6 +633,7 @@ export class Game {
     this.chunkRenderer.dispose();
     this.trackRenderer.dispose();
     this.hud.root.remove();
+    this.worldMap.dispose();
     this.worldMap.root.remove();
     this.screens.close();
     this.screens.layer.remove();

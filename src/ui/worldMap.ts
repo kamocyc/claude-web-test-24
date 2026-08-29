@@ -67,6 +67,11 @@ export class WorldMap {
    *  it has come since it went down. A press that never moved is a click. */
   private drag: { clientX: number; clientY: number; moved: number } | null = null;
   private onWarp: WarpFromMap | null = null;
+  /** Kept so `dispose` can take them off again. `Game` replaces its whole world — and
+   *  therefore this map — when the player opens another one, and window listeners from
+   *  the world they closed would pile up for the life of the tab. */
+  private readonly onWindowMove = (event: MouseEvent): void => this.dragTo(event);
+  private readonly onWindowUp = (event: MouseEvent): void => this.endDrag(event);
 
   constructor(atlas: Atlas, private readonly onClose: () => void) {
     this.map = new Minimap(atlas, { size: SIZE, scale: DEFAULT_ZOOM, className: 'worldmap-canvas-wrap' });
@@ -76,7 +81,7 @@ export class WorldMap {
     out.addEventListener('click', () => this.zoom(1));
     into.addEventListener('click', () => this.zoom(-1));
     this.homeButton.addEventListener('click', () => this.recentre());
-    this.warpButton.addEventListener('click', () => this.warpToCursor());
+    this.warpButton.addEventListener('click', () => this.warpToPick());
     this.closeButton.addEventListener('click', () => this.onClose());
     bar.append(into, out, this.readout, this.cursorOut, this.warpButton, this.homeButton, this.closeButton);
     // The wheel zooms, which is what every map anybody has used does. Passive false so
@@ -90,10 +95,16 @@ export class WorldMap {
     this.root.style.display = 'none';
   }
 
-  /** Where a warp from the map goes. Null leaves the button saying so rather than doing
-   *  nothing, which is the difference between a locked door and a broken one. */
+  /** What "ここへワープ" does. Whether it is allowed at all is the game's business, not
+   *  this map's: the button is always here and the callback is what says no. */
   bindWarp(onWarp: WarpFromMap): void {
     this.onWarp = onWarp;
+  }
+
+  /** Takes the window listeners off. Called when the world this map belongs to goes. */
+  dispose(): void {
+    window.removeEventListener('mousemove', this.onWindowMove);
+    window.removeEventListener('mouseup', this.onWindowUp);
   }
 
   /** Dragging the canvas moves the paper: the ground follows the hand.
@@ -115,34 +126,39 @@ export class WorldMap {
     wrap.addEventListener('mouseleave', () => {
       this.hover = null;
     });
-    window.addEventListener('mousemove', (event) => {
-      if (!this.drag || !this.open) return;
-      const dx = event.clientX - this.drag.clientX;
-      const dy = event.clientY - this.drag.clientY;
-      const moved = dragBlocks(wrap.getBoundingClientRect(), dx, dy, SIZE, this.map.zoom);
-      this.drag = {
-        clientX: event.clientX,
-        clientY: event.clientY,
-        moved: this.drag.moved + Math.abs(dx) + Math.abs(dy),
-      };
-      if (moved.x === 0 && moved.z === 0) return;
-      this.panX += moved.x;
-      this.panZ += moved.z;
-      // The whole map is re-sampled, exactly as a zoom does it: painting a slice at a time
-      // from here would leave half the picture at the old place and half at the new one.
-      this.map.redrawNow();
-    });
-    window.addEventListener('mouseup', (event) => {
-      const drag = this.drag;
-      if (!drag) return;
-      this.drag = null;
-      wrap.classList.remove('dragging');
-      // A press that went nowhere is a click, and a click picks the place under it. The
-      // slack is for a hand that shifts a pixel on the way up, which is every hand.
-      if (drag.moved > CLICK_SLACK) return;
-      const at = this.placeUnder(event);
-      if (at) this.pick = at;
-    });
+    window.addEventListener('mousemove', this.onWindowMove);
+    window.addEventListener('mouseup', this.onWindowUp);
+  }
+
+  private dragTo(event: MouseEvent): void {
+    if (!this.drag || !this.open) return;
+    const dx = event.clientX - this.drag.clientX;
+    const dy = event.clientY - this.drag.clientY;
+    const rect = this.map.root.getBoundingClientRect();
+    const moved = dragBlocks(rect, dx, dy, SIZE, this.map.zoom);
+    this.drag = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      moved: this.drag.moved + Math.abs(dx) + Math.abs(dy),
+    };
+    if (moved.x === 0 && moved.z === 0) return;
+    this.panX += moved.x;
+    this.panZ += moved.z;
+    // The whole map is re-sampled, exactly as a zoom does it: painting a slice at a time
+    // from here would leave half the picture at the old place and half at the new one.
+    this.map.redrawNow();
+  }
+
+  private endDrag(event: MouseEvent): void {
+    const drag = this.drag;
+    if (!drag) return;
+    this.drag = null;
+    this.map.root.classList.remove('dragging');
+    // A press that went nowhere is a click, and a click picks the place under it. The
+    // slack is for a hand that shifts a pixel on the way up, which is every hand.
+    if (drag.moved > CLICK_SLACK) return;
+    const at = this.placeUnder(event);
+    if (at) this.pick = at;
   }
 
   /** The place a mouse event is over, or null when it is not over the canvas at all. */
@@ -153,7 +169,7 @@ export class WorldMap {
     return this.map.at(at.px, at.py);
   }
 
-  private warpToCursor(): void {
+  private warpToPick(): void {
     if (this.pick) this.onWarp?.(this.pick.x, this.pick.z);
   }
 
