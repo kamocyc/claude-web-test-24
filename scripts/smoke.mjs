@@ -710,6 +710,39 @@ const site = await evaluate(() => {
   }
   return null;
 });
+// --- the town's own fields ---------------------------------------------------
+// The half of the first stage the player never touches. A town ploughs the belt outside
+// its own streets, and what grows there is carried inward from its own depot.
+const fields = await evaluate(() => {
+  window.voxelcraft.plough();
+  return window.voxelcraft.fields();
+});
+console.log('the fields of the town:', JSON.stringify(fields));
+// The one the player is standing at: the only town whose chunks are all in memory, and so
+// the only one whose fields are on the ground rather than only in the plan.
+const farmed = fields.slice().sort((a, b) => a.distance - b.distance)[0];
+if (!farmed) throw new Error('the town underfoot reported no fields');
+if (farmed.parcels < 3) throw new Error(`a town with ${farmed.parcels} parcels is not farming`);
+// About twice the ground its blocks stand on, which is the whole claim the layout makes.
+if (Math.abs(farmed.area - farmed.target) > 300) {
+  throw new Error(`the fields are nowhere near the target: ${JSON.stringify(farmed)}`);
+}
+// And it is on the ground, not only in the plan: soil, wheat and water.
+if (farmed.standing.soil < 500) throw new Error(`only ${farmed.standing.soil} columns were ploughed`);
+if (farmed.standing.crops < 400) throw new Error(`only ${farmed.standing.crops} columns were sown`);
+if (farmed.standing.water < 20) throw new Error(`only ${farmed.standing.water} columns were watered`);
+// Nobody delivers wheat and nobody is asked for it: the crop is the town's own business.
+const asking = await evaluate(() => window.voxelcraft.villages().flatMap((v) => v.needs));
+console.log('what the towns ask for:', JSON.stringify([...new Set(asking)]));
+if (asking.includes('wheat')) throw new Error('a town is still asking the player for wheat');
+// And the crop goes somewhere: out of the depot and into the shops that sell it. The depot
+// itself usually reads zero, because it is a doorway rather than a barn.
+await advance(() => window.voxelcraft.fields().some((entry) => entry.food.shops > 0));
+const carried = await evaluate(() => window.voxelcraft.fields());
+console.log('where the crop went:', JSON.stringify(carried));
+if (!carried.some((entry) => entry.food.shops > 0)) throw new Error('the harvest reached no shop');
+await shot('07y-fields');
+
 console.log('deposit found:', JSON.stringify(site));
 if (!site) throw new Error('nowhere within reach of the town supports an industry');
 // The survey is a real judgement, not a formality: a place has to hold enough of the
@@ -812,7 +845,22 @@ if (!spur.stop.ok) throw new Error(`no stop would go down at the works: ${JSON.s
 if (spur.stop.town !== null) {
   throw new Error(`the works' stop was adopted by a town: ${JSON.stringify(spur.stop)}`);
 }
-await advance(`window.voxelcraft.lines().find((l) => l.name === '原料線')?.legs[0]?.connected === true`);
+try {
+  await advance(`window.voxelcraft.lines().find((l) => l.name === '原料線')?.legs[0]?.connected === true`);
+} catch (error) {
+  console.log('the spur that would not join:', JSON.stringify(await evaluate(() => ({
+    routes: window.voxelcraft.routes(),
+    faults: window.voxelcraft.guide(),
+    gaps: window.voxelcraft.game.transport.routes.map((r) => ({
+      id: r.id, from: r.gapFrom, to: r.gapTo,
+      near: window.voxelcraft.game.roads.columnsIn(
+        (r.gapFrom?.x ?? 0) - 3, (r.gapFrom?.z ?? 0) - 3,
+        (r.gapFrom?.x ?? 0) + 3, (r.gapFrom?.z ?? 0) + 3,
+      ).length,
+    })),
+  }))));
+  throw error;
+}
 console.log('lines now:', JSON.stringify(await evaluate(() => window.voxelcraft.lines())));
 // And the whole point of all of it: the raw material actually reaches the town.
 await advance(`window.voxelcraft.industries()[0].shipped > 0`);

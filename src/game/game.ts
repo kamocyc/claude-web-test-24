@@ -142,6 +142,7 @@ import {
   type Vehicle,
 } from './transport';
 import {
+  FARMED,
   PASSENGER,
   PASSENGER_LABEL,
   STAGE_POINTS,
@@ -170,7 +171,7 @@ import type { LedgerTown, LedgerView } from '../ui/ledger';
 import type { RouteIdle } from '../ui/routePanel';
 import type { LineActions, LinePanelView } from '../ui/linePanel';
 import { helpView, type HelpView } from '../ui/help';
-import { applyFields } from './villageFields';
+import { applyFields, countFields } from './villageFields';
 import { fieldArea, fieldTarget, fieldsAt } from '../world/generation/fields';
 import { applyGrowth, growthChunks, growthFor, growthVillagers, outpostBuildings, ownPaving, roadCrosses } from './villageGrowth';
 import {
@@ -3795,6 +3796,20 @@ export class Game {
     };
   }
 
+  /** Where a town's own crop has got to: the shops that sell it, and the works that bakes
+   *  with it. The one number that says the inward carry is working. */
+  private foodHeld(village: VillageRecord): { shops: number; mill: number } {
+    const town = this.towns.get(village.id);
+    let shops = 0;
+    for (const cell of town?.cells.values() ?? []) {
+      if (cell.use !== 'commercial') continue;
+      for (const good of FARMED) shops += cell.wants.get(good) ?? 0;
+    }
+    let mill = 0;
+    for (const good of FARMED) mill += village.inputStock.get(good) ?? 0;
+    return { shops, mill };
+  }
+
   /** What a line is carrying right now, when it is something other than the route's own
    *  headline good. Only people qualify today, and only they are worth a row: a line the
    *  player built for crates that is quietly running passengers should say so. */
@@ -4225,7 +4240,7 @@ export class Game {
     const here = `${x},${z}`;
     if (this.roads.columns.get(here) === y && this.roads.surfaces.get(here) === surface) return;
     if (this.world.hasChunk(toChunkCoord(x), toChunkCoord(z))) {
-      this.world.setBlock(x, y, z, surface);
+      const changed = this.world.setBlock(x, y, z, surface);
       // Headroom, and then whatever falls into it. Cutting under a dune drops the entire
       // sand column onto the fresh road one block at a time, and a road with something
       // sitting on it is not a road — the index drops it and the route reads as broken.
@@ -4238,19 +4253,35 @@ export class Game {
         }
         if (!cleared) break;
       }
+      // Paving a column that already held this exact block writes nothing and records
+      // nothing — and the index reads the *record*, not the world, so a road nobody
+      // recorded is not a road. Gravel laid over the natural gravel of a riverbed, or over
+      // a village's own paving, is exactly that: one column of it in the middle of a
+      // finished run reads as 「未接続 あと 1m」 with the road plainly on the ground.
+      if (!changed) {
+        this.recordEdit(x, y, z, surface);
+        this.roads.onBlockChanged(x, y, z, surface, surface);
+      }
       return;
     }
+    this.recordEdit(x, y, z, surface);
+    for (let h = 1; h <= HEADROOM; h++) this.recordEdit(x, y + h, z, Block.AIR);
+    this.roads.onBlockChanged(x, y, z, Block.GRASS, surface);
+  }
+
+  /** Writes one cell into the recorded edits without touching the world.
+   *
+   *  For the two cases where the world cannot or need not be written: a chunk that is not
+   *  in memory, and a cell that already holds exactly this block. The index reads the
+   *  record rather than the world, so both of them still have to be recorded. */
+  private recordEdit(x: number, y: number, z: number, block: BlockId): void {
     const key = chunkKey(toChunkCoord(x), toChunkCoord(z));
     let edits = this.world.edits.get(key);
     if (!edits) {
       edits = new Map();
       this.world.edits.set(key, edits);
     }
-    edits.set(blockIndex(toLocalCoord(x), y, toLocalCoord(z)), surface);
-    for (let h = 1; h <= HEADROOM; h++) {
-      edits.set(blockIndex(toLocalCoord(x), y + h, toLocalCoord(z)), Block.AIR);
-    }
-    this.roads.onBlockChanged(x, y, z, Block.GRASS, surface);
+    edits.set(blockIndex(toLocalCoord(x), y, toLocalCoord(z)), block);
   }
 
   /** What to actually lay at a column: never something worse than what is already there.
@@ -4989,6 +5020,11 @@ export class Game {
             target: fieldTarget(village.stage),
             harvest: village.harvest,
             distance: Math.round(Math.hypot(village.x - this.player.x, village.z - this.player.z)),
+            // What the ground actually allowed, which is never quite what was planned.
+            standing: countFields(this.world, this.options.seed, village),
+            // And where the crop got to. The depot is usually empty because it is a
+            // doorway rather than a barn: what is cut is carried in the same breath.
+            food: this.foodHeld(village),
           })),
       /** Ploughs the fields of the town underfoot now, rather than waiting for a chunk to
        *  arrive. Says how much soil it actually turned over, which is the number the

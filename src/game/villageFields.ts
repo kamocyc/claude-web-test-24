@@ -195,3 +195,30 @@ function holdsWater(world: World, x: number, z: number, top: number): boolean {
   }
   return true;
 }
+
+/** What is actually standing in a town's fields right now.
+ *
+ *  The plan says how much land a town works and the economy runs off that; this counts
+ *  what the ground turned out to allow. The two differ wherever a hill, a pond or somebody
+ *  else's road got there first, and that difference is worth being able to see. */
+export function countFields(
+  world: World,
+  seed: number,
+  village: VillageRecord,
+): { soil: number; crops: number; water: number } {
+  const out = { soil: 0, crops: 0, water: 0 };
+  if (village.outpost) return out;
+  for (const parcel of fieldsAt(seed, village, village.stage)) {
+    for (let z = parcel.z0; z < parcel.z0 + parcel.d; z++) {
+      for (let x = parcel.x0; x < parcel.x0 + parcel.w; x++) {
+        const ground = groundAt(world, x, z);
+        if (ground === null) continue;
+        const at = world.getBlock(x, ground, z);
+        if (at === Block.WATER) out.water++;
+        else if (isFarmland(at)) out.soil++;
+        if (cropAt(world.getBlock(x, ground + 1, z))) out.crops++;
+      }
+    }
+  }
+  return out;
+}
