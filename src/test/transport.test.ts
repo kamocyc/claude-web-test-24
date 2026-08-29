@@ -830,6 +830,56 @@ describe('what a detour is worth', () => {
 });
 
 
+describe('a line out to an industry', () => {
+  it('runs the raw material in, and the town starts working', () => {
+    // The whole chain in one leg: something the player dug, a stop beside it, a line into
+    // a town whose works has been waiting for exactly that.
+    const { transport, registry, industries, network, link, stopA } = build({ stocked: false });
+    const beside = network.addStop({ x: 120, y: GROUND, z: 0 }, null);
+    if (!beside.ok) throw new Error('the fixture could not put its stop down');
+    const built = industries.place({ x: 122, y: GROUND, z: 4 }, {
+      kind: 'farm', label: '農場', good: 'wheat', count: 400, density: 0.9, richness: 1,
+    });
+    if (!built.ok) throw new Error('the fixture could not site its industry');
+
+    link(stopA, beside.stop);
+    run(transport, 3);
+    expect(transport.routes[0].connected).toBe(true);
+    // A stop out in the country has no town's streets, so it is joined by the road
+    // actually reaching it — which this one does, because it stands on it.
+    expect(registry.get(ID_A)?.stock).toBe(0);
+
+    for (let t = 0; t < 900; t += 0.5) {
+      industries.produce(0.5);
+      registry.produce(0.5);
+      transport.update(0.5, 10_000, 10_000);
+    }
+    expect(industries.get(built.industry.id)?.shipped).toBeGreaterThan(0);
+    // Wheat went in, and the bakery that could make nothing without it has bread to ship.
+    expect(registry.get(ID_A)?.received).toBeGreaterThan(0);
+    expect(registry.get(ID_A)?.stock).toBeGreaterThan(0);
+  });
+
+  it('brings nothing back, because an industry has nowhere to put it', () => {
+    const { transport, registry, industries, network, link, stopA } = build();
+    const beside = network.addStop({ x: 120, y: GROUND, z: 0 }, null);
+    if (!beside.ok) throw new Error('the fixture could not put its stop down');
+    industries.place({ x: 122, y: GROUND, z: 4 }, {
+      kind: 'farm', label: '農場', good: 'wheat', count: 400, density: 0.9, richness: 1,
+    });
+    link(stopA, beside.stop);
+    run(transport, 3);
+    registry.produce(600);
+    const before = registry.get(ID_A)?.stock ?? 0;
+    for (let t = 0; t < 600; t += 0.5) {
+      industries.produce(0.5);
+      transport.update(0.5, 10_000, 10_000);
+    }
+    // The town's own bread never sets out: a colliery is not a customer.
+    expect(registry.get(ID_A)?.stock).toBeGreaterThanOrEqual(before);
+  });
+});
+
 describe('which end a trip starts from', () => {
   it('starts at the far end when the near one has nothing to work with', () => {
     // B's works is empty and A bakes what B's homes want. Recording the leg the other way

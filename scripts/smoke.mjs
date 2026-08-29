@@ -659,14 +659,17 @@ await settled();
 const site = await evaluate(() => {
   const g = window.voxelcraft.game;
   const here = window.voxelcraft.village();
-  // Outside the town — an industry may not stand on its plateau — and near enough that a
-  // road to it is a road rather than an expedition.
-  for (let radius = 70; radius <= 110; radius += 10) {
-    for (let step = 0; step < 12; step++) {
-      const angle = (step * Math.PI) / 6;
+  // Outside every town — a stop within 72 of one is that town's stop, and what is wanted
+  // here is a stop that serves the works and nothing else — and near enough that a road to
+  // it is a road rather than an expedition.
+  const towns = window.voxelcraft.villages();
+  const clear = (x, z) => towns.every((v) => Math.hypot(v.x - x, v.z - z) > 90);
+  for (let radius = 90; radius <= 150; radius += 10) {
+    for (let step = 0; step < 16; step++) {
+      const angle = (step * Math.PI) / 8;
       const x = Math.round(here.x + Math.cos(angle) * radius);
       const z = Math.round(here.z + Math.sin(angle) * radius);
-      if (g.world.heightAt(x, z) <= 0) continue;
+      if (g.world.heightAt(x, z) <= 0 || !clear(x, z)) continue;
       const found = window.voxelcraft.survey(x, z);
       if (found.length > 0) return { x, z, found };
     }
@@ -721,6 +724,11 @@ const spur = await evaluate(([x, z]) => {
 }, [site.x, site.z]);
 console.log('the raw material line:', JSON.stringify(spur));
 if (!spur.stop.ok) throw new Error(`no stop would go down at the works: ${JSON.stringify(spur)}`);
+// The stop out at the works serves the works and no town: that is the whole point of a
+// stop being a place rather than a village.
+if (spur.stop.town !== null) {
+  throw new Error(`the works' stop was adopted by a town: ${JSON.stringify(spur.stop)}`);
+}
 await page.waitForFunction(
   `window.voxelcraft.lines().find((l) => l.name === '原料線')?.legs[0]?.connected === true`,
   null,

@@ -45,10 +45,14 @@ export function networkSites(
 
   return {
     offers(at: Stop): readonly GoodId[] {
-      const town = townAt(at);
-      if (town) return [town.produces];
+      // The industry first where a stop serves both, because that is the order `load`
+      // hands things over in — and this is what decides which end of a leg is worth
+      // loading first. Saying one thing here and doing another there would put the trip
+      // on the wrong end of the line.
       const works = worksAt(at);
-      return works ? [works.good] : [];
+      if (works) return [works.good];
+      const town = townAt(at);
+      return town ? [town.produces] : [];
     },
 
     wants(at: Stop): readonly GoodId[] {

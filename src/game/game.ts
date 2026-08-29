@@ -339,6 +339,9 @@ const FAULT_REACH = 40;
 /** Milliseconds a frame will spend running the world forward before it gives up on the
  *  rest of the requested speed. Roughly half a 30fps frame. */
 const WORLD_BUDGET_MS = 12;
+/** Stops the town hands over when it explains what a line is. Exactly the two a first
+ *  line needs — the third is the player's to make. */
+const TUTORIAL_STOPS = 2;
 /** What a brand new world hands the player, and how much of each. */
 const STARTING_KIT: readonly string[] = ['oak_planks', 'dirt'];
 const STARTING_COUNT = 32;
@@ -2717,6 +2720,11 @@ export class Game {
       if (this.questline.step === 'find_village') this.ensureOutpost(here);
       this.toast(this.questline.onVillageDiscovered(here));
     }
+    // The industries first: they are the head of the chain, and a works fed this frame
+    // should have something to work with in the same frame rather than the next one.
+    // Unlike a town, an industry digs whether or not anybody has found it — it is
+    // somewhere the player built, so there is nothing left to discover about it.
+    this.industries.produce(dt);
     this.villages.produce(dt);
     // The town runs on the same clock as the village it is inside, and before transport:
     // whoever decided to travel this frame should be on the platform when the line asks.
@@ -2757,6 +2765,22 @@ export class Game {
    *  method so it can be handed to village growth as it stands. */
   private readonly roadLevelAt = (x: number, z: number): number | undefined =>
     this.roads.columns.get(`${x},${z}`);
+
+  /** A stop at a town, made if there is not one there already.
+   *
+   *  Refusing to put a second stop on top of the first is the right answer to a player
+   *  clicking twice and the wrong one here: what the sample world wants is "a stop serves
+   *  this town", and one that is already standing serves it perfectly well. */
+  private stopServing(village: VillageRecord): Stop | null {
+    const placed = this.lines.addStop(
+      { x: village.x, y: village.baseY + 1, z: village.z }, village.id, village.name,
+    );
+    if (placed.ok) {
+      this.buildStopMarker(placed.stop);
+      return placed.stop;
+    }
+    return this.lines.stopNear(village.x, village.z, STOP_TOWN_REACH);
+  }
 
   /** Every addressable building of a village, cached until the village grows or the road
    *  network moves — a house on a plot somebody has since paved is never built, so it
@@ -3773,6 +3797,14 @@ export class Game {
           this.villages.addPoints(village.id, interaction.count);
           this.player.inventory.add({ id: 'emerald', count: 2 });
         }
+        if (interaction.kind === 'learn') {
+          // The town that has just explained stops and lines hands over the first two.
+          // The recipe is a click away and the player would find it — but this is the one
+          // moment the game is teaching the thing everything else hangs off, and sending
+          // them to the crafting screen for two blocks of cobblestone first is sending
+          // them away from the lesson.
+          this.player.inventory.add({ id: 'stop', count: TUTORIAL_STOPS });
+        }
         // Re-supplying does not advance the step, so `complete` says nothing; the player
         // still needs to be told the crate is in their pack.
         this.toast(
@@ -4126,12 +4158,12 @@ export class Game {
     // to show a working service and nothing works without one.
     this.player.inventory.add({ id: 'stop', count: SAMPLE_STOPS });
     this.player.inventory.add({ id: 'industry_kit', count: 1 });
-    const near = this.lines.addStop({ x: from.x, y: from.baseY + 1, z: from.z }, from.id, from.name);
-    const far = this.lines.addStop({ x: to.x, y: to.baseY + 1, z: to.z }, to.id, to.name);
-    if (near.ok && far.ok) {
+    const near = this.stopServing(from);
+    const far = this.stopServing(to);
+    if (near && far) {
       const line = this.lines.createLine('見本線');
-      this.lines.addCall(line.id, near.stop.id);
-      this.lines.addCall(line.id, far.stop.id);
+      this.lines.addCall(line.id, near.id);
+      this.lines.addCall(line.id, far.id);
     }
     this.syncLines();
     this.transport.invalidate();
