@@ -842,6 +842,39 @@ export class Game {
     this.updateTrains();
   }
 
+  /** Runs the world's clock forward without waiting for the frames it would take.
+   *
+   *  Exactly what game speed does — `stepWorld` over and over — with two differences that
+   *  only make sense from a console. There is no frame budget, so it runs the whole span
+   *  asked for rather than as much of it as fits; and the once-every-two-seconds village
+   *  sweep runs along with it, because that sweep is on the *frame* clock rather than the
+   *  world's, and a hundred seconds of world with no sweep in it is a hundred seconds in
+   *  which nothing is discovered and no goal is claimed.
+   *
+   *  This is what makes the browser test runnable in a coffee break. A porter that takes
+   *  forty seconds to walk a road is forty seconds of waiting or forty milliseconds of
+   *  this, and as far as anything under test is concerned they are the same forty seconds:
+   *  the clock is the truth, and this only turns the handle faster.
+   *
+   *  What it cannot skip is chunk generation, which happens on workers and in its own
+   *  time. Anything waiting on the world to *exist* still has to wait. */
+  fastForward(seconds: number, step = 0.5): number {
+    const dt = Math.max(0.05, Math.min(1, step));
+    const steps = Math.max(0, Math.round(Math.max(0, seconds) / dt));
+    for (let i = 0; i < steps; i++) {
+      this.stepWorld(dt);
+      this.villageSearchTimer -= dt;
+      if (this.villageSearchTimer > 0) continue;
+      this.villageSearchTimer = 2;
+      this.villages.ensureNear(this.player.x, this.player.z, 2);
+      this.claimMilestones();
+    }
+    // The commuters are drawn once a frame rather than once a step, so they are caught up
+    // here rather than sixteen times over.
+    if (steps > 0) this.updateCommuters();
+    return steps;
+  }
+
   /** Sets the world's clock speed, and says so. */
   setSpeed(speed: number): number {
     const next = nearestSpeed(speed);
@@ -4788,6 +4821,26 @@ export class Game {
       /** The world's clock speed, and how much of it the machine is keeping up with. */
       speed: () => ({ set: this.options.settings.speed, effective: this.effectiveSpeed }),
       setSpeed: (speed: number): number => this.setSpeed(speed),
+      /** Turns the world's clock by hand. See `fastForward`: the same seconds the game
+       *  would have run, without the wall clock going with them. */
+      fastForward: (seconds: number, step?: number): number => this.fastForward(seconds, step),
+      /** Walks every leg's road again now rather than within `RESURVEY_INTERVAL`. What
+       *  "I have just changed a block, is it joined up yet?" wants to ask. */
+      resurvey: (): number => {
+        this.transport.invalidate();
+        this.transport.update(0, this.player.x, this.player.z);
+        return this.transport.routes.filter((route) => route.connected).length;
+      },
+      /** How far the world is streamed, in chunks. Small is fast: most of what the browser
+       *  test waits for is chunks being generated, and most of what it looks at is under
+       *  its own feet. */
+      renderDistance: (chunks?: number): number => {
+        if (chunks !== undefined) {
+          this.options.settings.renderDistance = Math.max(2, Math.min(16, Math.round(chunks)));
+          this.setRenderDistance(this.options.settings.renderDistance);
+        }
+        return this.options.settings.renderDistance;
+      },
       /** Road the player laid that the index will not have, and why. */
       roadFaults: (radius = FAULT_REACH): RoadFault[] => this.roadFaults(radius),
       /** Widens the quest route's road to what a cart needs, the way walking its length

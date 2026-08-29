@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:economy": "node scripts/smoke.mjs http://localhost:5173/ screenshots --economy"
   },
   "dependencies": {
     "three": "^0.185.1"
