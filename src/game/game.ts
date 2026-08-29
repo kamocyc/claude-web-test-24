@@ -795,6 +795,10 @@ export class Game {
       if (steps < wanted && performance.now() > deadline) break;
     }
     this.effectiveSpeed = steps;
+    // Out here rather than inside the step, because this draws rather than simulates: at
+    // ×16 the town is stepped sixteen times and the people walking across it are put
+    // where they have got to once, which is all a frame can show anyway.
+    this.updateCommuters();
   }
 
   /** One step of everything that is not the player. */
@@ -2473,7 +2477,6 @@ export class Game {
     // whoever decided to travel this frame should be on the platform when the line asks.
     this.towns.update(dt, this.villages.byId.values());
     this.transport.update(dt, this.player.x, this.player.z);
-    this.updateCommuters();
     // The tutorial's road step is finished by the *event* of a route joining up, so a
     // player who lays the road before being told to — the shortest road in the game runs
     // between two villages fifty blocks apart — would reach the step with the event

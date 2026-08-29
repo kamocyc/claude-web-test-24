@@ -229,7 +229,13 @@ export class TownEconomy {
       this.towns.set(village.id, town);
     }
     const buildings = this.source.buildingsOf(village.id);
-    if (town.laidOutAt === village.stage && town.cells.size === buildings.length) return town;
+    // Every id, not just the count: a road laid through one plot takes a building away and
+    // can hand one back in the same breath, and a count that happened to match would leave
+    // the town describing a house that is no longer standing.
+    const same = town.laidOutAt === village.stage
+      && town.cells.size === buildings.length
+      && buildings.every((building) => town.cells.has(building.id));
+    if (same) return town;
     town.laidOutAt = village.stage;
     const seen = new Set<BuildingId>();
     for (const building of buildings) {
