@@ -16,6 +16,7 @@ import {
   HOUSES_PER_STAGE,
   planGrowth,
   planOutpost,
+  dressFor,
   planVillage,
   useForGrowth,
   useForProfession,
@@ -298,5 +299,64 @@ describe('walking along a path', () => {
   it('answers for a path that is one point, and for one that is none', () => {
     expect(pointAlongPath([path[0]], 0.5)).toEqual(path[0]);
     expect(pointAlongPath([], 0.5)).toBeNull();
+  });
+});
+
+describe('seeing what a building is for', () => {
+  /** Every block a plan puts down, collapsed the way the writer collapses it. */
+  function blocks(placements: { x: number; y: number; z: number; b: number }[]): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const p of placements) out.set(`${p.x},${p.y},${p.z}`, p.b);
+    return out;
+  }
+
+  it('leaves a home in the palette its village was built with', () => {
+    const plains = { wall: Block.OAK_PLANKS, corner: Block.OAK_LOG, roof: Block.STONE_BRICKS,
+      floor: Block.OAK_PLANKS, path: Block.DIRT_PATH };
+    expect(dressFor(plains, 'residential')).toEqual(plains);
+    expect(dressFor(plains, 'civic')).toEqual(plains);
+    // A shop and a works change their walls and nothing else.
+    expect(dressFor(plains, 'commercial').wall).not.toBe(plains.wall);
+    expect(dressFor(plains, 'commercial').roof).toBe(plains.roof);
+    expect(dressFor(plains, 'industrial').wall).toBe(Block.COBBLESTONE);
+  });
+
+  it('builds a works with a chimney and a home without one', () => {
+    // Stage 4 raises a works first (see `GROWTH_USES`), stage 1 raises two homes.
+    const works = planGrowth(5, SITE, BASE_Y, 'plains', 4, []);
+    const homes = planGrowth(5, SITE, BASE_Y, 'plains', 1, []);
+    const chimneyOver = (plan: typeof works): boolean => {
+      const laid = blocks(plan.placements);
+      return plan.buildings.some((house) => {
+        // Three above the wall top, which is three above the floor.
+        const top = BASE_Y + 1 + 3;
+        return laid.get(`${house.x0 + 1},${top + 3},${house.z0 + 1}`) === Block.COBBLESTONE;
+      });
+    };
+    expect(chimneyOver(works)).toBe(true);
+    expect(chimneyOver(homes)).toBe(false);
+  });
+
+  it('leaves the village it was generated with alone', () => {
+    // The fixed verification seed pins stage 0 block for block, so nothing about uses may
+    // reach it: no dressing, and above all no chimney.
+    const plan = planVillage(999, SITE, BASE_Y, 'plains');
+    const laid = blocks([...plan.byChunk.values()].flat());
+    const top = BASE_Y + 1 + 3;
+    for (const house of plan.buildings) {
+      expect(laid.get(`${house.x0 + 1},${top + 3},${house.z0 + 1}`)).toBeUndefined();
+    }
+  });
+
+  it('keeps the plot, the doorway and the roof line whatever it is dressed as', () => {
+    // Dressing is paint. If it moved anything, growth would be planning a different
+    // village from the one `villageGrowth.ts` levelled the ground for.
+    const plan = planGrowth(5, SITE, BASE_Y, 'plains', 4, []);
+    for (const house of plan.buildings) {
+      const plot = plan.footprints.find((f) => f.x0 === house.x0 && f.z0 === house.z0);
+      expect(plot).toBeDefined();
+      expect(house.w).toBe(plot!.w);
+      expect(house.d).toBe(plot!.d);
+    }
   });
 });

@@ -195,6 +195,10 @@ interface Building {
   profession: Profession;
   /** Decided by whoever laid this building out, never rolled here — see `BuildingUse`. */
   use: BuildingUse;
+  /** Whether this building is dressed for what it is for: the palette from `dressFor`, and
+   *  a chimney on a works. Only growth sets it — stage 0 is pinned by the verification
+   *  seed and keeps the plain house it was generated as. */
+  dressed?: boolean;
   hasChest: boolean;
   /** Plots already spoken for, so the path out of this door stops rather than running
    *  through the neighbour's wall. */
@@ -298,6 +302,30 @@ interface Palette {
   roof: BlockId;
   floor: BlockId;
   path: BlockId;
+}
+
+/** The palette a building of this use is dressed in.
+ *
+ *  A town whose shops and works looked exactly like its houses would be telling the player
+ *  nothing they could act on, and the ledger is a poor substitute for being able to see
+ *  it from the street. So the walls change and nothing else does: the footprint, the
+ *  doorway, the roof line and the pad are the ones the village already planned, which is
+ *  what keeps this a change of paint rather than a change of layout.
+ *
+ *  Only growth uses this. Stage 0 keeps the palette it was generated with, because the
+ *  fixed verification seed pins that village block for block. */
+export function dressFor(palette: Palette, use: BuildingUse): Palette {
+  if (use === 'commercial') {
+    // A shopfront: the walls go to the roof's stone so the place reads as built rather
+    // than lived in, and the corner posts stay timber so it is still a village.
+    return { ...palette, wall: Block.STONE_BRICKS };
+  }
+  if (use === 'industrial') {
+    // A works: rough stone walls and corners, which is what everything in this game that
+    // is meant to take heat is made of.
+    return { ...palette, wall: Block.COBBLESTONE, corner: Block.STONE_BRICKS };
+  }
+  return palette;
 }
 
 function paletteFor(variant: VillageVariant): Palette {
@@ -491,6 +519,13 @@ function buildHouse(put: PutFn, plan: HouseSink, b: Building, baseY: number, pal
   // Roof with a one block overhang.
   for (let z = z0 - 1; z <= z1 + 1; z++) {
     for (let x = x0 - 1; x <= x1 + 1; x++) put(x, wallTop + 1, z, palette.roof);
+  }
+
+  // A chimney, so a works is a works from across the village rather than from the ledger.
+  // Two blocks over one corner: tall enough to break the roof line, short enough that it
+  // stays inside the plot the pad was levelled for.
+  if (b.dressed && b.use === 'industrial') {
+    for (let h = 2; h <= 3; h++) put(x0 + 1, wallTop + h, z0 + 1, Block.COBBLESTONE);
   }
 
   // Interior fittings.
@@ -744,13 +779,14 @@ export function planGrowth(
         ...footprint,
         facing: slot.facing,
         use,
+        dressed: true,
         profession: PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)],
         hasChest: true,
         taken,
       },
       // The floor level, not the plateau: see the same call in `planVillage`.
       baseY + 1,
-      palette,
+      dressFor(palette, use),
     );
   }
 
