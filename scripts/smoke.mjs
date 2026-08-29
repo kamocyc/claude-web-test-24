@@ -1146,6 +1146,58 @@ await frame();
 const closest = await evaluate(() => document.querySelector('.worldmap-readout')?.textContent ?? '');
 if (!/1 ドット 1 マス/.test(closest)) throw new Error(`the map would not zoom in: ${closest}`);
 console.log('zoomed in:', closest);
+
+// --- dragging it, and picking a place on it ----------------------------------
+// The map used to be pinned to the player. What has to be true now is that it moves, that
+// it moves the right way, and above all that there is a way back — the reason panning was
+// refused for so long is that a map which can lose you is worse than a small one.
+const mapCentre = async () => {
+  const text = await evaluate(() => document.querySelector('.worldmap-readout')?.textContent ?? '');
+  const [x, z] = text.split('·')[0].split(',').map((n) => parseInt(n.trim(), 10));
+  return { x, z };
+};
+const mapBox = () => evaluate(() => {
+  const r = document.querySelector('.worldmap-canvas-wrap').getBoundingClientRect();
+  return { left: r.left, top: r.top, width: r.width, height: r.height };
+});
+const wasAt = await mapCentre();
+const box = await mapBox();
+await page.mouse.move(box.left + box.width / 2, box.top + box.height / 2);
+await page.mouse.down();
+await page.mouse.move(box.left + box.width / 2 - 180, box.top + box.height / 2 - 110, { steps: 12 });
+await page.mouse.up();
+await frame();
+const dragged = await mapCentre();
+console.log('map dragged:', JSON.stringify({ wasAt, dragged }));
+// Dragged left and up, so the paper follows the hand and the view goes right and down.
+if (!(dragged.x > wasAt.x && dragged.z > wasAt.z)) {
+  throw new Error(`the map moved the wrong way: ${JSON.stringify({ wasAt, dragged })}`);
+}
+const wayBack = await evaluate(() => {
+  const b = document.querySelector('.worldmap-home');
+  return { lit: b.classList.contains('away'), disabled: b.disabled };
+});
+if (!wayBack.lit || wayBack.disabled) throw new Error('the map moved and offered no way back');
+await shot('07y8b-map-dragged');
+
+// A click pins a place and names it; the pin is what a warp would go to.
+await page.mouse.click(box.left + box.width * 0.32, box.top + box.height * 0.68);
+await frame();
+const picked = await evaluate(() => document.querySelector('.worldmap-cursor')?.textContent ?? '');
+console.log('map picked:', picked);
+if (!/^選択 -?\d+, -?\d+$/.test(picked)) throw new Error(`clicking the map picked nothing: ${picked}`);
+if (await evaluate(() => document.querySelector('.worldmap-warp').disabled)) {
+  throw new Error('the warp button is still disabled with a place picked');
+}
+
+// Home puts the player back in the middle.
+await page.keyboard.press('Home');
+await frame();
+const recentred = await mapCentre();
+console.log('map home:', JSON.stringify(recentred));
+if (Math.abs(recentred.x - wasAt.x) > 2 || Math.abs(recentred.z - wasAt.z) > 2) {
+  throw new Error(`Home did not come back: ${JSON.stringify({ wasAt, recentred })}`);
+}
 await page.keyboard.press('KeyM');
 await until(() => document.querySelector('.worldmap')?.style.display === 'none');
 console.log('map closed');
