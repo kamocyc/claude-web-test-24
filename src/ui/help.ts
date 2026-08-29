@@ -350,7 +350,7 @@ export function helpView(state: HelpState): HelpView {
       heading: '町の中 — 住宅・商店・工場',
       notes: [
         `村の建物には用途がある: ${USE_LABELS.residential} / ${USE_LABELS.commercial} / ${USE_LABELS.industrial}。村が育つと商店と工場が建つ（工場は煙突で分かる）。`,
-        `${USE_LABELS.residential}には人が住み、${COMMUTE_EVERY} 秒に 1 人ずつ${USE_LABELS.commercial}や${USE_LABELS.industrial}へ働きに出る。近くに立っていれば実際に歩いているのが見える。`,
+        `${USE_LABELS.residential}には人が住み、${USE_LABELS.commercial}や${USE_LABELS.industrial}へ働きに出る。住宅 1 軒あたり ${COMMUTE_EVERY} 秒に 1 人なので、育った町ほど通りがにぎやかになる。近くに立っていれば実際に歩いているのが見える。`,
         `**人が来た建物だけが品物を使う。** 誰も通ってきていない商店は何も欲しがらないし、何も売らない。`,
         `${USE_LABELS.residential}が欲しがる物: ${HOUSEHOLD_GOODS.map(itemLabel).join('・')}。${USE_LABELS.commercial}が欲しがる物: ${SHOP_GOODS.map(itemLabel).join('・')}。${USE_LABELS.industrial}はその村の原料を待つ。`,
         `1 つの建物が持てるのは 1 品目につき ${CELL_STOCK} 個まで。倉庫ではないので、届けた物はいずれ切れてまた欲しがる。`,

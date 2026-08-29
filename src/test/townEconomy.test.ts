@@ -176,13 +176,16 @@ describe('people moving', () => {
     const economy_ = economy(buildings);
     const record = village();
     supply(economy_, record);
-    run(economy_, [record], COMMUTE_WALK + 1);
+    // One home, so somebody sets out every `COMMUTE_EVERY` seconds; the walk is on top.
+    run(economy_, [record], COMMUTE_EVERY + COMMUTE_WALK - 1);
     const t = economy_.get(record.id)!;
     const commute = t.commutes[0];
     expect(commute.from).toBe(buildings[0].id);
     expect(commute.to).toBe(buildings[1].id);
-    // Out to work first, and the job it walked to is filled while it is there.
-    run(economy_, [record], COMMUTE_WALK);
+    // Out to work first. Part of a walk further on it has arrived, and the job it walked
+    // to is filled for as long as it is standing there — a whole walk further and it would
+    // be home again with the job empty, which is the next assertion's job, not this one's.
+    run(economy_, [record], COMMUTE_WALK / 2);
     expect(t.cells.get(buildings[1].id)!.staff).toBeGreaterThan(0);
     expect(t.commutes.some((c) => c.dir === -1)).toBe(true);
   });
@@ -321,5 +324,25 @@ describe('people who want to leave', () => {
     run(fed, [record], JOURNEY_SECONDS * 3);
     run(hungry, [record], JOURNEY_SECONDS * 3);
     expect(hungry.get(record.id)!.waiting).toBeLessThan(fed.get(record.id)!.waiting);
+  });
+});
+
+describe('a town that has grown', () => {
+  it('puts more people on its streets than a small one does', () => {
+    // The claim `COMMUTE_EVERY` makes about itself: a 都市 should *look* like one from the
+    // street, not only in the ledger.
+    const small = economy(town('residential', 'commercial'));
+    const big = economy(town(
+      'residential', 'residential', 'residential', 'residential', 'commercial', 'industrial',
+    ));
+    const record = village({ stage: 4 });
+    supply(small, record);
+    supply(big, record);
+    run(small, [record], COMMUTE_WALK * 4);
+    run(big, [record], COMMUTE_WALK * 4);
+    expect(big.get(record.id)!.commutes.length)
+      .toBeGreaterThan(small.get(record.id)!.commutes.length);
+    // And never more than the town will draw.
+    expect(big.get(record.id)!.commutes.length).toBeLessThanOrEqual(MAX_COMMUTERS);
   });
 });

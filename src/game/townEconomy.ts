@@ -53,8 +53,8 @@ export interface TownSource {
 
 /** People living in one home, and jobs in one shop or works, at stage 0.
  *
- *  A stage adds one to each, so a 都市 is roughly twice the town a 集落 was — enough that
- *  growth is visible in the traffic, not so much that a finished network drowns in it. */
+ *  A stage adds one to each, so a 都市 is roughly twice the town a 集落 was per building —
+ *  and it has more buildings, which is where most of the difference comes from. */
 export const HOME_PEOPLE = 4;
 export const SHOP_JOBS = 2;
 export const WORKS_JOBS = 3;
@@ -76,10 +76,14 @@ export const TRADE_SECONDS = 240;
  *  villager actually covers is the view's problem — the view is allowed to hurry to catch
  *  its commute up exactly as a porter does. */
 export const COMMUTE_WALK = 20;
-/** Seconds between people setting out from a town's homes. Shorter than the walk, so a
- *  town has several people on its streets at once and reads as somewhere busy rather than
- *  as somewhere with one person in it. */
-export const COMMUTE_EVERY = 8;
+/** Seconds between people setting out, per home in the town.
+ *
+ *  Divided by the number of homes, so a 都市 with six of them puts somebody on the street
+ *  every four seconds and a 集落 with one manages it every twenty-four. That is the point:
+ *  a town that has grown should *look* like it, and the population numbers alone are a
+ *  thing you have to open the ledger to read. Shorter than `COMMUTE_WALK` at any size, so
+ *  there is always more than one person out. */
+export const COMMUTE_EVERY = 24;
 /** How much longer a hungry home takes over all of that. A town nobody supplies does not
  *  stop — it slows down, which reads as somewhere going quiet rather than somewhere
  *  broken. */
@@ -96,9 +100,13 @@ export const CELL_STOCK = 8;
 /** The most people waiting for a train out of one town. */
 export const MAX_WAITING = 32;
 /** How many people may be walking across one town at once. Beyond this the town is busy
- *  and the rest wait their turn — a cap so a 都市 does not put sixty villagers on one
- *  street. */
-export const MAX_COMMUTERS = 8;
+ *  and the rest wait their turn.
+ *
+ *  A drawing limit rather than an economic one: every commute inside the town the player
+ *  is standing in is a villager mob, and a 都市 that sent everybody out at once would be
+ *  sixty of them on one street. Set above what the rate above actually reaches at any
+ *  stage, so it guards the extreme instead of deciding the traffic. */
+export const MAX_COMMUTERS = 12;
 
 /** What a home eats. Every one of these is either something the land yields or something
  *  a workshop makes, so a demand always has a supplier somewhere on the map. */
@@ -369,7 +377,7 @@ export class TownEconomy {
     // ticking over quietly instead of falling off the map.
     const fed = homes.some((home) => !hungry(home));
     town.commuteProgress += dt;
-    const every = COMMUTE_EVERY * (fed ? 1 : HUNGRY_FACTOR);
+    const every = (COMMUTE_EVERY / homes.length) * (fed ? 1 : HUNGRY_FACTOR);
     while (town.commuteProgress >= every && town.commutes.length < MAX_COMMUTERS) {
       town.commuteProgress -= every;
       const pick = mulberry32(hashInts(
