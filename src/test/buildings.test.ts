@@ -17,16 +17,16 @@ import {
   type HouseRecord,
 } from '../world/generation/village';
 import { Block } from '../world/blocks';
-import { villageTrade, type VillageRecord } from '../game/villages';
+import { townCraft, type VillageRecord } from '../game/villages';
 
 const SITE = { cellX: 0, cellZ: 0, x: 100, z: 200 };
 const BASE_Y = 60;
 
 function village(): VillageRecord {
-  const trade = villageTrade(1, SITE.x, SITE.z, 'plains');
+  const craft = townCraft(1, SITE.x, SITE.z);
   return {
     id: '100,200', x: SITE.x, z: SITE.z, baseY: BASE_Y, variant: 'plains', name: '麦',
-    kind: trade.kind, produces: trade.produces, input: trade.input, inputStock: 0,
+    produces: craft.produces, inputs: craft.inputs, inputStock: new Map(),
     needs: [], stage: 0, points: 0, stock: 0, received: 0,
     discovered: true, spawnedStage: 0, progress: 0,
   };

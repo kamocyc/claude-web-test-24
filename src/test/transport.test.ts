@@ -13,7 +13,6 @@ import {
   payFor,
   portersFor,
   STALL_WAIT,
-  type DepotSource,
   type Porter,
   type PorterHost,
   type RailSource,
@@ -23,6 +22,9 @@ import {
   type Vehicle,
 } from '../game/transport';
 import { STREET_REACH, RoadNetwork, roadGrade, type RoadPoint, type RoadWorld } from '../game/roads';
+import { LineNetwork, type Stop } from '../game/lines';
+import { IndustryRegistry } from '../game/industry';
+import { networkSites, type DepotSource } from '../game/sites';
 import {
   MAX_STAGE,
   PASSENGER,
@@ -43,9 +45,11 @@ const TO = 240 - STREET_REACH - 1;
 
 
 const GROUND = 60;
-/** The same pair `villages.test.ts` pins: A grows wheat, B bakes it into bread and can
- *  make nothing without it, and A wants the bread back. One road, a whole chain. */
-const SEED = 34;
+/** The same pair `villages.test.ts` pins: A bakes bread out of wheat, B blows glass out of
+ *  sand and coal, and each of them wants what the other makes. Both are starved until
+ *  something feeds them, because every town in this game is — so `build` stocks their works
+ *  unless a test is about what happens when it does not. */
+const SEED = 263;
 const A: VillageSeed = { x: 0, z: 0, baseY: GROUND, variant: 'plains' };
 const B: VillageSeed = { x: 240, z: 0, baseY: GROUND, variant: 'snowy' };
 const ID_A = villageId(0, 0);
@@ -202,6 +206,10 @@ interface BuildOptions {
    *  crates. Null everywhere else, which is a village with no town in it — exactly what
    *  every test here was before people existed. */
   town?: FakeTown | null;
+  /** Whether the two towns' works start with raw material in them. True everywhere except
+   *  the tests that are about a starved works, which is the state a town is in until the
+   *  player has built an industry and a line to it. */
+  stocked?: boolean;
 }
 
 /** The villages' streets end at x=30 and x=(TO + 1), and a road connects by touching one, so
@@ -239,7 +247,20 @@ class FakeTown {
   }
 }
 
-function build({ surface = Block.DIRT_PATH, host, width = 1, rails, depots, town }: BuildOptions = {}) {
+/** Fills a town's works, without paying it for the delivery.
+ *
+ *  `deliver` would do it and would also bank the points, which raises the stage, which
+ *  changes both how fast the works runs and what the town asks for — none of which any
+ *  test here is about. */
+function stock(registry: VillageRegistry, id: string): void {
+  const record = registry.get(id);
+  if (!record) return;
+  for (const good of record.inputs) record.inputStock.set(good, 64);
+}
+
+function build({
+  surface = Block.DIRT_PATH, host, width = 1, rails, depots, town, stocked = true,
+}: BuildOptions = {}) {
   const world = new FakeWorld();
   const span = Math.floor((width - 1) / 2);
   if (surface !== null) {
@@ -255,7 +276,7 @@ function build({ surface = Block.DIRT_PATH, host, width = 1, rails, depots, town
   registry.discover(ID_B);
   const events: {
     arrivals: { good: string; count: number; needed: boolean; pay: number; to: string }[];
-    stages: number[];
+    stages: { id: string; stage: number }[];
     connected: number;
     disconnected: number;
   } = { arrivals: [], stages: [], connected: 0, disconnected: 0 };
@@ -263,16 +284,72 @@ function build({ surface = Block.DIRT_PATH, host, width = 1, rails, depots, town
     onArrival: (arrival) =>
       events.arrivals.push({
         good: arrival.good, count: arrival.count, needed: arrival.needed,
-        pay: arrival.pay, to: arrival.to,
+        pay: arrival.pay, to: arrival.to.town ?? '',
       }),
-    onStageUp: (_id, stage) => events.stages.push(stage),
+    onStageUp: (at, stage) => events.stages.push({ id: at.town ?? '', stage }),
     onConnected: () => events.connected++,
     onDisconnected: () => events.disconnected++,
   };
+  if (stocked) {
+    stock(registry, ID_A);
+    stock(registry, ID_B);
+  }
+  const industries = new IndustryRegistry();
+  const network = new LineNetwork();
+  const placedA = network.addStop({ x: A.x, y: GROUND, z: A.z }, ID_A, 'A');
+  const placedB = network.addStop({ x: B.x, y: GROUND, z: B.z }, ID_B, 'B');
+  if (!placedA.ok || !placedB.ok) throw new Error('the fixture could not put its stops down');
+  const stopA: Stop = placedA.stop;
+  const stopB: Stop = placedB.stop;
   const transport = new TransportNetwork(
-    roads, registry, handlers, host ?? null, depots ?? null, rails ?? null,
+    roads,
+    networkSites(registry, industries, depots ?? null),
+    handlers,
+    host ?? null,
+    rails ?? null,
   );
-  return { world, roads, registry, transport, events };
+  /** Draws the line the rest of the test runs on, and hands back its one leg.
+   *
+   *  Every test in this file used to start by naming a pair of villages, because a road
+   *  between two of them *was* a route. Now it starts by drawing a service, which is the
+   *  whole change: the road can be finished and perfect and nothing moves over it until
+   *  this has been called. */
+  const link = (...stops: Stop[]): Route => {
+    const line = network.createLine();
+    for (const stop of stops.length > 0 ? stops : [stopA, stopB]) network.addCall(line.id, stop.id);
+    transport.syncLines(network);
+    return transport.routes[transport.routes.length - 1];
+  };
+  return { world, roads, registry, industries, network, transport, events, link, stopA, stopB };
+}
+
+/** A transport network over a road somebody else laid, with doors of the test's choosing.
+ *
+ *  `build` lays its own road and is what most of this file wants; this is for the handful
+ *  of tests that lay a peculiar one first and then need a service over it. */
+function wire(
+  roads: RoadNetwork,
+  depots: DepotSource | null = null,
+  registry = new VillageRegistry(SEED, SOURCE),
+) {
+  registry.ensureNear(0, 0);
+  registry.discover(ID_A);
+  registry.discover(ID_B);
+  const network = new LineNetwork();
+  const placedA = network.addStop({ x: A.x, y: GROUND, z: A.z }, ID_A, 'A');
+  const placedB = network.addStop({ x: B.x, y: GROUND, z: B.z }, ID_B, 'B');
+  if (!placedA.ok || !placedB.ok) throw new Error('the fixture could not put its stops down');
+  const transport = new TransportNetwork(
+    roads, networkSites(registry, new IndustryRegistry(), depots), {}, null, null,
+  );
+  const link = (): Route => {
+    const line = network.createLine();
+    network.addCall(line.id, placedA.stop.id);
+    network.addCall(line.id, placedB.stop.id);
+    transport.syncLines(network);
+    return transport.routes[transport.routes.length - 1];
+  };
+  return { registry, network, transport, link };
 }
 
 /** Depots a little way off the line, so that the walk between a doorway and the platform
@@ -292,16 +369,16 @@ function run(transport: TransportNetwork, seconds: number, step = 0.5): void {
 
 describe('transport routes', () => {
   it('surveys a paved route as connected', () => {
-    const { transport, events } = build();
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, events, link } = build();
+    link();
     run(transport, 3);
     expect(transport.routes[0].connected).toBe(true);
     expect(events.connected).toBe(1);
   });
 
   it('reports the gap when the road is unfinished', () => {
-    const { transport } = build({ surface: null });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = build({ surface: null });
+    link();
     run(transport, 3);
     const route = transport.routes[0];
     expect(route.connected).toBe(false);
@@ -310,16 +387,19 @@ describe('transport routes', () => {
     expect(route.gapTo).not.toBeNull();
   });
 
-  it('does not register the same pair twice, in either direction', () => {
-    const { transport } = build();
-    transport.requestRoute(ID_A, ID_B);
-    transport.requestRoute(ID_B, ID_A);
-    expect(transport.routes).toHaveLength(1);
+  it('runs one leg per line, even when two lines cover the same ground', () => {
+    const { transport, link, stopA, stopB } = build();
+    link();
+    // Two services over one road is two services. That is not a duplicate — it is what a
+    // player builds when one line is the through working and the other is the local.
+    link(stopB, stopA);
+    expect(transport.routes).toHaveLength(2);
+    expect(new Set(transport.routes.map((route) => route.lineId)).size).toBe(2);
   });
 
   it('delivers goods after the walk takes as long as the road is long', () => {
-    const { transport, registry, events } = build();
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, events, link } = build();
+    link();
     run(transport, 3);
     const route = transport.routes[0];
     // A road laid block by block is exactly the baseline: no gaps, nothing paved over.
@@ -332,59 +412,62 @@ describe('transport routes', () => {
 
     run(transport, route.length / PORTER_SPEED);
     expect(events.arrivals[0].count).toBe(BASE_LOAD);
-    expect(events.arrivals[0].good).toBe('wheat');
+    expect(events.arrivals[0].good).toBe('bread');
     expect(registry.get(ID_B)?.points).toBeGreaterThan(0);
   });
 
-  it('is worth more to the far village when it asked for the goods', () => {
-    const { transport, registry, events } = build();
-    transport.requestRoute(ID_A, ID_B);
+  it('is worth more to the far town when it asked for the goods', () => {
+    const { transport, registry, events, link } = build();
+    link();
     run(transport, 3);
     registry.produce(600);
     run(transport, 200);
-    // The workshop's input is the one thing it is desperate for.
+    // B's homes are the ones asking for bread, which is what makes the haul worth more.
     expect(events.arrivals[0].needed).toBe(true);
     expect(events.arrivals[0].pay).toBeGreaterThan(0);
-    expect(registry.get(ID_B)?.inputStock).toBeGreaterThan(0);
+    expect(registry.get(ID_B)?.received).toBeGreaterThan(0);
   });
 
   it('brings back what the origin wants instead of walking home empty', () => {
-    const { transport, registry, events } = build();
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, events, link } = build();
+    link();
     run(transport, 3);
     registry.produce(600);
-    // Long enough for the workshop to have baked some of the wheat that arrived.
+    // Long enough for B to have blown some of the glass A is asking for.
     for (let t = 0; t < 600; t += 0.5) {
       registry.produce(0.5);
       transport.update(0.5, 10_000, 10_000);
     }
     const home = events.arrivals.filter((a) => a.to === ID_A);
     expect(home.length).toBeGreaterThan(0);
-    expect(home[0].good).toBe('bread');
+    expect(home[0].good).toBe('glass');
   });
 
   it('raises the destination one stage once enough has arrived', () => {
-    const { transport, registry, events } = build();
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, events, link } = build();
+    link();
     run(transport, 3);
     registry.produce(6000);
     run(transport, 400);
-    expect(events.stages[0]).toBe(1);
+    // Both ends grow, because each is buying what the other makes — so the ranks are
+    // counted per town rather than in one heap.
+    const grown = events.stages.filter((entry) => entry.id === ID_B).map((entry) => entry.stage);
+    expect(grown[0]).toBe(1);
     // Ranks arrive in order and never repeat.
-    expect(events.stages).toEqual([...events.stages].sort((a, b) => a - b));
-    expect(new Set(events.stages).size).toBe(events.stages.length);
+    expect(grown).toEqual([...grown].sort((a, b) => a - b));
+    expect(new Set(grown).size).toBe(grown.length);
   });
 
   it('needs stock before it dispatches anything', () => {
-    const { transport, events } = build();
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, events, link } = build();
+    link();
     run(transport, 200);
     expect(events.arrivals).toHaveLength(0);
   });
 
   it('keeps a porter between the two ends and sends it home again', () => {
-    const { transport, registry } = build();
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, link } = build();
+    link();
     run(transport, 3);
     registry.produce(600);
     for (let i = 0; i < 400; i++) {
@@ -406,12 +489,8 @@ describe('transport routes', () => {
     for (let x = FROM; x <= TO; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    const registry = new VillageRegistry(SEED, SOURCE);
-    registry.ensureNear(0, 0);
-    registry.discover(ID_A);
-    registry.discover(ID_B);
-    const transport = new TransportNetwork(roads, registry, {}, null, doors);
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = wire(roads, doors);
+    link();
     run(transport, 3);
 
     const route = transport.routes[0];
@@ -441,12 +520,8 @@ describe('transport routes', () => {
     for (let x = FROM; x <= TO; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    const registry = new VillageRegistry(SEED, SOURCE);
-    registry.ensureNear(0, 0);
-    registry.discover(ID_A);
-    registry.discover(ID_B);
-    const transport = new TransportNetwork(roads, registry, {}, null, doors);
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = wire(roads, doors);
+    link();
     run(transport, 3);
 
     const route = transport.routes[0];
@@ -469,8 +544,8 @@ describe('transport routes', () => {
   });
 
   it('runs between village centres when nothing names a door', () => {
-    const { transport } = build();
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = build();
+    link();
     run(transport, 3);
     expect(transport.routes[0].connected).toBe(true);
     expect(transport.routes[0].fromDoor).toBeNull();
@@ -478,8 +553,8 @@ describe('transport routes', () => {
 
   it('delivers on time with somebody watching a porter that cannot move', () => {
     const stuck = new StuckHost();
-    const { transport, registry, events } = build({ host: stuck });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, events, link } = build({ host: stuck });
+    link();
     run(transport, 3);
     registry.produce(600);
     const route = transport.routes[0];
@@ -498,8 +573,8 @@ describe('transport routes', () => {
   it('sends the cargo home when the road is dug up mid-journey', () => {
     // One column out of a finished road is a hole, and a road with a hole in it is two
     // roads — which is exactly what a player with a pickaxe does to one.
-    const { world, roads, transport, registry, events } = build();
-    transport.requestRoute(ID_A, ID_B);
+    const { world, roads, transport, registry, events, link } = build();
+    link();
     run(transport, 3);
     registry.produce(600);
     const stockBefore = registry.get(ID_A)?.stock ?? 0;
@@ -518,8 +593,8 @@ describe('transport routes', () => {
   });
 
   it('stops delivering once the road is gone', () => {
-    const { world, roads, transport, registry, events } = build();
-    transport.requestRoute(ID_A, ID_B);
+    const { world, roads, transport, registry, events, link } = build();
+    link();
     run(transport, 3);
     world.lay(110, GROUND, 0, Block.AIR);
     roads.onBlockChanged(110, GROUND, 0, Block.DIRT_PATH, Block.AIR);
@@ -529,8 +604,8 @@ describe('transport routes', () => {
   });
 
   it('stops banking stages at the cap', () => {
-    const { transport, registry } = build();
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, link } = build();
+    link();
     run(transport, 3);
     for (let t = 0; t < 20_000; t += 0.5) {
       registry.produce(0.5);
@@ -543,8 +618,8 @@ describe('transport routes', () => {
   it('carries more, and faster, on a better surface', () => {
     const dirt = build();
     const paved = build({ surface: Block.STONE_BRICKS });
-    dirt.transport.requestRoute(ID_A, ID_B);
-    paved.transport.requestRoute(ID_A, ID_B);
+    dirt.link();
+    paved.link();
     run(dirt.transport, 3);
     run(paved.transport, 3);
     const plain = dirt.transport.routes[0];
@@ -579,54 +654,60 @@ describe('transport routes', () => {
     expect(payFor(1, 1, false)).toBeGreaterThanOrEqual(1);
   });
 
-  it('round trips through a save without storing the road', () => {
-    const { transport } = build();
-    transport.requestRoute(ID_A, ID_B);
-    const saved = transport.toJSON();
-    expect(saved).toEqual([{ from: ID_A, to: ID_B }]);
-
-    const fresh = build();
-    fresh.transport.loadJSON(saved);
-    run(fresh.transport, 3);
-    // The road is re-surveyed from the edits, so a reloaded world keeps its route.
-    expect(fresh.transport.routes[0].connected).toBe(true);
+  it('keeps a leg that is still the same leg when the line is edited', () => {
+    const { transport, network, link, stopA } = build();
+    const route = link();
+    run(transport, 3);
+    route.delivered = 7;
+    // Adding a call at the end of a line leaves the leg before it exactly where it was.
+    // Throwing that away would mean editing the far end of a line stopped the near end.
+    const line = [...network.lines.values()][0];
+    network.addCall(line.id, stopA.id);
+    transport.syncLines(network);
+    expect(transport.routes[0]).toBe(route);
+    expect(transport.routes[0].delivered).toBe(7);
   });
 
-  it('restores a route even before its villages are re-derived from the seed', () => {
-    const world = new FakeWorld();
-    const roads = new RoadNetwork(world);
-    const registry = new VillageRegistry(1, SOURCE);
-    const transport = new TransportNetwork(roads, registry);
-    transport.loadJSON([{ from: ID_A, to: ID_B }]);
-    expect(transport.routes).toHaveLength(1);
+  it('hands the cargo back when a leg stops existing', () => {
+    const { transport, registry, network, link } = build();
+    link();
+    run(transport, 3);
+    registry.produce(600);
+    run(transport, 20);
+    const carried = transport.routes[0].porters.reduce((sum, p) => sum + p.cargo, 0);
+    expect(carried).toBeGreaterThan(0);
+    const before = (registry.get(ID_A)?.stock ?? 0) + (registry.get(ID_B)?.stock ?? 0);
+
+    for (const line of [...network.lines.keys()]) network.deleteLine(line);
+    transport.syncLines(network);
+    expect(transport.routes).toHaveLength(0);
+    // Editing a line should cost time, not cargo.
+    expect((registry.get(ID_A)?.stock ?? 0) + (registry.get(ID_B)?.stock ?? 0))
+      .toBe(before + carried);
   });
 
-  it('keeps trying to survey a route whose villages are not known yet', () => {
+  it('surveys a leg the moment it is drawn, wherever its towns are', () => {
     const world = new FakeWorld();
-    for (let x = FROM; x <= TO; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    // Right up to both stops, because a stop with no town behind it has no streets of its
+    // own for a road to arrive at: it owns the few columns beside it and nothing more.
+    for (let x = 0; x <= 240; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    // A save restores routes before the player has walked near enough for the villages
-    // to be re-derived from the seed.
+    // A stop carries its own position, so a leg is walkable even in a session where
+    // nobody has been near either town yet. That used to need two sweeps and a special
+    // case; now it needs neither.
     const registry = new VillageRegistry(1, { villagesAround: () => [] });
-    const transport = new TransportNetwork(roads, registry);
-    transport.loadJSON([{ from: ID_A, to: ID_B }]);
-    run(transport, 6);
-    expect(transport.routes[0].connected).toBe(false);
-
-    // Once they are known, the very next sweep must pick the route up without anybody
-    // having to touch a road block.
-    const late = new VillageRegistry(1, SOURCE);
-    late.ensureNear(0, 0);
-    const revived = new TransportNetwork(roads, late);
-    revived.loadJSON([{ from: ID_A, to: ID_B }]);
-    run(revived, 6);
-    expect(revived.routes[0].connected).toBe(true);
+    const { transport, link } = wire(roads, null, registry);
+    link();
+    run(transport, 3);
+    expect(transport.routes[0].connected).toBe(true);
   });
 
-  it('ignores a missing or malformed save', () => {
+  it('runs nothing at all until a line says so', () => {
     const { transport } = build();
-    transport.loadJSON(undefined);
+    // The road is finished and perfect. Nothing has been drawn on it, so nothing moves —
+    // which is the whole of the change this file exists to describe.
+    run(transport, 6);
     expect(transport.routes).toHaveLength(0);
   });
 });
@@ -634,15 +715,15 @@ describe('transport routes', () => {
 
 describe('a cart on a wide road', () => {
   it('runs where the road is three columns across', () => {
-    const { transport } = build({ width: 3 });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = build({ width: 3 });
+    link();
     run(transport, 3);
     expect(transport.routes[0].vehicle).toBe('cart');
   });
 
   it('walks where it is not', () => {
-    const { transport } = build({ width: 1 });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = build({ width: 1 });
+    link();
     run(transport, 3);
     expect(transport.routes[0].vehicle).toBe('porter');
     expect(transport.routes[0].cartPinch).not.toBeNull();
@@ -650,10 +731,10 @@ describe('a cart on a wide road', () => {
 
   it('carries three times as much', () => {
     const wide = build({ width: 3 });
-    wide.transport.requestRoute(ID_A, ID_B);
+    wide.link();
     run(wide.transport, 3);
     const narrow = build({ width: 1 });
-    narrow.transport.requestRoute(ID_A, ID_B);
+    narrow.link();
     run(narrow.transport, 3);
     expect(wide.transport.loadOf(wide.transport.routes[0])).toBe(
       narrow.transport.loadOf(narrow.transport.routes[0]) * CART_LOAD,
@@ -661,8 +742,8 @@ describe('a cart on a wide road', () => {
   });
 
   it('goes back to walking when one block of the width is dug up, without losing cargo', () => {
-    const { world, roads, transport, registry, events } = build({ width: 3 });
-    transport.requestRoute(ID_A, ID_B);
+    const { world, roads, transport, registry, events, link } = build({ width: 3 });
+    link();
     registry.produce(600);
     run(transport, 30);
     expect(transport.routes[0].vehicle).toBe('cart');
@@ -693,7 +774,7 @@ describe('what a detour is worth', () => {
     // road, which paid *more* for a road that wandered.
     expect(payFor(400, 4, false)).toBe(payFor(400, 4, false));
     const straight = build();
-    straight.transport.requestRoute(ID_A, ID_B);
+    straight.link();
     run(straight.transport, 3);
     const direct = straight.transport.routes[0].direct;
 
@@ -703,7 +784,7 @@ describe('what a detour is worth', () => {
     for (let x = FROM; x <= TO; x++) winding.world.lay(x, GROUND, 60, Block.DIRT_PATH);
     for (let z = 0; z <= 60; z++) winding.world.lay(TO, GROUND, z, Block.DIRT_PATH);
     winding.roads.seedFromEdits();
-    winding.transport.requestRoute(ID_A, ID_B);
+    winding.link();
     run(winding.transport, 3);
 
     const route = winding.transport.routes[0];
@@ -718,14 +799,15 @@ describe('what a detour is worth', () => {
 
 
 describe('which end a trip starts from', () => {
-  it('starts at the far end when the near one is a workshop with nothing to work with', () => {
-    // B is the workshop and A grows what it needs. Recording the pair the other way round
-    // used to deadlock the line for good: the outbound trip wanted stock B could not have
-    // until the return leg of that same trip brought it.
-    const { transport, registry, events } = build();
-    const route = transport.requestRoute(ID_B, ID_A);
-    expect(route?.from).toBe(ID_B);
-    expect(registry.get(ID_B)?.input).toBe('wheat');
+  it('starts at the far end when the near one has nothing to work with', () => {
+    // B's works is empty and A bakes what B's homes want. Recording the leg the other way
+    // round used to deadlock it for good: the outbound trip wanted stock B could not have
+    // until the trip home brought it.
+    const { transport, registry, events, link, stopA, stopB } = build({ stocked: false });
+    stock(registry, ID_A);
+    const route = link(stopB, stopA);
+    expect(route?.from.town).toBe(ID_B);
+    expect(registry.starvedOf(registry.get(ID_B)!)).toBe('sand');
     expect(registry.get(ID_B)?.stock).toBe(0);
 
     registry.produce(600);
@@ -738,16 +820,16 @@ describe('which end a trip starts from', () => {
     expect(first, 'nothing set out at all').toBeDefined();
     // It set out from A — the end that actually had something.
     expect(first.home).toBe(1);
-    expect(first.good).toBe('wheat');
+    expect(first.good).toBe('bread');
 
     run(transport, 400);
-    expect(events.arrivals.some((a) => a.to === ID_B && a.good === 'wheat')).toBe(true);
-    expect(registry.get(ID_B)?.inputStock).toBeGreaterThan(0);
+    expect(events.arrivals.some((a) => a.to === ID_B && a.good === 'bread')).toBe(true);
+    expect(registry.get(ID_B)?.received).toBeGreaterThan(0);
   });
 
-  it('and the workshop starts shipping once its materials arrive', () => {
-    const { transport, registry, events } = build();
-    transport.requestRoute(ID_B, ID_A);
+  it('and the far end keeps shipping once its own works is fed', () => {
+    const { transport, registry, events, link, stopA, stopB } = build();
+    link(stopB, stopA);
     registry.produce(600);
     // Both clocks, the way the game runs them: a workshop only converts while time is
     // passing for it as well as for the road.
@@ -755,14 +837,14 @@ describe('which end a trip starts from', () => {
       registry.produce(0.5);
       transport.update(0.5, 10_000, 10_000);
     }
-    // Wheat went in, bread came out, and the bread went where it was wanted.
-    expect(events.arrivals.some((a) => a.to === ID_B && a.good === 'wheat')).toBe(true);
-    expect(events.arrivals.some((a) => a.to === ID_A && a.good === 'bread')).toBe(true);
+    // Both directions ran: each town wants what the other makes.
+    expect(events.arrivals.some((a) => a.to === ID_B && a.good === 'bread')).toBe(true);
+    expect(events.arrivals.some((a) => a.to === ID_A && a.good === 'glass')).toBe(true);
   });
 
   it('sets out with a single unit rather than waiting for a full load', () => {
-    const { transport, registry } = build();
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, link } = build();
+    link();
     run(transport, 3);
     // Just enough time for one unit and no more.
     registry.produce(6.5);
@@ -772,16 +854,14 @@ describe('which end a trip starts from', () => {
     expect(transport.routes[0].porters[0].cargo).toBe(1);
   });
 
-  it('shares one village between the routes that leave it', () => {
-    // Every route on a village calls takeStock in the same frame and takeStock hands over
-    // whatever is there. In array order the first route drained it every frame and the
-    // rest never moved a thing.
-    const { transport, registry } = build();
-    transport.requestRoute(ID_A, ID_B);
-    const second = transport.requestRoute(ID_A, villageId(480, 0));
-    expect(second).not.toBeNull();
-    // The second pair has no road and no far village, so give it one the survey can walk:
-    // the point here is only the order stock is handed out in.
+  it('shares one town between the legs that leave it', () => {
+    // Every leg on a town calls takeStock in the same frame and takeStock hands over
+    // whatever is there. In array order the first leg drained it every frame and the rest
+    // never moved a thing.
+    const { transport, registry, link, stopA, stopB } = build();
+    link();
+    link(stopA, stopB);
+    expect(transport.routes).toHaveLength(2);
     registry.produce(6000);
     const before = registry.get(ID_A)?.stock ?? 0;
     run(transport, 60);
@@ -796,8 +876,8 @@ describe('a train on a railway', () => {
     // between two places, laid over whatever is in between, and nothing about it asks
     // whether anybody ever paved anything.
     const rails = new FakeRails();
-    const { transport } = build({ surface: null, rails });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = build({ surface: null, rails });
+    link();
     run(transport, 3);
     const route = transport.routes[0];
     expect(route.connected).toBe(true);
@@ -812,8 +892,8 @@ describe('a train on a railway', () => {
     // it is the same thing all the way along, and a line over a gorge is exactly as good
     // as one over a meadow.
     const rails = new FakeRails();
-    const { transport } = build({ surface: Block.DIRT_PATH, rails });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = build({ surface: Block.DIRT_PATH, rails });
+    link();
     run(transport, 3);
     const route = transport.routes[0];
     expect(route.quality).toBe(RAIL_QUALITY);
@@ -825,10 +905,10 @@ describe('a train on a railway', () => {
     // A railway is the one upgrade that moves both numbers, which is what makes it worth
     // paying iron for once there is nothing left to widen.
     const rail = build({ surface: null, rails: new FakeRails() });
-    rail.transport.requestRoute(ID_A, ID_B);
+    rail.link();
     run(rail.transport, 3);
     const cart = build({ surface: Block.STONE_BRICKS, width: 3 });
-    cart.transport.requestRoute(ID_A, ID_B);
+    cart.link();
     run(cart.transport, 3);
 
     const byRail = rail.transport.routes[0];
@@ -840,8 +920,8 @@ describe('a train on a railway', () => {
   });
 
   it('beats the road when the line is both railed and wide', () => {
-    const { transport } = build({ surface: Block.STONE_BRICKS, width: 3, rails: new FakeRails() });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = build({ surface: Block.STONE_BRICKS, width: 3, rails: new FakeRails() });
+    link();
     run(transport, 3);
     expect(transport.routes[0].vehicle).toBe('train');
   });
@@ -851,8 +931,8 @@ describe('a train on a railway', () => {
     // road index does not move when a curve is laid a hundred blocks off it.
     const rails = new FakeRails();
     rails.lay(0);
-    const { transport } = build({ surface: Block.DIRT_PATH, width: 3, rails });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = build({ surface: Block.DIRT_PATH, width: 3, rails });
+    link();
     run(transport, 3);
     expect(transport.routes[0].vehicle).toBe('cart');
     rails.lay(1);
@@ -862,8 +942,8 @@ describe('a train on a railway', () => {
 
   it('goes back to a cart when the rails come up, without losing cargo', () => {
     const rails = new FakeRails();
-    const { transport, registry, events } = build({ surface: Block.STONE_BRICKS, width: 3, rails });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, events, link } = build({ surface: Block.STONE_BRICKS, width: 3, rails });
+    link();
     registry.produce(600);
     // Eight seconds, not thirty: a train covers seven blocks a second, so by thirty it
     // has been there and back and there is nothing in flight to protect.
@@ -885,8 +965,8 @@ describe('a train on a railway', () => {
 
   it('sends the cargo home when the railway is dug up and there is no road', () => {
     const rails = new FakeRails();
-    const { transport, registry, events } = build({ surface: null, rails });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, events, link } = build({ surface: null, rails });
+    link();
     registry.produce(600);
     run(transport, 8);
     expect(transport.routes[0].vehicle).toBe('train');
@@ -907,15 +987,15 @@ describe('a train on a railway', () => {
     // a question nobody asked; the railhead is for a player who has started laying.
     const half = new FakeRails();
     half.lay(0.5);
-    const { transport } = build({ surface: Block.DIRT_PATH, rails: half });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = build({ surface: Block.DIRT_PATH, rails: half });
+    link();
     run(transport, 3);
     const pinch = transport.routes[0].railPinch;
     expect(pinch).not.toBeNull();
     expect(pinch!.x).toBeCloseTo(120, 0);
 
     const none = build({ surface: Block.DIRT_PATH });
-    none.transport.requestRoute(ID_A, ID_B);
+    none.link();
     run(none.transport, 3);
     expect(none.transport.routes[0].railPinch).toBeNull();
   });
@@ -926,8 +1006,8 @@ describe('a train on a railway', () => {
     // track that carries nothing looks exactly like finished track that does.
     const rails = new FakeRails();
     rails.station(false);
-    const { transport } = build({ surface: null, rails });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = build({ surface: null, rails });
+    link();
     run(transport, 3);
     const route = transport.routes[0];
     expect(route.connected, 'rails with no stations carried the goods').toBe(false);
@@ -941,8 +1021,8 @@ describe('a train on a railway', () => {
   });
 
   it('does not ask for a station where there is no track to build one on', () => {
-    const { transport } = build({ surface: Block.DIRT_PATH });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = build({ surface: Block.DIRT_PATH });
+    link();
     run(transport, 3);
     expect(transport.routes[0].stationGap).toBeNull();
   });
@@ -952,8 +1032,8 @@ describe('a train on a railway', () => {
     // village, the train takes them down the line, and somebody carries them in at the
     // far end. The clock never changes hands — only the picture of it does.
     const rails = new FakeRails();
-    const { transport, registry } = build({ surface: null, rails, depots: DOORS });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, link } = build({ surface: null, rails, depots: DOORS });
+    link();
     registry.produce(600);
     run(transport, 3);
     const route = transport.routes[0];
@@ -980,10 +1060,10 @@ describe('a train on a railway', () => {
       movePorter: () => {},
       removePorter: () => {},
     };
-    const { transport, registry } = build({
+    const { transport, registry, link } = build({
       surface: null, rails: new FakeRails(), host, depots: DOORS,
     });
-    transport.requestRoute(ID_A, ID_B);
+    link();
     registry.produce(600);
     // Standing at the origin, where the walk out of the village happens.
     for (let t = 0; t < 3; t += 0.25) transport.update(0.25, 0, -20);
@@ -1022,8 +1102,8 @@ describe('a train on a railway', () => {
       removePorter: () => {},
     };
     const rails = new FakeRails();
-    const { transport, registry } = build({ surface: Block.DIRT_PATH, host, rails });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, link } = build({ surface: Block.DIRT_PATH, host, rails });
+    link();
     registry.produce(600);
     // Standing at the origin, so the mob is actually drawn: `run` puts the player ten
     // thousand blocks away, where a shipment is a number and nothing is spawned.
@@ -1044,8 +1124,8 @@ describe('signals and the block ahead', () => {
   function railway(gap: number) {
     const rails = new FakeRails();
     rails.signalEvery(gap);
-    const { transport } = build({ surface: null, rails });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, link } = build({ surface: null, rails });
+    link();
     run(transport, 3);
     const route = transport.routes[0];
     route.porters.length = 0;
@@ -1165,12 +1245,12 @@ describe('people as something a line carries', () => {
     // A route is worth more carrying goods, so a town with something to ship never has its
     // trip taken by the queue at its station.
     const town = new FakeTown({ [ID_A]: 20, [ID_B]: 20 });
-    const { transport, registry } = build({ town });
+    const { transport, registry, link } = build({ town });
     registry.get(ID_A)!.stock = 10;
     registry.get(ID_B)!.stock = 10;
-    transport.requestRoute(ID_A, ID_B);
+    link();
     run(transport, 6);
-    const route = transport.find(ID_A, ID_B)!;
+    const route = transport.routes[0];
     expect(route.porters.length).toBeGreaterThan(0);
     expect(route.porters.every((p: Porter) => p.good !== PASSENGER)).toBe(true);
     // And the queue is untouched: nobody was picked up while there were crates.
@@ -1179,14 +1259,14 @@ describe('people as something a line carries', () => {
 
   it('fills a leg that would otherwise have run empty', () => {
     const town = new FakeTown({ [ID_A]: 20 });
-    const { transport, registry } = build({ town });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, link } = build({ town });
+    link();
     run(transport, 4);
     // Neither village has anything to ship, so nothing about crates can start a trip.
     registry.get(ID_A)!.stock = 0;
     registry.get(ID_B)!.stock = 0;
     run(transport, 6);
-    const route = transport.find(ID_A, ID_B)!;
+    const route = transport.routes[0];
     expect(route.porters.length).toBeGreaterThan(0);
     expect(route.porters[0].good).toBe(PASSENGER);
     expect(town.waitingAt(ID_A)).toBeLessThan(20);
@@ -1194,8 +1274,8 @@ describe('people as something a line carries', () => {
 
   it('delivers people as a delivery, and pays for the trip', () => {
     const town = new FakeTown({ [ID_A]: 40 });
-    const { transport, registry, events } = build({ town });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, events, link } = build({ town });
+    link();
     run(transport, 4);
     registry.get(ID_A)!.stock = 0;
     registry.get(ID_B)!.stock = 0;
@@ -1210,13 +1290,13 @@ describe('people as something a line carries', () => {
 
   it('puts people back on the platform when the road is dug up under them', () => {
     const town = new FakeTown({ [ID_A]: 20 });
-    const { transport, registry, world, roads } = build({ town });
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, world, roads, link } = build({ town });
+    link();
     run(transport, 4);
     registry.get(ID_A)!.stock = 0;
     registry.get(ID_B)!.stock = 0;
     run(transport, 8);
-    const route = transport.find(ID_A, ID_B)!;
+    const route = transport.routes[0];
     expect(route.porters[0]?.good).toBe(PASSENGER);
     const riding = route.porters[0].cargo;
     const had = town.waitingAt(ID_A);
@@ -1232,13 +1312,13 @@ describe('people as something a line carries', () => {
   it('carries nobody at all where nothing is modelling the towns', () => {
     // Every other test in this file builds a registry with no town link, and this is why
     // they are all still honest: a village with no buildings has nobody waiting.
-    const { transport, registry } = build();
-    transport.requestRoute(ID_A, ID_B);
+    const { transport, registry, link } = build();
+    link();
     run(transport, 4);
     registry.get(ID_A)!.stock = 0;
     registry.get(ID_B)!.stock = 0;
     expect(registry.waiting(ID_A)).toBe(0);
     run(transport, 20);
-    expect(transport.find(ID_A, ID_B)!.porters).toHaveLength(0);
+    expect(transport.routes[0].porters).toHaveLength(0);
   });
 });

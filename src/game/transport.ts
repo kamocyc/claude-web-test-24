@@ -1,4 +1,14 @@
-/** Goods moving between villages.
+/** Goods moving along the legs of a line.
+ *
+ *  Nothing moves because a road exists. A road is a road; a *service* is a line the player
+ *  drew between stops they put down, and until they draw one the finest paved highway in
+ *  the world carries nothing. Every leg here is one hop of one such line, and this module
+ *  runs it: it surveys what actually joins the two stops, decides what that supports —
+ *  somebody on foot, a cart, a train — and moves goods and people over it.
+ *
+ *  What it does *not* know is what a stop is attached to. A town, an industry, or nothing
+ *  at all: `SiteLink` answers all of that in six methods, so this file has never heard of a
+ *  village and is not going to start.
  *
  *  The abstract clock is the truth: a shipment is a number between 0 and 1 that advances
  *  at a fixed rate, and it keeps advancing whether or not anybody is watching. The porter
@@ -17,12 +27,12 @@
  *  What the road is paved with sets both how fast that number moves and how much one trip
  *  carries, so a line the player comes back to and improves keeps paying more. And a
  *  porter only walks home empty when there is nothing at the far end worth bringing
- *  back — a pair of villages that each want what the other makes is worth twice the
- *  road. */
+ *  back — a leg whose two ends each want what the other has is worth twice the road. */
 
 import { pathAroundPlots } from './buildings';
-import { roadGrade, toWaypoints, townPlace, type RoadNetwork, type RoadPoint, type SurveyResult } from './roads';
-import { PASSENGER, type GoodId, type VillageId, type VillageRegistry } from './villages';
+import type { LineId, LineNetwork, Stop } from './lines';
+import { roadGrade, toWaypoints, type RoadNetwork, type RoadPoint, type SurveyPlace, type SurveyResult } from './roads';
+import { PASSENGER, type GoodId } from './villages';
 
 /** What is doing the hauling. A cart only runs where the road is three columns wide the
  *  whole way, which is the one thing widening a road buys — and the reason widening one
@@ -124,8 +134,8 @@ export interface Porter {
   t: number;
   dir: 1 | -1;
   /** Which end this one set out from, and so which end it walks back to and finishes at.
-   *  A route is a line between two villages rather than a one way pipe: whichever end has
-   *  goods is the end a trip starts from. */
+   *  A leg runs in both directions rather than being a one way pipe: whichever end has
+   *  something to send is the end a trip starts from. */
   home: 0 | 1;
   good: GoodId;
   cargo: number;
@@ -141,9 +151,16 @@ export interface Porter {
 }
 
 export interface Route {
-  from: VillageId;
-  to: VillageId;
-  /** What travels out from `from`. The return leg carries whatever `from` wants, so this
+  /** `${lineId}#${index}`. Stable while the line's calling order is, which is exactly as
+   *  long as the leg itself is the same leg. */
+  id: string;
+  lineId: LineId;
+  /** Which call of the line this leg leaves from, so the panel can list a line's legs in
+   *  the order the player wrote them. */
+  index: number;
+  from: Stop;
+  to: Stop;
+  /** What travels out from `from`. The trip home carries whatever `from` wants, so this
    *  is the headline good rather than the only one. */
   good: GoodId;
   /** False until the road has been walked once, so nothing reports a distance it has not
@@ -218,11 +235,6 @@ export interface Route {
   trips: number;
 }
 
-export interface SavedRoute {
-  from: string;
-  to: string;
-}
-
 /** How far a porter mob may lag behind its shipment before it starts hurrying. Big enough
  *  to hop a fence or go round a tree; past it the mob runs, up to `CATCH_UP` times its
  *  usual pace, rather than being picked up and put down. */
@@ -234,13 +246,48 @@ export const CATCH_UP = 3;
  *  is watching both ends, so nothing is seen to move that should not. */
 export const PORTER_LOST = 24;
 
-/** Where a village loads and unloads. The game answers this from its building registry;
- *  transport only needs the point, so it never learns what a building is. */
-export interface DepotSource {
-  doorOf(village: VillageId): RoadPoint | null;
-  /** The village's building plots, so the walk from a doorway to the road can go round
-   *  them instead of through them. */
-  plotsOf(village: VillageId): readonly { x0: number; z0: number; w: number; d: number }[];
+/** One load. */
+export interface Cargo {
+  good: GoodId;
+  count: number;
+}
+
+/** What a stop is attached to, as the only questions a leg has of it.
+ *
+ *  Narrow and duck typed, exactly like `RailSource` below: the game answers these from its
+ *  towns and its industries, a test answers them from two object literals, and this module
+ *  never learns that either exists. A stop attached to nothing answers "nothing" to all six
+ *  and is simply a place a line passes through — which is a real and useful thing to be:
+ *  a junction where two lines meet. */
+export interface SiteLink {
+  /** What this place has to send. Empty for a stop that serves nothing. */
+  offers(at: Stop): readonly GoodId[];
+  /** What this place is asking for. */
+  wants(at: Stop): readonly GoodId[];
+  /** Whether anything unloaded here lands somewhere.
+   *
+   *  A town takes whatever arrives — what it did not ask for is worth less and is still
+   *  worth something. An industry and a bare junction take nothing, and a trip that ended
+   *  at one would be a trip whose cargo stopped existing, so no trip is ever sent to one
+   *  carrying anything. */
+  accepts(at: Stop): boolean;
+  /** Loads up to `capacity`, preferring anything on `wanted`. Null when there is nothing
+   *  worth loading. */
+  load(at: Stop, capacity: number, wanted: readonly GoodId[]): Cargo | null;
+  /** Loads people wanting to travel. A separate question because people are never the
+   *  first answer: freight fills a trip and people take what is left. */
+  loadPeople(at: Stop, capacity: number): number;
+  /** Hands a load over, and says what it was worth. */
+  unload(at: Stop, good: GoodId, count: number): { needed: boolean; stage: number | null };
+  /** Puts a load back when the trip never happened. */
+  restore(at: Stop, good: GoodId, count: number): void;
+  /** The doorway goods actually go through, where the place has one. Null for a stop out
+   *  in the country, whose doorway is the stop itself. */
+  door(at: Stop): RoadPoint | null;
+  /** Footprints to walk round rather than through, on the way to that doorway. */
+  plots(at: Stop): readonly { x0: number; z0: number; w: number; d: number }[];
+  /** Where the road survey runs from. */
+  place(at: Stop): SurveyPlace;
 }
 
 /** A line of rails as something freight can travel. Whatever shape the curves are is the
@@ -319,7 +366,7 @@ export interface PorterView {
 /** One delivery, as the game needs to report it. */
 export interface Arrival {
   route: Route;
-  to: VillageId;
+  to: Stop;
   good: GoodId;
   count: number;
   /** Whether the destination had asked for this. */
@@ -332,7 +379,7 @@ export interface TransportEvents {
   onConnected?(route: Route): void;
   onDisconnected?(route: Route): void;
   onArrival?(arrival: Arrival): void;
-  onStageUp?(id: VillageId, stage: number): void;
+  onStageUp?(at: Stop, stage: number): void;
 }
 
 function measure(waypoints: RoadPoint[]): { cumulative: number[]; length: number } {
@@ -346,6 +393,7 @@ function measure(waypoints: RoadPoint[]): { cumulative: number[]; length: number
 
 export class TransportNetwork {
   readonly routes: Route[] = [];
+  private readonly byId = new Map<string, Route>();
   private surveyTimer = 0;
   private surveyedRevision = -1;
   private surveyedRails = -1;
@@ -366,25 +414,67 @@ export class TransportNetwork {
 
   constructor(
     private readonly roads: RoadNetwork,
-    private readonly registry: VillageRegistry,
+    private readonly sites: SiteLink,
     private readonly events: TransportEvents = {},
     private readonly host: PorterHost | null = null,
-    private readonly depots: DepotSource | null = null,
     private readonly rails: RailSource | null = null,
   ) {}
 
-  /** Registers a pair worth watching. Idempotent, and direction-insensitive. */
-  requestRoute(from: VillageId, to: VillageId): Route | null {
-    if (from === to) return null;
-    const existing = this.find(from, to);
-    if (existing) return existing;
-    // The origin may not be registered yet: routes are restored from a save before the
-    // player has walked near enough for the villages to be re-derived from the seed. The
-    // good is resolved on the first survey instead.
-    const route: Route = {
+  /** Rebuilds the legs from the lines the player has drawn.
+   *
+   *  Called whenever the network's revision moves, which is whenever a stop or a call
+   *  changes. A leg that is still the same leg keeps everything it had — its shipments, its
+   *  totals, the road it was surveyed onto — because inserting a call at the end of a line
+   *  should not throw away the trips already running on the rest of it. A leg that has gone
+   *  hands its cargo back before it does. */
+  syncLines(network: LineNetwork): void {
+    const kept = new Map<string, Route>();
+    for (const line of network.lines.values()) {
+      network.legsOf(line.id).forEach((leg, index) => {
+        const id = `${line.id}#${index}`;
+        const existing = this.byId.get(id);
+        // Same id, same two stops: the same leg, carrying on where it was.
+        if (existing && existing.from.id === leg.from.id && existing.to.id === leg.to.id) {
+          existing.index = index;
+          existing.from = leg.from;
+          existing.to = leg.to;
+          kept.set(id, existing);
+          return;
+        }
+        kept.set(id, this.blankRoute(id, line.id, index, leg.from, leg.to));
+      });
+    }
+    let changed = kept.size !== this.routes.length;
+    for (const route of this.routes) {
+      if (kept.get(route.id) === route) continue;
+      changed = true;
+      // A leg that has stopped existing was still carrying something. Put it back rather
+      // than losing it: editing a line should cost time, not cargo.
+      for (const porter of route.porters) {
+        if (porter.cargo > 0) this.returnLoad(route, porter);
+        if (porter.mobId !== null) this.host?.removePorter(porter.mobId);
+      }
+    }
+    if (!changed) return;
+    this.routes.length = 0;
+    this.byId.clear();
+    for (const [id, route] of kept) {
+      this.routes.push(route);
+      this.byId.set(id, route);
+    }
+    // Survey on the very next update, so the panel never shows a stale or invented
+    // distance for a leg the player has just drawn.
+    this.invalidate();
+  }
+
+  private blankRoute(id: string, lineId: LineId, index: number, from: Stop, to: Stop): Route {
+    return {
+      id,
+      lineId,
+      index,
       from,
       to,
-      good: this.registry.get(from)?.produces ?? '',
+      good: '',
       surveyed: false,
       connected: false,
       everConnected: false,
@@ -414,11 +504,6 @@ export class TransportNetwork {
       delivered: 0,
       trips: 0,
     };
-    this.routes.push(route);
-    // Survey on the very next update, so the panel never shows a stale or invented
-    // distance for a route the player just started caring about.
-    this.invalidate();
-    return route;
   }
 
   /** Forces the next update to walk every road again. The road index has not moved, so
@@ -430,10 +515,13 @@ export class TransportNetwork {
     this.surveyTimer = 0;
   }
 
-  find(from: VillageId, to: VillageId): Route | undefined {
-    return this.routes.find(
-      (r) => (r.from === from && r.to === to) || (r.from === to && r.to === from),
-    );
+  find(id: string): Route | undefined {
+    return this.byId.get(id);
+  }
+
+  /** Every leg of one line, in calling order. What the line panel is drawn from. */
+  legsOfLine(lineId: LineId): Route[] {
+    return this.routes.filter((route) => route.lineId === lineId).sort((a, b) => a.index - b.index);
   }
 
   /** Where every shipment on the network has got to, whether or not a mob is drawing it.
@@ -501,42 +589,41 @@ export class TransportNetwork {
     if (this.routes.length > 0) this.dispatchCursor = (this.dispatchCursor + 1) % this.routes.length;
   }
 
-  /** Re-walks a route's road. Returns false when its villages are not known yet. */
+  /** Re-walks a leg's road. Returns false when the survey could not be attempted at all.
+   *
+   *  Which it never is now: a stop carries its own position, so a leg is walkable from the
+   *  moment it is drawn — even one whose town the player has not walked back into. The
+   *  return value is kept because the caller uses it to decide whether the survey it just
+   *  did counts against the road revision. */
   private resurvey(route: Route): boolean {
-    const from = this.registry.get(route.from);
-    const to = this.registry.get(route.to);
-    if (!from || !to) return false;
-    route.good = from.produces;
+    route.good = this.sites.offers(route.from)[0] ?? route.good;
     const was = route.connected;
     route.surveyed = true;
     // The doors first, whatever answers: the railway is surveyed door to door, and the
-    // road survey wants them the moment it connects. The village itself stands in for a
-    // door that is not known yet, which is every village the player has not walked into.
-    route.fromDoor = this.depots?.doorOf(route.from) ?? null;
-    route.toDoor = this.depots?.doorOf(route.to) ?? null;
+    // road survey wants them the moment it connects. The stop itself stands in for a door
+    // that is not known yet, which is every town the player has not walked into.
+    route.fromDoor = this.sites.door(route.from);
+    route.toDoor = this.sites.door(route.to);
     const doors = {
-      from: route.fromDoor ?? { x: from.x, y: from.baseY, z: from.z },
-      to: route.toDoor ?? { x: to.x, y: to.baseY, z: to.z },
+      from: route.fromDoor ?? stopPoint(route.from),
+      to: route.toDoor ?? stopPoint(route.to),
     };
-    // The railway is asked about the villages themselves and not about their doors. A
-    // line that ends at the edge of a village has arrived at it; requiring it to reach
-    // the door would mean laying track between the houses, and a station is a place at
-    // the edge of a town in every world including this one.
-    const places = {
-      from: { x: from.x, y: from.baseY, z: from.z },
-      to: { x: to.x, y: to.baseY, z: to.z },
-    };
+    // The railway is asked about the stops themselves and not about their doors. A line
+    // that reaches the stop has arrived; requiring it to reach the door would mean laying
+    // track between the houses, and a station is a place at the edge of a town in every
+    // world including this one.
+    const places = { from: stopPoint(route.from), to: stopPoint(route.to) };
 
     // The railway is asked first, and it is not asked about the road. It is its own way
-    // between the two villages — laid in the open, over whatever is in between — so a
-    // pair with rails between them is joined whether or not anybody ever paved anything.
+    // between the two stops — laid in the open, over whatever is in between — so a leg
+    // with rails along it is joined whether or not anybody ever paved anything.
     const way = this.rails?.wayBetween(places.from, places.to) ?? null;
     if (way) {
       this.railed(route, way, doors, was);
       return true;
     }
 
-    const result: SurveyResult = this.roads.survey(townPlace(from), townPlace(to));
+    const result: SurveyResult = this.roads.survey(this.sites.place(route.from), this.sites.place(route.to));
     if (result.connected) {
       route.connected = true;
       route.everConnected = true;
@@ -672,13 +759,13 @@ export class TransportNetwork {
    *  rather than through them. Its points stop short of the station itself, which the
    *  rails already hold. */
   private walkToStation(
-    village: VillageId,
+    stop: Stop,
     door: RoadPoint | null,
     station: RoadPoint,
   ): { points: RoadPoint[]; gap: number } {
     if (!door) return { points: [], gap: 0 };
     const near = { x: Math.round(station.x), y: Math.round(station.y), z: Math.round(station.z) };
-    const round = pathAroundPlots(door, near, this.depots?.plotsOf(village) ?? []);
+    const round = pathAroundPlots(door, near, this.sites.plots(stop));
     if (!round) return { points: [door], gap: Math.hypot(near.x - door.x, near.z - door.z) };
     let walk = 0;
     for (let i = 1; i < round.length; i++) {
@@ -731,7 +818,7 @@ export class TransportNetwork {
    *  Returns how far the unpaved part of that leg is, which is what the panel reports: the
    *  walk to the door counts towards every trip, so paving it is work that pays. */
   private joinDoor(
-    village: VillageId,
+    stop: Stop,
     door: RoadPoint,
     onto: RoadPoint | undefined,
     walked: RoadPoint[],
@@ -746,7 +833,7 @@ export class TransportNetwork {
     const edge = end === 'head' ? walked[0] : walked[walked.length - 1];
     const round = spur || !edge
       ? null
-      : pathAroundPlots(door, edge, this.depots?.plotsOf(village) ?? []);
+      : pathAroundPlots(door, edge, this.sites.plots(stop));
     const link = spur ? toWaypoints(spur) : round ? toWaypoints(round.slice(0, -1)) : [];
     const parts = end === 'head' ? [door, ...link] : [...link.reverse(), door];
     if (end === 'head') walked.unshift(...parts);
@@ -877,7 +964,7 @@ export class TransportNetwork {
       const at = porter.t >= 1 ? 1 : porter.t <= 0 ? 0 : null;
       if (at === null) continue;
       porter.t = at;
-      this.arrive(route, porter, this.villageAt(route, at));
+      this.arrive(route, porter, this.stopAt(route, at));
       if (at === porter.home) {
         // Back where it started, with nothing left to carry.
         if (porter.mobId !== null) this.host?.removePorter(porter.mobId);
@@ -889,7 +976,7 @@ export class TransportNetwork {
     }
   }
 
-  private villageAt(route: Route, end: 0 | 1): VillageId {
+  private stopAt(route: Route, end: 0 | 1): Stop {
     return end === 0 ? route.from : route.to;
   }
 
@@ -897,20 +984,18 @@ export class TransportNetwork {
    *  should cost time, not cargo — and not people either: somebody halfway to a town they
    *  wanted to reach goes back to waiting at the station rather than ceasing to exist. */
   private returnLoad(route: Route, porter: Porter): void {
-    const home = this.villageAt(route, porter.home);
-    if (porter.good === PASSENGER) this.registry.returnPassengers(home, porter.cargo);
-    else this.registry.returnStock(home, porter.cargo);
+    const home = this.stopAt(route, porter.home);
+    this.sites.restore(home, porter.good, porter.cargo);
   }
 
   /** Sends the next trip out, from whichever end actually has something to send.
    *
-   *  Taking only from `route.from` deadlocked a third of the network. Which village a
-   *  pair records as `from` is decided by the order the seed grid emits them, and about a
-   *  third of villages are workshops that make nothing until their input arrives — so a
-   *  route whose `from` was a workshop and whose `to` made exactly what it needed could
-   *  never start: the outbound trip wanted stock the workshop could not have until the
-   *  return leg of that same trip delivered it. A road is a line between two villages,
-   *  not a pipe with a direction, and now it behaves like one. */
+   *  Taking only from `route.from` would deadlock most of the network. Every town converts,
+   *  so a town makes nothing at all until its raw material arrives — and a leg whose `from`
+   *  was such a town and whose `to` had exactly what it needed could never start: the
+   *  outbound trip would want stock the town could not have until the trip home delivered
+   *  it. A leg runs in both directions, not as a pipe with a direction, and it behaves
+   *  like one. */
   private dispatch(route: Route): void {
     if (route.porters.length >= portersFor(route.length)) return;
     // Keep them strung out along the road instead of leaving in a bunch, whichever end
@@ -920,7 +1005,7 @@ export class TransportNetwork {
     // all. A route is worth more carrying crates than carrying passengers, and a town with
     // something to ship should not have its trip taken by a queue at the station.
     for (const people of [false, true]) {
-      for (const end of this.legsOf(route)) {
+      for (const end of this.endsOf(route)) {
         const load = this.take(route, end, people);
         if (load === null) continue;
         route.porters.push({
@@ -938,35 +1023,36 @@ export class TransportNetwork {
     }
   }
 
-  /** Loads one end of a route, with crates or with people. Null when there was nothing of
+  /** Loads one end of a leg, with crates or with people. Null when there was nothing of
    *  that kind to load. */
   private take(route: Route, end: 0 | 1, people: boolean): { good: GoodId; cargo: number } | null {
-    const id = this.villageAt(route, end);
+    const here = this.stopAt(route, end);
+    const there = this.stopAt(route, end === 0 ? 1 : 0);
+    // Nothing is ever sent to somewhere that cannot take it.
+    if (!this.sites.accepts(there)) return null;
     if (people) {
-      const cargo = this.registry.takePassengers(id, this.loadOf(route));
+      const cargo = this.sites.loadPeople(here, this.loadOf(route));
       return cargo > 0 ? { good: PASSENGER, cargo } : null;
     }
-    const cargo = this.registry.takeStock(id, this.loadOf(route));
-    if (cargo <= 0) return null;
-    return { good: this.registry.get(id)?.produces ?? route.good, cargo };
+    const load = this.sites.load(here, this.loadOf(route), this.sites.wants(there));
+    if (!load || load.count <= 0) return null;
+    return { good: load.good, cargo: load.count };
   }
 
-  /** The two ends, the one worth loading first. A village whose goods the far end is
-   *  actually asking for goes before one whose goods it merely tolerates; `from` breaks
-   *  the tie, so a plain pair behaves exactly as it always did. */
-  private legsOf(route: Route): (0 | 1)[] {
-    const from = this.registry.get(route.from);
-    const to = this.registry.get(route.to);
-    const outWanted = from && to ? to.needs.includes(from.produces) : false;
-    const backWanted = from && to ? from.needs.includes(to.produces) : false;
+  /** The two ends, the one worth loading first. An end whose goods the far end is actually
+   *  asking for goes before one whose goods it merely tolerates; `from` breaks the tie, so
+   *  a plain pair behaves exactly as it always did. */
+  private endsOf(route: Route): (0 | 1)[] {
+    const outWanted = shares(this.sites.offers(route.from), this.sites.wants(route.to));
+    const backWanted = shares(this.sites.offers(route.to), this.sites.wants(route.from));
     if (backWanted && !outWanted) return [1, 0];
     return [0, 1];
   }
 
   /** Hands over whatever this porter is carrying. */
-  private arrive(route: Route, porter: Porter, to: VillageId): void {
+  private arrive(route: Route, porter: Porter, to: Stop): void {
     if (porter.cargo <= 0) return;
-    const result = this.registry.deliver(to, porter.good, porter.cargo);
+    const result = this.sites.unload(to, porter.good, porter.cargo);
     route.delivered += porter.cargo;
     route.trips += 1;
     this.events.onArrival?.({
@@ -982,22 +1068,26 @@ export class TransportNetwork {
   }
 
   /** Loads the trip home from the far end `at`. A porter only carries back what its own
-   *  village actually wants, which is what makes a complementary pair worth joining. */
+   *  end actually wants, which is what makes a complementary pair worth joining. */
   private loadReturn(route: Route, porter: Porter, at: 0 | 1): void {
-    const here = this.registry.get(this.villageAt(route, at));
-    const home = this.registry.get(this.villageAt(route, porter.home));
-    if (!here || !home) return;
-    if (home.needs.includes(here.produces)) {
-      const loaded = this.registry.takeStock(here.id, this.loadOf(route));
-      if (loaded > 0) {
-        porter.good = here.produces;
-        porter.cargo = loaded;
+    const here = this.stopAt(route, at);
+    const home = this.stopAt(route, porter.home);
+    if (!this.sites.accepts(home)) return;
+    const wanted = this.sites.wants(home);
+    if (wanted.length > 0) {
+      const load = this.sites.load(here, this.loadOf(route), wanted);
+      // Only what home actually asked for. Bringing back whatever happened to be standing
+      // there would make every leg pay both ways whether or not it was worth building.
+      if (load && load.count > 0 && wanted.includes(load.good)) {
+        porter.good = load.good;
+        porter.cargo = load.count;
         return;
       }
+      if (load && load.count > 0) this.sites.restore(here, load.good, load.count);
     }
     // Nothing here that home wants. Somebody who wants to go there is worth the trip:
-    // this is a leg that used to run empty, so people cost the network nothing to carry.
-    const riders = this.registry.takePassengers(here.id, this.loadOf(route));
+    // this is a leg that would otherwise run empty, so people cost the network nothing.
+    const riders = this.sites.loadPeople(here, this.loadOf(route));
     if (riders <= 0) return;
     porter.good = PASSENGER;
     porter.cargo = riders;
@@ -1063,17 +1153,14 @@ export class TransportNetwork {
     porter.mobVehicle = porter.mobId === null ? null : vehicle;
   }
 
-  /** Only the pair matters. The road itself lives in the edits, so a route re-surveys
-   *  itself from the save with no geometry stored. */
-  toJSON(): SavedRoute[] {
-    return this.routes.map((r) => ({ from: r.from, to: r.to }));
-  }
+}
 
-  loadJSON(data: SavedRoute[] | undefined): void {
-    if (!Array.isArray(data)) return;
-    for (const entry of data) {
-      if (typeof entry?.from !== 'string' || typeof entry?.to !== 'string') continue;
-      this.requestRoute(entry.from, entry.to);
-    }
-  }
+/** A stop as a point. What the railway and the survey are asked about. */
+function stopPoint(stop: Stop): RoadPoint {
+  return { x: stop.x, y: stop.y, z: stop.z };
+}
+
+/** Whether anything one end has is anything the other end wants. */
+function shares(offers: readonly GoodId[], wants: readonly GoodId[]): boolean {
+  return offers.some((good) => wants.includes(good));
 }

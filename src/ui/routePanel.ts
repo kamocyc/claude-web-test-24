@@ -4,6 +4,8 @@ import { DETOUR_NOTICE, DOOR_GAP_NOTICE } from '../game/transport';
 import { clear, el, show } from './dom';
 
 export interface RouteView {
+  /** The line this leg belongs to, so a panel of legs still reads as a list of services. */
+  line: string;
   from: string;
   to: string;
   surveyed: boolean;
@@ -62,10 +64,10 @@ export interface RouteView {
   nearMiss: boolean;
 }
 
-/** Why a joined route has nothing on it. */
+/** Why a joined leg has nothing on it. */
 export interface RouteIdle {
-  kind: 'stock' | 'starved' | 'undiscovered';
-  /** The village it is about, and — for a starved workshop — what it is waiting for. */
+  kind: 'stock' | 'starved' | 'undiscovered' | 'nosite';
+  /** The place it is about, and — for a starved works — what it is waiting for. */
   village: string;
   wants: string | null;
 }
@@ -127,7 +129,7 @@ export class RoutePanel {
     // road does.
     const signature = view.routes
       .map((r) => [
-        r.from, r.to, r.surveyed, r.connected, Math.round(r.length),
+        r.line, r.from, r.to, r.surveyed, r.connected, Math.round(r.length),
         Math.round(r.missing), r.porters, r.grade, r.load, r.wanted, r.stock,
         r.fromDepot, r.toDepot, r.vehicle, Math.round(r.climb), Math.round(r.detour * 20),
         r.idle ? `${r.idle.kind}${r.idle.village}${r.idle.wants ?? ''}` : '',
@@ -147,7 +149,9 @@ export class RoutePanel {
       const row = el('div', `route-row ${route.connected ? 'linked' : 'broken'}`);
       // A tick on the pair itself: at a glance, is this line carrying something the far
       // end actually wants?
-      row.appendChild(el('div', 'route-pair', `${route.from} ⇄ ${route.to}${route.wanted ? ' ✓' : ''}`));
+      row.appendChild(
+        el('div', 'route-pair', `${route.line}: ${route.from} ⇄ ${route.to}${route.wanted ? ' ✓' : ''}`),
+      );
       let status: string;
       if (!route.surveyed) status = '調べています...';
       else if (route.connected) {
@@ -178,8 +182,8 @@ export class RoutePanel {
 /** Why nothing is on the road, in the terms the player can do something about.
  *
  *  This used to read 「出荷待ち 在庫 0/6」, which was a lie twice over: a trip leaves with a
- *  single unit, so six was never a threshold, and a starved workshop shows the same 0
- *  forever without ever saying that a delivery is what would start it. */
+ *  single unit, so six was never a threshold, and a starved works shows the same 0 forever
+ *  without ever saying that a delivery is what would start it. */
 function idleText(route: RouteView): string {
   const idle = route.idle;
   if (!idle) return `在庫 ${route.stock} · まもなく出発`;
@@ -187,6 +191,9 @@ function idleText(route: RouteView): string {
     return `${idle.village}に材料が無い — ${idle.wants ?? '原料'}が届けば動き出す`;
   }
   if (idle.kind === 'undiscovered') return `${idle.village}にまだ入っていないので生産していない`;
+  // The one failure that looks exactly like a finished line: two stops, a joined road, and
+  // nothing at either end for anybody to collect.
+  if (idle.kind === 'nosite') return `${idle.village}には町も産業も無い — 積む物も降ろす先も無い`;
   return `出荷待ち — 在庫 0（1 個たまれば出発する）`;
 }
 

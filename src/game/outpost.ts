@@ -133,10 +133,12 @@ export function outpostRecord(
     baseY: site.baseY,
     variant: parent.variant,
     name: `${parent.name}の${NAMES[Math.floor(rng() * NAMES.length)]}`,
-    kind: 'farm',
     produces,
-    input: null,
-    inputStock: 0,
+    // A hamlet makes its one thing out of nothing. It is the tutorial's supplier and the
+    // only place in the world that does: everywhere else has to be fed before it works,
+    // and a tutorial that opened with that would have nothing to teach the lesson with.
+    inputs: [],
+    inputStock: new Map(),
     needs: [],
     stage: 0,
     points: 0,

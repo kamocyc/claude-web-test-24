@@ -108,11 +108,12 @@ export const MAX_WAITING = 32;
  *  stage, so it guards the extreme instead of deciding the traffic. */
 export const MAX_COMMUTERS = 12;
 
-/** What a home eats. Every one of these is either something the land yields or something
- *  a workshop makes, so a demand always has a supplier somewhere on the map. */
-export const HOUSEHOLD_GOODS: readonly GoodId[] = ['bread', 'baked_potato', 'wool', 'coal'];
+/** What a home eats, burns and mends itself with. Every one of these comes out of some
+ *  town's works, so a demand always has a supplier somewhere on the map — and that
+ *  supplier is itself waiting on an industry, which is the whole shape of the game. */
+export const HOUSEHOLD_GOODS: readonly GoodId[] = ['bread', 'torch', 'oak_planks'];
 /** What a shop sells. Same rule. */
-export const SHOP_GOODS: readonly GoodId[] = ['glass', 'oak_planks', 'sandstone'];
+export const SHOP_GOODS: readonly GoodId[] = ['glass', 'sandstone', 'iron_ingot'];
 
 /** Goods one building of each use asks for. Two apiece: one is a single point of failure,
  *  and four is a shopping list nobody reads. */
@@ -172,16 +173,19 @@ export function peopleFor(use: BuildingUse, stage: number): number {
 
 /** The goods one building asks for.
  *
- *  A works asks for its village's own raw material, because that is what it converts and
- *  the village already decided what that is. Everything else draws a stable handful from
+ *  A works asks for its town's own raw material — all of it, since a craft that takes two
+ *  things needs both — because that is what it converts and the town already decided what
+ *  that is. Everything else draws a stable handful from
  *  the list for its use — stable because it is hashed off the building's own id, so a shop
  *  does not change its mind about what it sells when the town grows around it. */
 export function goodsFor(
   seed: number,
   cell: { id: BuildingId; use: BuildingUse },
-  village: Pick<VillageRecord, 'input' | 'produces'>,
+  village: Pick<VillageRecord, 'inputs' | 'produces'>,
 ): GoodId[] {
-  if (cell.use === 'industrial') return village.input ? [village.input] : [];
+  // The works asks for exactly what the town's own craft takes, all of it: a glassworks
+  // short of coal is a glassworks standing still, so half a shopping list is no use.
+  if (cell.use === 'industrial') return [...village.inputs];
   if (cell.use === 'civic') return [];
   const pool = (cell.use === 'residential' ? HOUSEHOLD_GOODS : SHOP_GOODS)
     .filter((good) => good !== village.produces);

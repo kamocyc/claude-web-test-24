@@ -4,7 +4,7 @@ import { Block, type BlockId } from '../blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey } from '../chunk';
 import { WATER_FULL } from '../water';
 import { Biome, type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
-import { ORES, placeCactus, placeSugarCane, placeTree, treeCandidates } from './features';
+import { ORES, outcropDepth, outcropIn, placeCactus, placeSugarCane, placeTree, treeCandidates } from './features';
 import {
   type ChestMarker,
   type HouseRecord,
@@ -339,6 +339,9 @@ export class TerrainGenerator {
     // --- 4. vegetation ------------------------------------------------------
     this.decorate(cx, cz, blocks, heights, biomes, put);
 
+    // --- 4b. outcrops (after the trees, so nothing grows out of bare rock) ---
+    this.expose(cx, cz, blocks, heights, water);
+
     // --- 5. villages (last, so they overwrite trees and grass) --------------
     const villagers: VillagerMarker[] = [];
     const chests: ChestMarker[] = [];
@@ -374,6 +377,53 @@ export class TerrainGenerator {
       out.push(this.villageInfo(site));
     }
     return out;
+  }
+
+  /** Lays whatever ore breaks the surface around here.
+   *
+   *  The 3x3 of neighbouring chunks is replayed, not just this one, so a patch that
+   *  straddles a chunk boundary is one patch rather than two halves that do not line up.
+   *  Outcrops are laid over the vegetation because that is what they are: bare rock, with
+   *  nothing growing on it. */
+  private expose(
+    cx: number,
+    cz: number,
+    blocks: Uint16Array,
+    heights: Int16Array,
+    water: Uint8Array,
+  ): void {
+    const originX = cx * CHUNK_SIZE;
+    const originZ = cz * CHUNK_SIZE;
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const patch = outcropIn(this.seed, cx + dx, cz + dz);
+        if (!patch) continue;
+        for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+          for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+            const x = originX + lx;
+            const z = originZ + lz;
+            const depth = outcropDepth(this.seed, patch, x, z);
+            if (depth <= 0) continue;
+            const h = heights[lz * CHUNK_SIZE + lx];
+            // Nothing under water: a seam on a lake bed is invisible, which defeats the
+            // whole purpose of putting one at the surface.
+            if (h <= SEA_LEVEL) continue;
+            for (let y = h - depth; y < h; y++) {
+              if (y < 1 || y >= CHUNK_HEIGHT) continue;
+              const index = blockIndex(lx, y, lz);
+              const current = blocks[index];
+              if (current === Block.AIR || current === Block.WATER || current === Block.BEDROCK) continue;
+              blocks[index] = patch.block;
+            }
+            // Whatever was growing on top of it is not any more.
+            const above = blockIndex(lx, h, lz);
+            if (above < blocks.length && blocks[above] !== Block.AIR && water[above] === 0) {
+              blocks[above] = Block.AIR;
+            }
+          }
+        }
+      }
+    }
   }
 
   private decorate(

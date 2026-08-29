@@ -166,6 +166,17 @@ item({ id: 'track_tool', label: '線路敷設ツール', tex: 'track_tool', maxS
 // `game.ts` - and taken back by pointing at the station and clicking again.
 item({ id: 'station', label: '駅', tex: 'station', maxStack: 16 });
 
+// The stop. Not a block: it marks a *place a line calls at*, which is a fact about the
+// network and not about the ground. Put down by pointing at the ground and clicking, and
+// taken back the same way - see `useStop` in `game.ts`. Every leg of every line runs
+// between two of these, on foot exactly as by train.
+item({ id: 'stop', label: '停留所', tex: 'stop', maxStack: 16 });
+
+// The industry kit. Surveys what is under and around where the player is standing and
+// builds whatever the ground supports - see `useIndustryKit` in `game.ts`. Not stacked
+// deep: siting one is a decision, and a pocketful would make it a habit.
+item({ id: 'industry_kit', label: '産業設置具', tex: 'industry_kit', maxStack: 4 });
+
 // The signal. Aimed at the rails like the station, and put down anywhere along them: a
 // signal that could only go where a curve happened to end would be a signal the player
 // has to build their railway around. Pointing at the middle of a run cuts it there first

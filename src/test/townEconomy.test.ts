@@ -25,7 +25,7 @@ const SEED = 21;
 function village(over: Partial<VillageRecord> = {}): VillageRecord {
   return {
     id: '0,0', x: 0, z: 0, baseY: 60, variant: 'plains', name: '麦',
-    kind: 'farm', produces: 'wheat', input: null, inputStock: 0,
+    produces: 'bread', inputs: [], inputStock: new Map(),
     needs: [], stage: 0, points: 0, stock: 0, received: 0,
     discovered: true, spawnedStage: 0, progress: 0,
     ...over,
@@ -112,9 +112,10 @@ describe('a town as its buildings', () => {
 
 describe('what a building asks for', () => {
   it('asks a works for the raw material its village converts', () => {
-    const record = village({ kind: 'workshop', produces: 'bread', input: 'wheat' });
-    expect(goodsFor(SEED, { id: '0,0', use: 'industrial' }, record)).toEqual(['wheat']);
-    // A village that converts nothing has nothing to feed a works with.
+    const record = village({ produces: 'glass', inputs: ['sand', 'coal'] });
+    // All of it: a craft that takes two things is not half-served by one of them.
+    expect(goodsFor(SEED, { id: '0,0', use: 'industrial' }, record)).toEqual(['sand', 'coal']);
+    // A town that converts nothing has nothing to feed a works with.
     expect(goodsFor(SEED, { id: '0,0', use: 'industrial' }, village())).toEqual([]);
   });
 

@@ -16,10 +16,11 @@ import { Container, renderSlot, type SlotSource } from './containers';
 import { RecipePanel } from './recipePanel';
 import { refreshLedger, type LedgerView } from './ledger';
 import { refreshHelp, type HelpView } from './help';
+import { refreshLinePanel, type LineActions, type LinePanelView } from './linePanel';
 import { clear, el } from './dom';
 
 export type ScreenKind =
-  | 'inventory' | 'crafting' | 'furnace' | 'chest' | 'trade' | 'ledger' | 'help' | 'creative';
+  | 'inventory' | 'crafting' | 'furnace' | 'chest' | 'trade' | 'ledger' | 'help' | 'creative' | 'lines';
 
 /** Every item in the game, one full stack of each, endlessly.
  *
@@ -264,6 +265,37 @@ export class ScreenManager {
         if (next === signature) return;
         signature = next;
         refreshLedger(host, data);
+      },
+    });
+  }
+
+  /** The line table: the one screen the player *edits* rather than reads.
+   *
+   *  Re-read on the same throttle as the ledger, because a leg's length and whether it is
+   *  joined move while the page is open — but the actions go straight through, so a click
+   *  takes effect on the next refresh rather than waiting for anything. */
+  openLines(view: () => LinePanelView, actions: LineActions): void {
+    const container = new Container({
+      title: '路線表',
+      atlas: this.atlas,
+      playerInventory: this.player.inventory,
+    });
+    const host = el('div', 'lines-host');
+    container.addSection(host);
+    let checked = 0;
+    let signature = '';
+    this.mount({
+      kind: 'lines',
+      container,
+      refresh: () => {
+        const now = performance.now();
+        if (now - checked < 300) return;
+        checked = now;
+        const data = view();
+        const next = JSON.stringify(data);
+        if (next === signature) return;
+        signature = next;
+        refreshLinePanel(host, data, actions);
       },
     });
   }

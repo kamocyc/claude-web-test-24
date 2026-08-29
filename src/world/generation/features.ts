@@ -1,4 +1,4 @@
-import { hashInts, mulberry32, type Rng } from '../../core/rng';
+import { hashFloat, hashInts, mulberry32, type Rng } from '../../core/rng';
 import { Block, type BlockId } from '../blocks';
 import { CHUNK_SIZE } from '../chunk';
 
@@ -95,3 +95,78 @@ export const ORES: readonly OreSpec[] = [
   { block: Block.GRAVEL, tries: 6, minY: 24, maxY: 100, size: 22 },
   { block: Block.DIRT, tries: 6, minY: 24, maxY: 110, size: 18 },
 ];
+
+/** A seam of ore breaking the surface.
+ *
+ *  Veins are generated underground, which makes them the right thing to *mine* and the
+ *  wrong thing to *site an industry on*: the player would have to dig a shaft to find out
+ *  whether the field they were standing in was worth building a colliery beside. An
+ *  outcrop is the same rock where it can be seen — a bare patch of coal or iron in the
+ *  hillside, a few blocks across, visible from the ridge above it.
+ *
+ *  Both count. What qualifies a place as a deposit is how much of the rock is *there*,
+ *  outcrop and buried seam alike; the outcrop is what tells the player where to look. */
+export interface OutcropSpec {
+  block: BlockId;
+  /** Chance one appears in a given chunk. Deliberately small: an outcrop the player walks
+   *  past every minute is scenery, and the point of this one is that finding it is worth
+   *  something. */
+  chance: number;
+  minRadius: number;
+  maxRadius: number;
+  /** How far down the patch goes. Thick enough that a survey of the column finds a real
+   *  quantity of rock rather than a coat of paint. */
+  depth: number;
+}
+
+export const OUTCROPS: readonly OutcropSpec[] = [
+  { block: Block.COAL_ORE, chance: 0.05, minRadius: 3, maxRadius: 6, depth: 4 },
+  { block: Block.IRON_ORE, chance: 0.035, minRadius: 3, maxRadius: 5, depth: 4 },
+];
+
+/** Where a chunk's outcrop is, if it has one. Deterministic from the seed and the chunk,
+ *  so a neighbouring chunk can replay the same answer and paint the part of the patch that
+ *  overlaps it — which is what stops one being sliced off at a chunk boundary. */
+export function outcropIn(
+  seed: number,
+  cx: number,
+  cz: number,
+): { x: number; z: number; block: BlockId; radius: number; depth: number } | null {
+  const rng = mulberry32(hashInts(seed ^ 0x0c50, cx, cz));
+  const roll = rng();
+  let floor = 0;
+  for (const spec of OUTCROPS) {
+    if (roll >= floor + spec.chance) {
+      floor += spec.chance;
+      continue;
+    }
+    return {
+      x: cx * CHUNK_SIZE + Math.floor(rng() * CHUNK_SIZE),
+      z: cz * CHUNK_SIZE + Math.floor(rng() * CHUNK_SIZE),
+      block: spec.block,
+      radius: spec.minRadius + Math.floor(rng() * (spec.maxRadius - spec.minRadius + 1)),
+      depth: spec.depth,
+    };
+  }
+  return null;
+}
+
+/** Whether a column falls inside an outcrop, and so how deep the rock goes there.
+ *
+ *  The edge is wobbled off the column's own hash rather than being a circle, because a
+ *  circle of coal in a hillside reads as something somebody built. Zero for a column the
+ *  patch does not reach. */
+export function outcropDepth(
+  seed: number,
+  patch: { x: number; z: number; radius: number; depth: number },
+  x: number,
+  z: number,
+): number {
+  const distance = Math.hypot(x - patch.x, z - patch.z);
+  const wobble = hashFloat(seed ^ 0x0c51, x, z) * 1.6 - 0.6;
+  if (distance > patch.radius + wobble) return 0;
+  // Thickest in the middle and thinning to a single course at the rim, so the patch has a
+  // shape rather than an edge.
+  const middle = 1 - distance / Math.max(1, patch.radius);
+  return Math.max(1, Math.round(patch.depth * (0.4 + 0.6 * middle)));
+}

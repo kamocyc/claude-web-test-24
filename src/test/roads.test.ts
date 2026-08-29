@@ -69,8 +69,8 @@ class FakeWorld implements RoadWorld {
 
 function village(id: string, x: number, z: number): VillageRecord {
   return {
-    id, x, z, baseY: GROUND, variant: 'plains', name: id, kind: 'farm',
-    produces: 'wheat', input: null, inputStock: 0, needs: [],
+    id, x, z, baseY: GROUND, variant: 'plains', name: id,
+    produces: 'bread', inputs: ['wheat'], inputStock: new Map(), needs: [],
     stage: 0, points: 0, stock: 0, received: 0, discovered: true, spawnedStage: 0,
     progress: 0,
   };

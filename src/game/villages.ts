@@ -1,13 +1,22 @@
-/** Villages as an economy rather than as scenery.
+/** Towns as an economy rather than as scenery.
  *
- *  Villages themselves are still a pure function of the seed — this module never decides
+ *  Towns themselves are still a pure function of the seed — this module never decides
  *  where one is, it only remembers what has happened to the ones the player has met.
  *  Nothing here imports three.js, so the whole thing runs under Vitest in Node.
  *
- *  Two ideas make a network worth planning rather than merely worth finishing. A village
- *  *wants* particular goods, so which pair you join is a decision and not just a chore.
- *  And a workshop village makes nothing at all until somebody feeds it, so the map grows
- *  a shape: raw village -> workshop -> the towns that want what it makes. */
+ *  A town does exactly one thing with goods: it *converts* them. It has a works that turns
+ *  raw material into something finished, and homes and shops that eat what other towns'
+ *  works have finished. Nothing in a town comes out of the ground — the ground is the
+ *  player's business now, and a primary industry is something they site themselves beside
+ *  a deposit.
+ *
+ *  So the map has two stages in it and they are both the player's:
+ *
+ *      産業（原料）→ 町の工場（加工品）→ 別の町の住宅と商店（消費）
+ *
+ *  A town with no line to an industry makes nothing at all, and a town with no line from
+ *  another town's works goes hungry. Which is the whole game: neither half happens by
+ *  itself, and neither half is worth anything without the other. */
 
 import { hashInts, mulberry32 } from '../core/rng';
 import type { VillageVariant } from '../world/generation/village';
@@ -17,10 +26,6 @@ export type VillageId = string;
 /** An ordinary item id. Villages trade in the goods the game already has, so stock,
  *  inventories, trades and the texture atlas all work without a parallel item set. */
 export type GoodId = string;
-
-/** Where a village's output comes from. A workshop is the interesting one: it converts,
- *  so it is worth nothing until a road reaches it. */
-export type VillageKind = 'farm' | 'mine' | 'workshop';
 
 /** Deliveries banked to reach each next stage. Later stages cost more, so a town is a
  *  long-running goal rather than an afternoon's work. */
@@ -47,22 +52,23 @@ export const MAX_STOCK = 64;
 export const NEEDED_POINTS = 3;
 export const SPARE_POINTS = 1;
 
-/** What the land itself yields. */
-const RAW: Record<VillageVariant, readonly GoodId[]> = {
-  plains: ['wheat', 'carrot', 'potato', 'wool', 'oak_log'],
-  desert: ['sand', 'coal', 'gravel'],
-  snowy: ['coal', 'iron_ore', 'wool', 'oak_log'],
-};
-
-/** One-step conversions. A workshop village sits on one of these and needs its input
- *  hauled in — which is what turns a pair of roads into a supply chain. */
-export const CRAFTS: readonly { input: GoodId; output: GoodId }[] = [
-  { input: 'wheat', output: 'bread' },
-  { input: 'sand', output: 'glass' },
-  { input: 'sand', output: 'sandstone' },
-  { input: 'oak_log', output: 'oak_planks' },
-  { input: 'iron_ore', output: 'iron_ingot' },
-  { input: 'potato', output: 'baked_potato' },
+/** What a town's works turns into what.
+ *
+ *  Some of them take two things, and that is the point of taking any: a glassworks wants
+ *  sand *and* something to fire the furnace with, so serving one is two lines from two
+ *  different deposits rather than one line done twice. A town on a single-input craft is
+ *  the easy one to get started on; a smelter is the one worth planning for.
+ *
+ *  Every output is on `CONSUMED`, and every input is on `INDUSTRY_GOODS` in
+ *  `industry.ts` — so every demand in the game has a supplier somewhere, and every
+ *  industry the player can site has somebody who wants what it digs. */
+export const CRAFTS: readonly { inputs: readonly GoodId[]; output: GoodId }[] = [
+  { inputs: ['wheat'], output: 'bread' },
+  { inputs: ['oak_log'], output: 'oak_planks' },
+  { inputs: ['sand'], output: 'sandstone' },
+  { inputs: ['oak_log', 'coal'], output: 'torch' },
+  { inputs: ['sand', 'coal'], output: 'glass' },
+  { inputs: ['iron_ore', 'coal'], output: 'iron_ingot' },
 ];
 
 /** People, as something a route can carry.
@@ -77,14 +83,12 @@ export const PASSENGER: GoodId = 'passenger';
  *  an item — so anything naming a cargo has to ask this first. */
 export const PASSENGER_LABEL = '人';
 
-/** Goods a settled village consumes whatever it makes. Every one of them is either a
- *  workshop's output or something the land yields, so demand always has a supplier. */
-const CONSUMED: readonly GoodId[] = [
-  'bread', 'glass', 'iron_ingot', 'oak_planks', 'wool', 'coal', 'sandstone', 'baked_potato',
+/** Goods a town consumes whatever it makes. Every one of them comes out of some town's
+ *  works, so a demand is always something another part of the network could be built to
+ *  meet. */
+export const CONSUMED: readonly GoodId[] = [
+  'bread', 'torch', 'oak_planks', 'sandstone', 'glass', 'iron_ingot',
 ];
-
-/** Roughly a third of villages convert rather than produce. */
-const WORKSHOP_SHARE = 0.34;
 
 const GOOD_STEMS: Record<string, string> = {
   wheat: '麦',
@@ -101,7 +105,7 @@ const GOOD_STEMS: Record<string, string> = {
   iron_ingot: '鍛冶',
   bread: 'パン',
   oak_planks: '製材',
-  baked_potato: '芋焼き',
+  torch: '灯り',
   passenger: '人',
 };
 
@@ -146,12 +150,12 @@ export interface VillageRecord {
   /** The stem of the name. The rank is appended for display, so a village that grows is
    *  called a town by everything that names it. */
   name: string;
-  kind: VillageKind;
   produces: GoodId;
-  /** What a workshop has to be fed. Null everywhere else. */
-  input: GoodId | null;
-  /** Goods hauled in and not yet converted. */
-  inputStock: number;
+  /** What the works has to be fed. Empty only on a tutorial hamlet, which is the one
+   *  place in the world that makes something out of nothing. */
+  inputs: GoodId[];
+  /** Raw material hauled in and not yet converted, per input. */
+  inputStock: Map<GoodId, number>;
   /** What this village is asking for, widening as it grows. Derived from the stage, so
    *  it is never stored. */
   needs: GoodId[];
@@ -188,9 +192,8 @@ export interface SavedVillage {
   stock: number;
   discovered: boolean;
   spawnedStage: number;
-  /** Absent in saves written before workshops existed; such a village simply starts
-   *  empty and fills up again from the next delivery. */
-  inputStock?: number;
+  /** Raw material on hand, per input. */
+  inputStock?: Record<string, number>;
   received?: number;
   /** A tutorial hamlet is not on the village grid, so unlike every other village it
    *  cannot be re-derived and its whole description is stored alongside its progress. */
@@ -221,10 +224,9 @@ export function outpostFromSave(entry: SavedVillage): VillageRecord | null {
     baseY: entry.baseY,
     variant,
     name: entry.name ?? '出張所',
-    kind: 'farm',
     produces: entry.produces,
-    input: null,
-    inputStock: entry.inputStock ?? 0,
+    inputs: [],
+    inputStock: stockFromSave(entry.inputStock),
     needs: [],
     stage: entry.stage,
     points: entry.points,
@@ -243,42 +245,27 @@ export function villageId(x: number, z: number): VillageId {
   return `${x},${z}`;
 }
 
-/** What a village does with itself. Deterministic from the seed and the centre, so a
- *  village is the same trade however and whenever the player arrives. */
-export function villageTrade(
-  seed: number,
-  x: number,
-  z: number,
-  variant: VillageVariant,
-): { kind: VillageKind; produces: GoodId; input: GoodId | null } {
+/** What a town's works converts. Deterministic from the seed and the centre, so a town is
+ *  the same works however and whenever the player arrives. */
+export function townCraft(seed: number, x: number, z: number): { produces: GoodId; inputs: GoodId[] } {
   const rng = mulberry32(hashInts(seed ^ 0x9d0d5, x, z));
-  const roll = rng();
-  const pool = RAW[variant] ?? RAW.plains;
-  const raw = pool[Math.floor(rng() * pool.length)];
   const craft = CRAFTS[Math.floor(rng() * CRAFTS.length)];
-  if (roll < WORKSHOP_SHARE) {
-    return { kind: 'workshop', produces: craft.output, input: craft.input };
-  }
-  // Ore and stone come out of a mine, everything else off a field. Only the label
-  // differs, but a snowy village calling itself a farm reads wrong.
-  const kind: VillageKind = raw === 'coal' || raw === 'iron_ore' || raw === 'gravel' || raw === 'sand' ? 'mine' : 'farm';
-  return { kind, produces: raw, input: null };
+  return { produces: craft.output, inputs: [...craft.inputs] };
 }
 
-/** The goods a village is asking for right now. A workshop's input always comes first:
+/** The goods a town is asking for right now. The works' raw material always comes first:
  *  it is not a preference, it is the thing that makes the place work at all. */
 export function villageNeeds(
   seed: number,
   x: number,
   z: number,
   produces: GoodId,
-  input: GoodId | null,
+  inputs: readonly GoodId[],
   stage: number,
 ): GoodId[] {
-  const needs: GoodId[] = [];
-  if (input) needs.push(input);
+  const needs: GoodId[] = [...inputs];
   const rng = mulberry32(hashInts(seed ^ 0x51ee3, x, z));
-  const pool = CONSUMED.filter((good) => good !== produces && good !== input);
+  const pool = CONSUMED.filter((good) => good !== produces && !inputs.includes(good));
   // Shuffle once and take a prefix, so a village that grows keeps asking for what it
   // already asked for and merely adds to the list.
   for (let i = pool.length - 1; i > 0; i--) {
@@ -306,12 +293,6 @@ export function displayName(village: Pick<VillageRecord, 'name' | 'stage'>): str
 
 export function rankLabel(stage: number): string {
   return RANKS[Math.max(0, Math.min(stage, RANKS.length - 1))];
-}
-
-export function kindLabel(kind: VillageKind): string {
-  if (kind === 'workshop') return '工房';
-  if (kind === 'mine') return '採掘';
-  return '農産';
 }
 
 export function goodLabel(good: GoodId): string {
@@ -353,18 +334,17 @@ export class VillageRegistry {
       const id = villageId(seed.x, seed.z);
       let record = this.byId.get(id);
       if (!record) {
-        const trade = villageTrade(this.seed, seed.x, seed.z, seed.variant);
+        const craft = townCraft(this.seed, seed.x, seed.z);
         record = {
           id,
           x: seed.x,
           z: seed.z,
           baseY: seed.baseY,
           variant: seed.variant,
-          name: villageName(this.seed, seed.x, seed.z, trade.produces),
-          kind: trade.kind,
-          produces: trade.produces,
-          input: trade.input,
-          inputStock: 0,
+          name: villageName(this.seed, seed.x, seed.z, craft.produces),
+          produces: craft.produces,
+          inputs: craft.inputs,
+          inputStock: new Map(),
           needs: [],
           stage: 0,
           points: 0,
@@ -387,7 +367,7 @@ export class VillageRegistry {
 
   private refreshNeeds(record: VillageRecord): void {
     record.needs = villageNeeds(
-      this.seed, record.x, record.z, record.produces, record.input, record.stage,
+      this.seed, record.x, record.z, record.produces, record.inputs, record.stage,
     );
   }
 
@@ -432,29 +412,54 @@ export class VillageRegistry {
     return [...this.byId.values()].filter((v) => v.discovered);
   }
 
-  /** Only discovered villages produce, so an unexplored world costs nothing to run.
-   *  A workshop consumes one unit of its input per unit it makes, and simply stops when
-   *  the road feeding it stops. */
+  /** Only discovered towns work, so an unexplored world costs nothing to run.
+   *
+   *  A works takes one of *each* of its inputs per unit it makes, and stops the moment any
+   *  one of them runs out. That is what makes a two-input craft a different job from a
+   *  one-input craft rather than the same job at half the rate: a glassworks with all the
+   *  sand in the world and no coal is a glassworks standing still. */
   produce(dt: number): void {
     for (const record of this.byId.values()) {
       if (!record.discovered || record.stock >= MAX_STOCK) continue;
-      if (record.input !== null && record.inputStock <= 0) {
-        // Nothing to work with. Hold the carry so a starved workshop does not bank time
-        // and then empty a whole delivery in one frame.
+      if (!this.fed(record)) {
+        // Nothing to work with. Hold the carry so a starved works does not bank time and
+        // then empty a whole delivery in one frame.
         record.progress = 0;
         continue;
       }
       const seconds = produceSeconds(record.stage);
       record.progress += dt;
       while (record.progress >= seconds && record.stock < MAX_STOCK) {
-        if (record.input !== null) {
-          if (record.inputStock <= 0) break;
-          record.inputStock -= 1;
+        if (!this.fed(record)) break;
+        for (const good of record.inputs) {
+          record.inputStock.set(good, (record.inputStock.get(good) ?? 0) - 1);
         }
         record.progress -= seconds;
         record.stock += 1;
       }
     }
+  }
+
+  /** Whether a works has one of everything it needs. */
+  private fed(record: VillageRecord): boolean {
+    for (const good of record.inputs) {
+      if ((record.inputStock.get(good) ?? 0) <= 0) return false;
+    }
+    return true;
+  }
+
+  /** How much of one raw material a town has on hand. */
+  inputHeld(record: VillageRecord, good: GoodId): number {
+    return record.inputStock.get(good) ?? 0;
+  }
+
+  /** The raw material a town's works has run out of, if any. What the panel says when a
+   *  town is quiet with a line running into it. */
+  starvedOf(record: VillageRecord): GoodId | null {
+    for (const good of record.inputs) {
+      if ((record.inputStock.get(good) ?? 0) <= 0) return good;
+    }
+    return null;
   }
 
   takeStock(id: VillageId, count: number): number {
@@ -496,8 +501,9 @@ export class VillageRegistry {
     const record = this.byId.get(id);
     if (!record || count <= 0) return { needed: false, points: 0, stage: null };
     const needed = record.needs.includes(good);
-    if (record.input === good) {
-      record.inputStock = Math.min(MAX_STOCK, record.inputStock + count);
+    if (record.inputs.includes(good)) {
+      const held = record.inputStock.get(good) ?? 0;
+      record.inputStock.set(good, Math.min(MAX_STOCK, held + count));
     }
     // The buildings take their share of a crate. People are the one delivery no building
     // stocks: somebody who has arrived has arrived, and what they are worth is the fare
@@ -540,7 +546,7 @@ export class VillageRegistry {
       stock: v.stock,
       discovered: v.discovered,
       spawnedStage: v.spawnedStage,
-      inputStock: v.inputStock,
+      inputStock: Object.fromEntries(v.inputStock),
       received: v.received,
       ...(v.depot ? { depot: v.depot } : {}),
       // A hamlet is not on the grid, so nothing can work out where it was or what it was
@@ -588,8 +594,18 @@ export class VillageRegistry {
     record.stock = saved.stock;
     record.discovered = saved.discovered;
     record.spawnedStage = saved.spawnedStage;
-    record.inputStock = saved.inputStock ?? 0;
+    record.inputStock = stockFromSave(saved.inputStock);
     record.received = saved.received ?? 0;
     if (saved.depot) record.depot = saved.depot;
   }
+}
+
+/** Raw material on hand, back out of a save. Anything that is not a number is dropped:
+ *  the town simply starts empty and fills up again from the next delivery. */
+function stockFromSave(saved: Record<string, number> | undefined): Map<GoodId, number> {
+  const out = new Map<GoodId, number>();
+  for (const [good, held] of Object.entries(saved ?? {})) {
+    if (typeof held === 'number' && Number.isFinite(held)) out.set(good, Math.max(0, held));
+  }
+  return out;
 }

@@ -17,6 +17,8 @@ import {
 } from '../game/villages';
 import { RAIL_QUALITY } from '../game/transport';
 import type { Route } from '../game/transport';
+import type { Stop } from '../game/lines';
+import type { Industry } from '../game/industry';
 
 const A: VillageSeed = { x: 0, z: 0, baseY: 60, variant: 'plains' };
 const B: VillageSeed = { x: 400, z: 0, baseY: 60, variant: 'snowy' };
@@ -30,9 +32,18 @@ function setup() {
   return { registry, quest: new Questline() };
 }
 
+/** A stop serving a town, as the milestones and the tutorial see one. */
+function stop(id: string, town: string | null, x = 0): Stop {
+  return { id, x, y: 60, z: 0, town, name: `停留所${id}` };
+}
+
+const STOP_A = stop('s1', ID_A, 0);
+const STOP_B = stop('s2', ID_B, 400);
+
 function route(connected: boolean, missing = 0, quality = 1): Route {
   return {
-    from: ID_A, to: ID_B, good: 'wheat', surveyed: true, connected,
+    id: 'l1#0', lineId: 'l1', index: 0,
+    from: STOP_A, to: STOP_B, good: 'bread', surveyed: true, connected,
     everConnected: connected, waypoints: [], cumulative: [], length: 100, missing,
     quality, grade: 'x',
     climb: 0, direct: 100, detour: 1, vehicle: 'porter', cartPinch: null, railPinch: null,
@@ -46,8 +57,29 @@ function route(connected: boolean, missing = 0, quality = 1): Route {
 }
 
 /** A network the milestones can be pointed at. */
-function state(villages: VillageRecord[], routes: Route[]): NetworkState {
-  return { villages, routes, player: { x: 0, z: 0 }, unfound: null };
+function state(
+  villages: VillageRecord[],
+  routes: Route[],
+  extra: Partial<NetworkState> = {},
+): NetworkState {
+  return {
+    villages,
+    routes,
+    industries: [],
+    stops: [STOP_A, STOP_B],
+    lines: routes.length > 0 ? [{ id: 'l1', name: '1 号線', stops: ['s1', 's2'] }] : [],
+    player: { x: 0, z: 0 },
+    unfound: null,
+    ...extra,
+  };
+}
+
+/** One industry, for the goals that are about having built any. */
+function works(): Industry {
+  return {
+    id: 'i1', kind: 'farm', good: 'wheat', x: 40, y: 60, z: 0,
+    name: '農場 1', richness: 1, stock: 0, progress: 0, shipped: 0,
+  };
 }
 
 describe('the goal after the tutorial', () => {
@@ -64,19 +96,22 @@ describe('the goal after the tutorial', () => {
     // Naming the two villages is the point: "open a second route" on its own left the
     // player with nowhere to put a shovel.
     expect(second.detail(view)).toContain('道 368 個ぶん');
-    expect(second.detail(view)).toContain(a.name);
-    expect(second.detail(view)).toContain(b.name);
+    expect(second.detail(view)).toContain(STOP_A.name);
+    expect(second.detail(view)).toContain(STOP_B.name);
+    expect([a.name, b.name].every((name) => typeof name === 'string')).toBe(true);
     expect(second.marker?.(view)).toEqual({ x: 60, z: 0, kind: 'gap' });
   });
 
-  it('points at a village to find when there is no pair to work on yet', () => {
+  it('says to draw another line when there is no second one yet', () => {
     const { registry } = setup();
     const view = {
       ...state([registry.get(ID_A)!], []),
       unfound: { x: 900, z: -200 },
     };
     expect(second.pair?.(view)).toBeNull();
-    expect(second.detail(view)).toContain('見つける');
+    // The second service is the goal, and the thing that opens one is the line table —
+    // not a shovel, which is what this used to point at.
+    expect(second.detail(view)).toContain('路線');
     expect(second.marker?.(view)).toEqual({ x: 900, z: -200, kind: 'village' });
   });
 
@@ -103,6 +138,12 @@ describe('a road laid before the road talk', () => {
     expect(quest.step).toBe('learn_roads');
 
     quest.complete('learn', registry);
+    expect(quest.step).toBe('place_stops');
+    // The stops and the line come next, and both are noticed by looking rather than by
+    // being told: neither is an event that happens anywhere in particular.
+    expect(quest.observe(state([], []))).not.toBeNull();
+    expect(quest.step).toBe('draw_line');
+    expect(quest.observe(state([], [joined]))).not.toBeNull();
     expect(quest.step).toBe('build_road');
     // Nothing about the world has changed, so the step has to be able to notice on its
     // own that the road it is waiting for is already there.
@@ -119,6 +160,8 @@ function playThrough() {
   quest.complete('accept', registry);
   quest.complete('deliver', registry);
   quest.complete('learn', registry);
+  quest.observe(state([], []));
+  quest.observe(state([], [route(true)]));
   quest.onRouteEstablished(route(true));
   quest.onArrival(route(true));
   return { registry, quest };
@@ -209,14 +252,17 @@ describe('questline', () => {
     expect(quest.step).toBe('done');
   });
 
-  it('ignores a route between other villages', () => {
+  it('ignores a leg between other towns', () => {
     const { registry, quest } = setup();
     quest.onVillageDiscovered(registry.get(ID_A)!);
     quest.interactionFor(registry.get(ID_A)!, registry);
     quest.complete('accept', registry);
     quest.complete('deliver', registry);
     quest.complete('learn', registry);
-    const elsewhere = { ...route(true), from: 'x', to: 'y' };
+    quest.observe(state([], []));
+    const elsewhere = { ...route(true), from: stop('s9', 'x'), to: stop('s8', 'y') };
+    expect(quest.observe(state([], [elsewhere]))).toBeNull();
+    quest.observe(state([], [route(true)]));
     expect(quest.onRouteEstablished(elsewhere)).toBeNull();
     expect(quest.step).toBe('build_road');
   });
@@ -228,6 +274,8 @@ describe('questline', () => {
     quest.complete('accept', registry);
     quest.complete('deliver', registry);
     quest.complete('learn', registry);
+    quest.observe(state([], []));
+    quest.observe(state([], [route(false, 128)]));
     const objective = quest.objective(registry, route(false, 128));
     expect(objective?.marker?.kind).toBe('gap');
     expect(objective?.detail).toContain('128');
@@ -241,6 +289,10 @@ describe('questline', () => {
       expect(quest.objective(registry, undefined)).not.toBeNull();
       quest.complete(kind, registry);
     }
+    expect(quest.objective(registry, undefined)).not.toBeNull();
+    quest.observe(state([], []));
+    expect(quest.objective(registry, undefined)).not.toBeNull();
+    quest.observe(state([], [route(true)]));
     expect(quest.objective(registry, undefined)).not.toBeNull();
     quest.onRouteEstablished(route(true));
     expect(quest.objective(registry, undefined)).not.toBeNull();
@@ -287,7 +339,7 @@ describe('milestones', () => {
     expect(quest.claimMilestones(state([], [route(true), route(true)]))).toEqual([]);
   });
 
-  it('awards the first goal when two routes are working', () => {
+  it('awards the first goal when two legs are working', () => {
     const quest = done();
     expect(quest.claimMilestones(state([], [route(true)]))).toEqual([]);
     const earned = quest.claimMilestones(state([], [route(true), route(true)]));
@@ -307,14 +359,20 @@ describe('milestones', () => {
     const { registry } = setup();
     const village = registry.get(ID_A)!;
     village.stage = MAX_STAGE;
-    village.kind = 'workshop';
-    village.input = 'wheat';
-    village.inputStock = 4;
+    village.inputs = ['sand', 'coal'];
+    village.inputStock = new Map([['sand', 4], ['coal', 4]]);
+    village.stock = 3;
     // A player who did everything at once is still told what they did, one at a time.
-    // Railed rather than merely paved, so the last goal on the list is met as well.
+    // Railed rather than merely paved, so the railway goal is met as well.
     const paved: Route = { ...route(true, 0, RAIL_QUALITY), vehicle: 'train' };
+    const third = stop('s3', 'c', 800);
+    const fourth = stop('s4', 'd', 1200);
     const earned = quest.claimMilestones(
-      state([village], [paved, { ...paved, to: 'c' }, { ...paved, from: 'c', to: 'd' }]),
+      state(
+        [village],
+        [paved, { ...paved, to: third }, { ...paved, from: third, to: fourth }],
+        { industries: [works()], lines: [{ id: 'l1', name: '1 号線', stops: ['s1', 's2'] }] },
+      ),
     );
     expect(earned.map((m) => m.id)).toEqual(MILESTONES.map((m) => m.id));
     expect(quest.currentMilestone()).toBeNull();
