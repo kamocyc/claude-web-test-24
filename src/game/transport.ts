@@ -22,7 +22,7 @@
 
 import { pathAroundPlots } from './buildings';
 import { roadGrade, toWaypoints, type RoadNetwork, type RoadPoint, type SurveyResult } from './roads';
-import type { GoodId, VillageId, VillageRegistry } from './villages';
+import { PASSENGER, type GoodId, type VillageId, type VillageRegistry } from './villages';
 
 /** What is doing the hauling. A cart only runs where the road is three columns wide the
  *  whole way, which is the one thing widening a road buys — and the reason widening one
@@ -286,8 +286,12 @@ export interface RailSource {
 export interface PorterHost {
   /** `cargo` is how much this trip is carrying, which is how many wagons a train couples
    *  up. Zero is a real answer: a train running home with nothing is a locomotive on its
-   *  own, and a line that only pays one way should look like one. */
-  spawnPorter(point: RoadPoint, vehicle: Vehicle, cargo: number): number | null;
+   *  own, and a line that only pays one way should look like one.
+   *
+   *  `good` is what it is carrying, and the only thing the view does with it is decide
+   *  whether those cars are wagons or coaches. A train full of people that looked like a
+   *  goods train would make the one visible difference between the two invisible. */
+  spawnPorter(point: RoadPoint, vehicle: Vehicle, cargo: number, good: GoodId): number | null;
   porterPosition(mobId: number): { x: number; z: number } | null;
   /** Walks the mob towards where its shipment has got to, at the route's speed, and puts
    *  it back on the road if it has fallen more than `PORTER_LEASH` behind. */
@@ -598,7 +602,7 @@ export class TransportNetwork {
       // The road was broken while goods were on it. Send them home rather than losing
       // them; a road being dug up should cost time, not cargo.
       for (const porter of route.porters) {
-        if (porter.cargo > 0) this.registry.returnStock(route.from, porter.cargo);
+        if (porter.cargo > 0) this.returnLoad(route, porter);
         if (porter.mobId !== null) this.host?.removePorter(porter.mobId);
       }
       route.porters.length = 0;
@@ -889,6 +893,15 @@ export class TransportNetwork {
     return end === 0 ? route.from : route.to;
   }
 
+  /** Sends a load that never arrived back where it set out from. A road being dug up
+   *  should cost time, not cargo — and not people either: somebody halfway to a town they
+   *  wanted to reach goes back to waiting at the station rather than ceasing to exist. */
+  private returnLoad(route: Route, porter: Porter): void {
+    const home = this.villageAt(route, porter.home);
+    if (porter.good === PASSENGER) this.registry.returnPassengers(home, porter.cargo);
+    else this.registry.returnStock(home, porter.cargo);
+  }
+
   /** Sends the next trip out, from whichever end actually has something to send.
    *
    *  Taking only from `route.from` deadlocked a third of the network. Which village a
@@ -903,22 +916,39 @@ export class TransportNetwork {
     // Keep them strung out along the road instead of leaving in a bunch, whichever end
     // they set out from.
     if (route.porters.some((p) => Math.abs(p.t - p.home) < PORTER_SPACING)) return;
-    for (const end of this.legsOf(route)) {
-      const cargo = this.registry.takeStock(this.villageAt(route, end), this.loadOf(route));
-      if (cargo <= 0) continue;
-      const good = this.registry.get(this.villageAt(route, end))?.produces ?? route.good;
-      route.porters.push({
-        t: end,
-        home: end,
-        dir: end === 0 ? 1 : -1,
-        good,
-        cargo,
-        mobId: null,
-        mobVehicle: null,
-        held: 0,
-      });
-      return;
+    // Freight first, everywhere, and people only where a leg would otherwise not run at
+    // all. A route is worth more carrying crates than carrying passengers, and a town with
+    // something to ship should not have its trip taken by a queue at the station.
+    for (const people of [false, true]) {
+      for (const end of this.legsOf(route)) {
+        const load = this.take(route, end, people);
+        if (load === null) continue;
+        route.porters.push({
+          t: end,
+          home: end,
+          dir: end === 0 ? 1 : -1,
+          good: load.good,
+          cargo: load.cargo,
+          mobId: null,
+          mobVehicle: null,
+          held: 0,
+        });
+        return;
+      }
     }
+  }
+
+  /** Loads one end of a route, with crates or with people. Null when there was nothing of
+   *  that kind to load. */
+  private take(route: Route, end: 0 | 1, people: boolean): { good: GoodId; cargo: number } | null {
+    const id = this.villageAt(route, end);
+    if (people) {
+      const cargo = this.registry.takePassengers(id, this.loadOf(route));
+      return cargo > 0 ? { good: PASSENGER, cargo } : null;
+    }
+    const cargo = this.registry.takeStock(id, this.loadOf(route));
+    if (cargo <= 0) return null;
+    return { good: this.registry.get(id)?.produces ?? route.good, cargo };
   }
 
   /** The two ends, the one worth loading first. A village whose goods the far end is
@@ -956,11 +986,21 @@ export class TransportNetwork {
   private loadReturn(route: Route, porter: Porter, at: 0 | 1): void {
     const here = this.registry.get(this.villageAt(route, at));
     const home = this.registry.get(this.villageAt(route, porter.home));
-    if (!here || !home || !home.needs.includes(here.produces)) return;
-    const loaded = this.registry.takeStock(here.id, this.loadOf(route));
-    if (loaded <= 0) return;
-    porter.good = here.produces;
-    porter.cargo = loaded;
+    if (!here || !home) return;
+    if (home.needs.includes(here.produces)) {
+      const loaded = this.registry.takeStock(here.id, this.loadOf(route));
+      if (loaded > 0) {
+        porter.good = here.produces;
+        porter.cargo = loaded;
+        return;
+      }
+    }
+    // Nothing here that home wants. Somebody who wants to go there is worth the trip:
+    // this is a leg that used to run empty, so people cost the network nothing to carry.
+    const riders = this.registry.takePassengers(here.id, this.loadOf(route));
+    if (riders <= 0) return;
+    porter.good = PASSENGER;
+    porter.cargo = riders;
   }
 
   /** World position at a point along the route. */
@@ -1019,7 +1059,7 @@ export class TransportNetwork {
     }
 
     if (!near) return;
-    porter.mobId = this.host.spawnPorter(here, vehicle, porter.cargo);
+    porter.mobId = this.host.spawnPorter(here, vehicle, porter.cargo, porter.good);
     porter.mobVehicle = porter.mobId === null ? null : vehicle;
   }
 

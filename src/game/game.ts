@@ -141,6 +141,7 @@ import {
   type Vehicle,
 } from './transport';
 import {
+  PASSENGER,
   STAGE_POINTS,
   VillageRegistry,
   displayName,
@@ -148,6 +149,7 @@ import {
   radiusOf,
   rankLabel,
   villageId,
+  type GoodId,
   type VillageId,
   type VillageRecord,
 } from './villages';
@@ -518,7 +520,7 @@ export class Game {
         onStageUp: (id, stage) => this.onVillageGrew(id, stage),
       },
       {
-        spawnPorter: (point, vehicle, cargo) => this.spawnPorter(point, vehicle, cargo),
+        spawnPorter: (point, vehicle, cargo, good) => this.spawnPorter(point, vehicle, cargo, good),
         porterPosition: (id) => {
           const mob = this.livePorter(id);
           return mob ? { x: mob.x, z: mob.z } : null;
@@ -2988,7 +2990,7 @@ export class Game {
     const decks: CarDeck[] = [];
     for (const mob of this.mobs.mobs) {
       if (mob.kind !== 'train') continue;
-      const kinds = consistOf(mob.cars);
+      const kinds = consistOf(mob.cars, mob.carriesPeople);
       const keep = consistLength(kinds) + TRAIL_STEP * 2;
       const head = { x: mob.x, y: mob.y, z: mob.z };
       // A train that has only just been drawn has been nowhere, and there is no honest way
@@ -3084,7 +3086,12 @@ export class Game {
       : null;
   }
 
-  private spawnPorter(point: RoadPoint, vehicle: Vehicle, cargo: number): number | null {
+  private spawnPorter(
+    point: RoadPoint,
+    vehicle: Vehicle,
+    cargo: number,
+    good: GoodId,
+  ): number | null {
     if (!this.world.hasChunk(toChunkCoord(point.x), toChunkCoord(point.z))) return null;
     const middle = centreOf(vehicle);
     const mob = new Mob(vehicle, point.x + middle, point.y + 1, point.z + middle);
@@ -3092,6 +3099,7 @@ export class Game {
     // What the train couples up behind it. A porter carries its load on its back and has
     // nowhere to put a second crate, so the count is only ever read for a train.
     mob.cars = carsFor(cargo);
+    mob.carriesPeople = good === PASSENGER;
     // The one thing on rails is the only thing given the deck to stand on. Everything
     // else that walks has no reason to be up on a viaduct and no way down off one; a
     // train has both, and without this it walks off the first pier and falls.

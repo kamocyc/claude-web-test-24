@@ -65,6 +65,15 @@ export const CRAFTS: readonly { input: GoodId; output: GoodId }[] = [
   { input: 'potato', output: 'baked_potato' },
 ];
 
+/** People, as something a route can carry.
+ *
+ *  Not an item: `items.ts` has never heard of it and nothing can hold one in a hand. It is
+ *  a `GoodId` because that is the only vocabulary `transport.ts` has, and because
+ *  everything a delivery goes through — the fare, the points, the ledger row — is exactly
+ *  what a trainload of people should go through. Somebody who wanted to travel and got
+ *  there is worth what a crate that was wanted is worth. */
+export const PASSENGER: GoodId = 'passenger';
+
 /** Goods a settled village consumes whatever it makes. Every one of them is either a
  *  workshop's output or something the land yields, so demand always has a supplier. */
 const CONSUMED: readonly GoodId[] = [
@@ -90,9 +99,27 @@ const GOOD_STEMS: Record<string, string> = {
   bread: 'パン',
   oak_planks: '製材',
   baked_potato: '芋焼き',
+  passenger: '人',
 };
 
 const NAME_PREFIXES = ['朝', '霧', '丘', '川', '風', '石', '緑', '陽'] as const;
+
+/** The town inside a village, as the three questions the registry has of it.
+ *
+ *  Narrow and duck typed, the way `DepotSource` and `RailSource` are in `transport.ts`:
+ *  `TownEconomy` satisfies it, a test satisfies it with an object literal, and a registry
+ *  handed nothing at all behaves exactly as it did before towns existed. That last one is
+ *  what keeps every村-level test in this repository honest. */
+export interface TownLink {
+  /** How many people are waiting to travel out of a town. */
+  waitingAt(id: VillageId): number;
+  /** Takes people off that queue. */
+  takeWaiting(id: VillageId, count: number): number;
+  /** Puts them back, when the trip they were on never happened. */
+  returnWaiting(id: VillageId, count: number): void;
+  /** Hands a delivery to the buildings that asked for it, and says how much landed. */
+  deliver(id: VillageId, good: GoodId, count: number): number;
+}
 
 export interface VillageSeed {
   x: number;
@@ -309,6 +336,10 @@ export class VillageRegistry {
   constructor(
     private readonly seed: number,
     private readonly source: VillageSource,
+    /** The buildings inside these villages, when anything is modelling them. Null in every
+     *  test that only cares about a village as a producer, and the whole of what makes
+     *  this class behave as it always did in that case. */
+    private readonly town: TownLink | null = null,
   ) {}
 
   /** Registers every village near a point. Idempotent: an already known village keeps
@@ -436,6 +467,22 @@ export class VillageRegistry {
     if (record) record.stock = Math.min(MAX_STOCK, record.stock + count);
   }
 
+  /** People waiting to travel out of a village, as `takeStock` is for crates. Always zero
+   *  where nothing is modelling the town, which is what keeps a road between two producers
+   *  behaving exactly as it always has. */
+  takePassengers(id: VillageId, count: number): number {
+    return this.town?.takeWaiting(id, count) ?? 0;
+  }
+
+  returnPassengers(id: VillageId, count: number): void {
+    this.town?.returnWaiting(id, count);
+  }
+
+  /** How many people are waiting to travel out of a village. */
+  waiting(id: VillageId): number {
+    return this.town?.waitingAt(id) ?? 0;
+  }
+
   /** Hands a village a load of something. This is the one place a delivery is judged:
    *  what it is worth, whether it feeds a workshop, and whether it tips a stage. */
   deliver(id: VillageId, good: GoodId, count: number): {
@@ -449,6 +496,10 @@ export class VillageRegistry {
     if (record.input === good) {
       record.inputStock = Math.min(MAX_STOCK, record.inputStock + count);
     }
+    // The buildings take their share of a crate. People are the one delivery no building
+    // stocks: somebody who has arrived has arrived, and what they are worth is the fare
+    // and the points below.
+    if (good !== PASSENGER) this.town?.deliver(id, good, count);
     record.received += count;
     const points = pointsFor(record, good, count);
     return { needed, points, stage: this.addPoints(id, points) };

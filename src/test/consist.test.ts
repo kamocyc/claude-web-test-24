@@ -53,6 +53,9 @@ describe('what a train is made of', () => {
     // would make riding it a thing to wait for rather than a thing to do.
     expect(consistOf(0)).toEqual(['loco', 'coach']);
     expect(consistOf(3)).toEqual(['loco', 'coach', 'wagon', 'wagon', 'wagon']);
+    // A trainload of people is coaches all the way back, which is the one place the
+    // difference between freight and passengers is visible from outside the train.
+    expect(consistOf(3, true)).toEqual(['loco', 'coach', 'coach', 'coach', 'coach']);
   });
 
   it('spaces the cars a coupling apart, measured from the engine', () => {

@@ -23,7 +23,15 @@ import {
   type Vehicle,
 } from '../game/transport';
 import { RoadNetwork, roadGrade, type RoadPoint, type RoadWorld } from '../game/roads';
-import { MAX_STAGE, STAGE_POINTS, VillageRegistry, villageId, type VillageSeed, type VillageSource } from '../game/villages';
+import {
+  MAX_STAGE,
+  PASSENGER,
+  STAGE_POINTS,
+  VillageRegistry,
+  villageId,
+  type VillageSeed,
+  type VillageSource,
+} from '../game/villages';
 import { Block, type BlockId } from '../world/blocks';
 import { blockIndex, chunkKey, toChunkCoord, toLocalCoord } from '../world/chunk';
 
@@ -183,11 +191,48 @@ interface BuildOptions {
   /** Doorways for the two villages, when the test cares that goods start and finish at a
    *  building rather than at a point on the map. */
   depots?: DepotSource | null;
+  /** The buildings inside the two villages, when the test is about people rather than
+   *  crates. Null everywhere else, which is a village with no town in it — exactly what
+   *  every test here was before people existed. */
+  town?: FakeTown | null;
 }
 
 /** The villages' streets end at x=30 and x=210, and a road connects by touching one, so
  *  an unbroken run from 31 to 209 is the finished road. */
-function build({ surface = Block.DIRT_PATH, host, width = 1, rails, depots }: BuildOptions = {}) {
+/** A town that always has somebody wanting to leave, and remembers what arrived.
+ *
+ *  Stands in for `TownEconomy`, which is a whole simulation and not the thing under test
+ *  here: what these tests are about is whether a route picks people up and puts them
+ *  down, which is a question about `transport.ts`. */
+class FakeTown {
+  readonly waiting = new Map<string, number>();
+  readonly delivered: { id: string; good: string; count: number }[] = [];
+
+  constructor(waiting: Record<string, number> = {}) {
+    for (const [id, count] of Object.entries(waiting)) this.waiting.set(id, count);
+  }
+
+  waitingAt(id: string): number {
+    return this.waiting.get(id) ?? 0;
+  }
+
+  takeWaiting(id: string, count: number): number {
+    const taken = Math.min(count, this.waitingAt(id));
+    this.waiting.set(id, this.waitingAt(id) - taken);
+    return taken;
+  }
+
+  returnWaiting(id: string, count: number): void {
+    this.waiting.set(id, this.waitingAt(id) + count);
+  }
+
+  deliver(id: string, good: string, count: number): number {
+    this.delivered.push({ id, good, count });
+    return count;
+  }
+}
+
+function build({ surface = Block.DIRT_PATH, host, width = 1, rails, depots, town }: BuildOptions = {}) {
   const world = new FakeWorld();
   const span = Math.floor((width - 1) / 2);
   if (surface !== null) {
@@ -197,7 +242,7 @@ function build({ surface = Block.DIRT_PATH, host, width = 1, rails, depots }: Bu
   }
   const roads = new RoadNetwork(world);
   roads.seedFromEdits();
-  const registry = new VillageRegistry(SEED, SOURCE);
+  const registry = new VillageRegistry(SEED, SOURCE, town ?? null);
   registry.ensureNear(0, 0);
   registry.discover(ID_A);
   registry.discover(ID_B);
@@ -1105,5 +1150,88 @@ describe('signals and the block ahead', () => {
     route.porters.splice(route.porters.indexOf(west), 1);
     run(transport, 2);
     expect(route.stall).toBeNull();
+  });
+});
+
+describe('people as something a line carries', () => {
+  it('sends nobody while there are crates to send', () => {
+    // A route is worth more carrying goods, so a town with something to ship never has its
+    // trip taken by the queue at its station.
+    const town = new FakeTown({ [ID_A]: 20, [ID_B]: 20 });
+    const { transport, registry } = build({ town });
+    registry.get(ID_A)!.stock = 10;
+    registry.get(ID_B)!.stock = 10;
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 6);
+    const route = transport.find(ID_A, ID_B)!;
+    expect(route.porters.length).toBeGreaterThan(0);
+    expect(route.porters.every((p: Porter) => p.good !== PASSENGER)).toBe(true);
+    // And the queue is untouched: nobody was picked up while there were crates.
+    expect(town.waitingAt(ID_A)).toBe(20);
+  });
+
+  it('fills a leg that would otherwise have run empty', () => {
+    const town = new FakeTown({ [ID_A]: 20 });
+    const { transport, registry } = build({ town });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 4);
+    // Neither village has anything to ship, so nothing about crates can start a trip.
+    registry.get(ID_A)!.stock = 0;
+    registry.get(ID_B)!.stock = 0;
+    run(transport, 6);
+    const route = transport.find(ID_A, ID_B)!;
+    expect(route.porters.length).toBeGreaterThan(0);
+    expect(route.porters[0].good).toBe(PASSENGER);
+    expect(town.waitingAt(ID_A)).toBeLessThan(20);
+  });
+
+  it('delivers people as a delivery, and pays for the trip', () => {
+    const town = new FakeTown({ [ID_A]: 40 });
+    const { transport, registry, events } = build({ town });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 4);
+    registry.get(ID_A)!.stock = 0;
+    registry.get(ID_B)!.stock = 0;
+    run(transport, 400);
+    const arrival = events.arrivals.find((a) => a.good === PASSENGER);
+    expect(arrival).toBeDefined();
+    expect(arrival!.to).toBe(ID_B);
+    expect(arrival!.pay).toBeGreaterThan(0);
+    // People are not stock: nothing is put on a shelf when they get off.
+    expect(town.delivered.some((d) => d.good === PASSENGER)).toBe(false);
+  });
+
+  it('puts people back on the platform when the road is dug up under them', () => {
+    const town = new FakeTown({ [ID_A]: 20 });
+    const { transport, registry, world, roads } = build({ town });
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 4);
+    registry.get(ID_A)!.stock = 0;
+    registry.get(ID_B)!.stock = 0;
+    run(transport, 8);
+    const route = transport.find(ID_A, ID_B)!;
+    expect(route.porters[0]?.good).toBe(PASSENGER);
+    const riding = route.porters[0].cargo;
+    const had = town.waitingAt(ID_A);
+    world.lay(120, GROUND, 0, Block.AIR);
+    roads.onBlockChanged(120, GROUND, 0, Block.DIRT_PATH, Block.AIR);
+    run(transport, 5);
+    expect(route.connected).toBe(false);
+    // Somebody halfway to a town they wanted to reach goes back to waiting for the next
+    // one, rather than ceasing to exist.
+    expect(town.waitingAt(ID_A)).toBe(had + riding);
+  });
+
+  it('carries nobody at all where nothing is modelling the towns', () => {
+    // Every other test in this file builds a registry with no town link, and this is why
+    // they are all still honest: a village with no buildings has nobody waiting.
+    const { transport, registry } = build();
+    transport.requestRoute(ID_A, ID_B);
+    run(transport, 4);
+    registry.get(ID_A)!.stock = 0;
+    registry.get(ID_B)!.stock = 0;
+    expect(registry.waiting(ID_A)).toBe(0);
+    run(transport, 20);
+    expect(transport.find(ID_A, ID_B)!.porters).toHaveLength(0);
   });
 });

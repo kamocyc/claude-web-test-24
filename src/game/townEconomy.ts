@@ -387,6 +387,11 @@ export class TownEconomy {
     }
   }
 
+  /** People waiting to travel out of a town. */
+  waitingAt(id: VillageId): number {
+    return this.towns.get(id)?.waiting ?? 0;
+  }
+
   /** Takes people off the queue for a trip out of town. */
   takeWaiting(id: VillageId, count: number): number {
     const town = this.towns.get(id);

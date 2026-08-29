@@ -97,6 +97,10 @@ export class Mob implements Damageable {
    *  is as long as the load actually is — and a locomotive on its own is a line that is
    *  only paying one way. */
   cars = 0;
+  /** True when what those cars are carrying is people rather than crates, so they are
+   *  drawn as coaches. Set from the shipment when the mob is spawned, for the same reason
+   *  `cars` is: it is the one thing about a train that is visible from outside it. */
+  carriesPeople = false;
   /** Where the head of the train has been, newest first, and where each car behind it
    *  therefore is. Both are filled by whoever drives the mob — see `Game.updateTrains` —
    *  because a car is a picture of a shipment exactly as the engine is, and the mob itself
