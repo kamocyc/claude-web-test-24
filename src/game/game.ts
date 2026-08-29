@@ -1222,7 +1222,13 @@ export class Game {
       if (empty.length > 0) return `${empty.map((g) => this.goodName(g)).join('・')}が切れている`;
       return `${cell.people} 人が住んでいる`;
     }
-    if (cell.wants.size === 0) return undefined;
+    // A works in a village that converts nothing is the village's own shed: it has no
+    // appetite because there is nothing to feed it, and saying so beats saying nothing at
+    // all in the one place the player is looking straight at it.
+    if (cell.wants.size === 0) {
+      if (cell.use !== 'industrial') return undefined;
+      return `${this.goodName(village.produces)}を採っている`;
+    }
     if (cell.staff <= 0) return 'まだ誰も通ってきていない';
     const empty = [...cell.wants].filter(([, held]) => held <= 0).map(([good]) => good);
     if (empty.length > 0) return `${empty.map((g) => this.goodName(g)).join('・')}を待っている`;

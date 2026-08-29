@@ -2792,5 +2792,54 @@ if (developed.noFloor > 0) throw new Error(`${developed.noFloor} cells of a deve
 if (developed.floating > 0) throw new Error(`${developed.floating} cells of a developed house stand over a hole`);
 await shot('15-developed');
 
+// --- the town inside the village ---------------------------------------------
+// The village above is now a 都市, which is the only rank that has one of each use. What
+// a Vitest run cannot check is the half of this that is a view: whether a villager is
+// actually put on the street to walk the commute the town is simulating.
+const town = await evaluate(() => window.voxelcraft.town());
+console.log('town:', JSON.stringify({
+  village: town?.village, people: town?.people, buildings: town?.buildings.length,
+  uses: [...new Set((town?.buildings ?? []).map((b) => b.use))],
+}));
+if (!town) throw new Error('a grown village with no town in it');
+const uses = new Set(town.buildings.map((b) => b.use));
+for (const use of ['residential', 'commercial', 'industrial']) {
+  if (!uses.has(use)) throw new Error(`a 都市 with no ${use} building`);
+}
+if (town.people <= 0) throw new Error('a town with nobody in it');
+if (town.short.length === 0) throw new Error('a town that wants nothing');
+
+// A town starts hungry and therefore slow, so the world clock is wound on rather than
+// waited out. Speed multiplies steps, not dt, so this is the same simulation.
+await evaluate(() => window.voxelcraft.setSpeed(16));
+await until(() => window.voxelcraft.commutes().length > 0, null, 180000);
+// Moving, and drawn: the number advancing is the simulation, the villager is the view,
+// and this is the one place both can be seen to be true at once.
+await until(() => window.voxelcraft.commutes().some((c) => c.t > 0.05 && c.t < 0.95), null, 60000);
+await until(() => window.voxelcraft.commutes().some((c) => c.drawn), null, 60000);
+// Somebody arrives, and arriving is what makes a building want something. A shop nobody
+// walks into is the failure this is here to catch: it looks exactly like a working one.
+await until(() => window.voxelcraft.town().buildings.some((b) => b.staff > 0), null, 180000);
+const commuting = await evaluate(() => ({
+  commutes: window.voxelcraft.commutes(),
+  staffed: window.voxelcraft.town().buildings.filter((b) => b.staff > 0)
+    .map((b) => ({ label: b.label, use: b.use, staff: b.staff })),
+}));
+console.log('commuting:', JSON.stringify(commuting));
+await evaluate(() => window.voxelcraft.setSpeed(1));
+await frame();
+await shot('15b-town');
+
+// And the town is legible: the ledger grows a section for the place underfoot.
+await page.keyboard.press('KeyL');
+await until(() => document.querySelector('.ledger') !== null, null, 10000);
+await frame();
+await shot('15c-town-ledger');
+const ledgerText = await page.locator('.ledger').textContent();
+for (const word of ['の建物', '人口', '働いている人']) {
+  if (!ledgerText.includes(word)) throw new Error(`the ledger has no ${word} in it`);
+}
+await closeScreen();
+
 console.log(errors.length === 0 ? 'NO PAGE ERRORS' : `ERRORS:\n${errors.join('\n')}`);
 await browser.close();
