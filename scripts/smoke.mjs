@@ -704,8 +704,8 @@ const site = await evaluate(() => {
       const x = Math.round(here.x + Math.cos(angle) * radius);
       const z = Math.round(here.z + Math.sin(angle) * radius);
       if (g.world.heightAt(x, z) <= 0 || !clear(x, z)) continue;
-      const found = window.voxelcraft.survey(x, z);
-      if (found.length > 0) return { x, z, found };
+      const ground = window.voxelcraft.survey(x, z);
+      if (ground.found.length > 0) return { x, z, found: ground.found, why: ground.why };
     }
   }
   return null;
@@ -717,6 +717,31 @@ if (!site) throw new Error('nowhere within reach of the town supports an industr
 if (site.found.some((d) => d.count <= 0 || d.density <= 0)) {
   throw new Error(`a deposit reported nothing in it: ${JSON.stringify(site.found)}`);
 }
+// And a refusal names what came nearest and which of the two bars it missed, which is the
+// difference between "walk further" and "walk to the middle of what you are standing on".
+const barren = await evaluate(([x, z]) => {
+  const g = window.voxelcraft.game;
+  for (let radius = 30; radius <= 200; radius += 10) {
+    for (let step = 0; step < 12; step++) {
+      const angle = (step * Math.PI) / 6;
+      const bx = Math.round(x + Math.cos(angle) * radius);
+      const bz = Math.round(z + Math.sin(angle) * radius);
+      if (g.world.heightAt(bx, bz) <= 0) continue;
+      const ground = window.voxelcraft.survey(bx, bz);
+      if (ground.found.length === 0) return { x: bx, z: bz, why: ground.why, all: ground.all };
+    }
+  }
+  return null;
+}, [site.x, site.z]);
+console.log('a refusal with a reason:', JSON.stringify(barren && { x: barren.x, z: barren.z, why: barren.why }));
+if (!barren) throw new Error('every place around the deposit supported an industry');
+if (!barren.why) throw new Error('ground that supports nothing gave no reason');
+// Every kind is reported on, qualifying or not: that is what makes the reason a number
+// rather than an apology.
+if (barren.all.length === 0 || barren.all.every((r) => r.short.length === 0)) {
+  throw new Error(`the refusal reported no shortfalls: ${JSON.stringify(barren.all)}`);
+}
+
 const works = await evaluate(([x, z]) => window.voxelcraft.placeIndustry(x, z), [site.x, site.z]);
 console.log('industry built:', JSON.stringify(works));
 if (!works.ok) throw new Error(`the industry would not go up: ${JSON.stringify(works)}`);
@@ -726,6 +751,30 @@ console.log('a second one on the same deposit:', JSON.stringify(twice));
 if (twice.ok || twice.why !== 'too-close') {
   throw new Error('two industries were allowed to share one deposit');
 }
+// Taking one back down and putting it up again: the ground is free the moment it goes, and
+// the shed goes with it.
+const undone = await evaluate(() => {
+  const works = window.voxelcraft.industries()[0];
+  // Halfway up the chimney, which is the tallest thing the site built and the one that
+  // makes a works findable from a ridge.
+  const at = { x: works.x - 1, y: works.y + 5, z: works.z - 1 };
+  const before = window.voxelcraft.game.world.getBlock(at.x, at.y, at.z);
+  const gone = window.voxelcraft.removeIndustry(works.id);
+  return {
+    gone,
+    left: window.voxelcraft.industries().length,
+    before,
+    after: window.voxelcraft.game.world.getBlock(at.x, at.y, at.z),
+  };
+});
+console.log('taken back down:', JSON.stringify(undone));
+if (!undone.gone.ok || undone.left !== 0) throw new Error('the industry would not come back down');
+if (undone.before === 0) throw new Error('the site never built a chimney to take down');
+if (undone.after !== 0) throw new Error(`the chimney outlived the industry: ${JSON.stringify(undone)}`);
+const rebuilt = await evaluate(([x, z]) => window.voxelcraft.placeIndustry(x, z), [site.x, site.z]);
+console.log('and put back up:', JSON.stringify(rebuilt));
+if (!rebuilt.ok) throw new Error(`the ground did not come free: ${JSON.stringify(rebuilt)}`);
+
 await evaluate(([x, z]) => window.voxelcraft.teleport(x, z + 12), [site.x, site.z]);
 await settled();
 await evaluate(() => {
@@ -767,6 +816,19 @@ await advance(`window.voxelcraft.lines().find((l) => l.name === '原料線')?.le
 console.log('lines now:', JSON.stringify(await evaluate(() => window.voxelcraft.lines())));
 // And the whole point of all of it: the raw material actually reaches the town.
 await advance(`window.voxelcraft.industries()[0].shipped > 0`);
+// What the light in the world draws: the works' stop tied to the works and to no town, the
+// town's stop tied to its town.
+const links = await evaluate(() => window.voxelcraft.links());
+console.log('what each stop is tied to:', JSON.stringify(links));
+const spurLink = links.stops.find((s) => s.id === spur.stop.id);
+if (!spurLink || spurLink.works === null || spurLink.town !== null) {
+  throw new Error(`the works' stop is not tied to the works alone: ${JSON.stringify(spurLink)}`);
+}
+if (!links.stops.some((s) => s.town !== null)) throw new Error('no stop is tied to a town');
+// And the same question asked of a point nobody has built on yet.
+const ahead = await evaluate(([x, z]) => window.voxelcraft.linkAt(x, z), [site.x, site.z]);
+console.log('what a stop here would be tied to:', JSON.stringify(ahead));
+if (ahead.works === null) throw new Error('a point beside the works would be tied to nothing');
 console.log('the chain running:', JSON.stringify(await evaluate(() => ({
   industry: window.voxelcraft.industries()[0],
   town: window.voxelcraft.villages().find((v) => v.id === window.voxelcraft.quest().origin),

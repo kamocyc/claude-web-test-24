@@ -1524,9 +1524,12 @@ voxelcraft.stops()                   // 置いた停留所の一覧（何に付�
 voxelcraft.lines()                   // 路線の一覧と、その区間の状態
 voxelcraft.placeStop(x, z)           // 停留所を置く（アイテムも手の届く距離も要らない）
 voxelcraft.makeLine(['s1','s2'])     // その停留所を順に呼ぶ路線を作る
-voxelcraft.survey(x, z)              // その地面に建てられる産業と、資源の個数・密度
-voxelcraft.industries()              // 建てた一次産業の一覧（在庫・出荷済み・産出倍率）
-voxelcraft.placeIndustry(x, z)       // 一次産業を建てる
+voxelcraft.survey(x, z)              // { found: 建てられる産業, all: 全種類の個数と密度と不足, why: 建たない理由 }
+voxelcraft.industries()              // 建てた一次産業の一覧（種類・在庫・出荷済み・産出倍率・停留所の有無）
+voxelcraft.placeIndustry(x, z)       // 一次産業を建てる（断られた時は why と reason）
+voxelcraft.removeIndustry(id?)       // 一次産業を撤去する（id を省くと足もとの 1 つ）
+voxelcraft.links()                   // 停留所と駅が何につながっているか（世界の水色の線と同じ判定）
+voxelcraft.linkAt(x, z)              // そこに停留所を置いたら何につながるか
 voxelcraft.ledger()                  // L 画面の中身をそのまま（町・産業・区間の一覧）
 voxelcraft.earnings()                // これまでに受け取った運賃の総額
 voxelcraft.milestones()              // 目標の一覧と、今どこまで進んだか
