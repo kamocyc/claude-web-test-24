@@ -13,7 +13,7 @@ const WATER_RANGE = 4;
 /** Fill level a cell needs before it counts as a water source for irrigation. */
 const IRRIGATION_MIN = WATER_FULL * 0.25;
 /** Chance a crop on dry ground loses a stage when it is ticked. Slow enough that a
- *  short dry spell is survivable and a whole drought is not. */
+ *  field left dry for a moment is survivable and one left dry all day is not. */
 const WILT_CHANCE = 0.2;
 /** Chance a crop that has already wilted to nothing dies outright. */
 const WITHER_CHANCE = 0.5;
@@ -49,8 +49,8 @@ function tickBlock(world: World, x: number, y: number, z: number, rng: Rng): voi
     const wet = world.getBlock(x, y - 1, z) === Block.FARMLAND_WET;
     if (!wet) {
       // Nothing grows on parched ground, and left there long enough it wilts back a
-      // stage at a time. A drought upstream is what usually does this, so a field cut
-      // off from the river is worth a reservoir.
+      // stage at a time. A field away from open water is what usually does this, so
+      // digging a channel to one is worth the walk.
       if (rng() < WILT_CHANCE) {
         if (crop.stage > 0) world.setBlock(x, y, z, id - 1);
         else if (rng() < WITHER_CHANCE) world.setBlock(x, y, z, Block.AIR);

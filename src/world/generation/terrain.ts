@@ -6,17 +6,6 @@ import { WATER_FULL } from '../water';
 import { Biome, type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
 import { ORES, placeCactus, placeSugarCane, placeTree, treeCandidates } from './features';
 import {
-  CHANNEL_CORE,
-  RIVER_CLIMB,
-  RiverField,
-  type RiverSample,
-  inlandOfSurface,
-  inlandness,
-  riverCovers,
-  seasonalSurface,
-} from './rivers';
-import { localWetness } from '../weather';
-import {
   type ChestMarker,
   type HouseRecord,
   type VillagePlan,
@@ -24,7 +13,6 @@ import {
   type VillageVariant,
   type VillagerMarker,
   VILLAGE_CELL,
-  VILLAGE_RADIUS,
   nearbyVillageSites,
   planVillage,
   plateauWeight,
@@ -35,12 +23,6 @@ export interface ChunkGenResult {
   blocks: Uint16Array;
   /** Fill level per voxel, matching the WATER blocks in `blocks`. */
   water: Uint8Array;
-  /** Per column, the height of the river's water in a normal season, or 0 where there
-   *  is no river. The weather moves the water up and down from here without the
-   *  terrain having to be worked out all over again. */
-  riverSurface: Float32Array;
-  /** World clock the water in `water` was filled for. */
-  weatherSeconds: number;
   /** Positions of generated spring blocks. */
   springs: { x: number; y: number; z: number }[];
   villagers: VillagerMarker[];
@@ -64,36 +46,16 @@ interface VillageInfo {
 }
 
 const MIN_HEIGHT = 4;
-/** Thinnest film the generator will lay as a river's topmost cell. Anything shallower
- *  is invisible, so the surface is left flush with the block boundary instead. */
-const MIN_FILM = 10;
-
-/** How full one cell of a river column is, for a surface given as a fraction of a
- *  block. The topmost cell is only part filled, which is what turns the water into a
- *  smooth ramp instead of a staircase of whole blocks. Shared with the code that follows
- *  the weather, so a generated river and a river whose level has moved agree exactly. */
-export function riverCellLevel(surface: number, ground: number, y: number): number {
-  const top = Math.floor(surface);
-  if (y <= ground || y > top) return 0;
-  if (y < top) return WATER_FULL;
-  const film = Math.round((surface - top) * WATER_FULL);
-  // A film thinner than this is invisible, so the surface is left flush with the block
-  // boundary rather than costing a draw call for nothing.
-  return film >= MIN_FILM ? film : 0;
-}
-
-/** Lays a river column's water, from the ground up to the surface. */
-export function fillRiverColumn(
-  surface: number,
-  ground: number,
-  put: (y: number, level: number) => void,
-): void {
-  for (let y = ground + 1; y <= Math.floor(surface); y++) {
-    const level = riverCellLevel(surface, ground, y);
-    if (level > 0) put(y, level);
-  }
-}
 const MAX_HEIGHT = CHUNK_HEIGHT - 12;
+
+/** How far the land climbs from the coast to the interior. */
+const INLAND_CLIMB = 15;
+
+/** How far inland a column is, from 0 at the coast to 1 deep in the interior. A monotone
+ *  function of continentalness, so the land rises steadily rather than in steps. */
+function inlandness(continentalness: number): number {
+  return clamp((continentalness + 0.02) / 0.34, 0, 1);
+}
 
 /** Turns a seed into terrain. Every method is a pure function of the seed plus the
  *  requested coordinates, so chunks can be generated in any order, on any thread. */
@@ -107,7 +69,6 @@ export class TerrainGenerator {
   private readonly cave1: Noise;
   private readonly cave2: Noise;
   private readonly cavern: Noise;
-  private readonly rivers: RiverField;
 
   private readonly villageInfoCache = new Map<string, VillageInfo>();
   private readonly villagePlanCache = new Map<string, VillagePlan>();
@@ -122,7 +83,6 @@ export class TerrainGenerator {
     this.cave1 = new Noise(seed ^ 0x7007);
     this.cave2 = new Noise(seed ^ 0x8008);
     this.cavern = new Noise(seed ^ 0x9009);
-    this.rivers = new RiverField(seed, (x, z) => this.continentalness(x, z));
   }
 
   /** Terrain height before villages flatten anything. */
@@ -139,105 +99,16 @@ export class TerrainGenerator {
     const hilly = smoothstep(-0.15, 0.28, ero);
     const mountain = smoothstep(0.15, 0.42, ero) * smoothstep(0.3, 0.68, ridge);
 
-    // Land rises steadily towards the interior. That slope is what every river runs
-    // down, and it is monotone in continentalness so a river can never meet a hump.
+    // Land rises steadily towards the interior, so the coast reads as a coast and the
+    // mountains are inland.
     const base =
       SEA_LEVEL -
       14 +
       land * 17 +
-      land * inlandness(cont) * RIVER_CLIMB +
+      land * inlandness(cont) * INLAND_CLIMB +
       land * hilly * (6 + detail * 6) +
       land * mountain * (26 + ridge * 30);
-    // The fine detail is left out of `base` so the river surface, which is derived
-    // from it, does not jitter up and down along the channel.
-    const h = this.carveRiver(base + detail * 2, base, x, z, cont);
-    return clamp(Math.round(h), MIN_HEIGHT, MAX_HEIGHT);
-  }
-
-  /** Terrain height before the fine detail is added, which is the level rivers and
-   *  villages are measured against. */
-  private baseHeight(x: number, z: number, cont: number): number {
-    const ero = this.erosion.fbm2(x * 0.0027, z * 0.0027, 3);
-    const ridge = this.ridge.ridged2(x * 0.0042, z * 0.0042, 4);
-    const detail = this.detail.fbm2(x * 0.02, z * 0.02, 3);
-    const land = smoothstep(-0.22, 0.05, cont + 0.16);
-    const hilly = smoothstep(-0.15, 0.28, ero);
-    const mountain = smoothstep(0.15, 0.42, ero) * smoothstep(0.3, 0.68, ridge);
-    return (
-      SEA_LEVEL -
-      14 +
-      land * 17 +
-      land * inlandness(cont) * RIVER_CLIMB +
-      land * hilly * (6 + detail * 6) +
-      land * mountain * (26 + ridge * 30)
-    );
-  }
-
-  /** How far inland a column is, 0 at the coast and 1 deep in the interior. The further
-   *  downstream a place is, the later the weather in the headwaters reaches it. */
-  inlandAt(x: number, z: number): number {
-    return inlandness(this.continentalness(x, z));
-  }
-
-  /** Continentalness drives both the coastline and the height of every river. */
-  private continentalness(x: number, z: number): number {
-    return this.continent.fbm2(x * 0.0011, z * 0.0011, 4);
-  }
-
-  /** How far the world clock has run, in seconds. The weather upstream is a function of
-   *  this, and so is the height of every river. Tests leave it at zero, where the cycle
-   *  has not started and every river sits at its normal level. */
-  weatherSeconds = 0;
-
-  /** How far this column's water sits from its normal level right now. The weather
-   *  happens in the headwaters and takes minutes to run down, so two points on the same
-   *  river can be in different seasons. */
-  riverOffset(sample: RiverSample): number {
-    if (sample.strength <= 0) return 0;
-    return this.riverSurfaceNow(sample) - sample.surface;
-  }
-
-  /** Where the water's top face actually is at a column, weather included. */
-  riverSurfaceNow(sample: RiverSample): number {
-    if (sample.strength <= 0) return sample.surface;
-    return seasonalSurface(
-      sample.surface,
-      localWetness(this.seed, this.weatherSeconds, sample.inland),
-    );
-  }
-
-  /** River channel at a column, or a dry sample outside one. Already clamped so the
-   *  water surface always sits below the surrounding land. */
-  riverAt(x: number, z: number): RiverSample {
-    const cont = this.continentalness(x, z);
-    return this.riverSample(x, z, cont, this.baseHeight(x, z, cont));
-  }
-
-  /** River sample with the mountain fade already applied, so callers and the carving
-   *  code always agree on where a channel actually exists. */
-  private riverSample(x: number, z: number, cont: number, base: number): RiverSample {
-    const river = this.rivers.sample(x, z, cont);
-    if (river.strength <= 0) return river;
-    // Rivers fade out at the foot of a mountain rather than slicing a canyon through it.
-    const reach = 1 - smoothstep(16, 30, base - river.surface);
-    return reach >= 1 ? river : { ...river, strength: river.strength * reach };
-  }
-
-  /** Cuts the river channel into the land. Rivers fade out rather than slicing a
-   *  canyon through a mountain range. */
-  private carveRiver(height: number, base: number, x: number, z: number, cont: number): number {
-    const river = this.riverSample(x, z, cont, base);
-    if (river.strength <= 0.02) return height;
-    const bed = Math.min(height, river.floor);
-    // Inside the channel the bed is cut outright. Easing it in by strength, as this
-    // used to, left the bed above the water line wherever the land around it rose
-    // more than a block or two, which broke the river into disconnected pools.
-    if (river.strength >= CHANNEL_CORE) return bed;
-    // Outside the channel the land is only eased down to a lip one block clear of the
-    // water. Letting the bank dip below the water line left a one block film of water
-    // lying on every terrace of the slope, which read as the river climbing the hill.
-    const lip = Math.max(Math.ceil(river.surface), bed);
-    return lerp(height, Math.min(height, lip), river.strength / CHANNEL_CORE);
+    return clamp(Math.round(base + detail * 2), MIN_HEIGHT, MAX_HEIGHT);
   }
 
   /** Terrain height including the flat plateau a village sits on. */
@@ -300,9 +171,6 @@ export class TerrainGenerator {
     const def = biomeDef(biome);
     // Villages need reasonably flat, dry, buildable ground.
     let valid = def.allowsVillage && baseY > SEA_LEVEL + 2 && baseY < SEA_LEVEL + 24;
-    // Never flatten a village over a river: the plateau would dam it. The whole
-    // plateau has to be clear, not just the centre, because it reaches 38 blocks out.
-    if (valid && this.riverNearVillage(site.x, site.z)) valid = false;
     if (valid) {
       // Reject sites where the surrounding land is too steep to plausibly flatten.
       let min = baseY;
@@ -319,20 +187,6 @@ export class TerrainGenerator {
     const info: VillageInfo = { site, valid, baseY: baseY + 1, variant };
     this.villageInfoCache.set(key, info);
     return info;
-  }
-
-  /** True when any part of a village plateau would sit on a river channel. */
-  private riverNearVillage(x: number, z: number): boolean {
-    if (this.riverAt(x, z).strength > 0.02) return true;
-    for (let ring = 10; ring <= VILLAGE_RADIUS; ring += 9) {
-      for (let step = 0; step < 12; step++) {
-        const angle = (step / 12) * Math.PI * 2;
-        const sx = Math.round(x + Math.cos(angle) * ring);
-        const sz = Math.round(z + Math.sin(angle) * ring);
-        if (this.riverAt(sx, sz).strength > 0.02) return true;
-      }
-    }
-    return false;
   }
 
   private villagePlan(info: VillageInfo): VillagePlan {
@@ -390,7 +244,6 @@ export class TerrainGenerator {
   generateChunk(cx: number, cz: number): ChunkGenResult {
     const blocks = new Uint16Array(CHUNK_VOLUME);
     const water = new Uint8Array(CHUNK_VOLUME);
-    const riverSurface = new Float32Array(CHUNK_SIZE * CHUNK_SIZE);
     const springs: { x: number; y: number; z: number }[] = [];
     const originX = cx * CHUNK_SIZE;
     const originZ = cz * CHUNK_SIZE;
@@ -440,32 +293,6 @@ export class TerrainGenerator {
         }
         for (let y = h + 1; y <= SEA_LEVEL; y++) setLocal(lx, y, lz, Block.WATER);
         if (h < SEA_LEVEL && isSnowy(biome)) setLocal(lx, SEA_LEVEL, lz, Block.ICE);
-
-        // Rivers run above sea level, so they are filled from their own surface.
-        const cont = this.continentalness(x, z);
-        const river = this.riverSample(x, z, cont, this.baseHeight(x, z, cont));
-        // Only the channel itself holds water; its banks are carved to stay above the
-        // water line, so the two thresholds have to be the same one.
-        if (river.strength >= CHANNEL_CORE) {
-          // Stored at single precision and read straight back, so the code that later
-          // follows the weather works from exactly the same number and can tell its own
-          // water apart from anything the player has changed.
-          riverSurface[lz * CHUNK_SIZE + lx] = river.surface;
-          const base = riverSurface[lz * CHUNK_SIZE + lx];
-          const surface = seasonalSurface(
-            base,
-            localWetness(this.seed, this.weatherSeconds, inlandOfSurface(base)),
-          );
-          if (surface > h + 1) {
-            fillRiverColumn(surface, h, (y, level) => setLocal(lx, y, lz, Block.WATER, level));
-          }
-        }
-        // A spring is placed for the channel itself, not for whatever the weather is
-        // doing today, so a drought never moves one.
-        if (riverCovers(river, h) && this.rivers.isSpringSite(this.seed, x, z, river, cont)) {
-          setLocal(lx, h, lz, Block.SPRING);
-          springs.push({ x, y: h, z });
-        }
       }
     }
 
@@ -531,7 +358,7 @@ export class TerrainGenerator {
       }
     }
 
-    return { blocks, water, riverSurface, weatherSeconds: this.weatherSeconds, springs, villagers, chests };
+    return { blocks, water, springs, villagers, chests };
   }
 
   /** Villages whose block list can reach into this chunk (plateau radius plus slack). */
@@ -575,8 +402,6 @@ export class TerrainGenerator {
           const localDef = biomeDef(localBiome);
           if (localDef.treeDensity <= 0) continue;
           if (this.insideVillage(candidate.x, candidate.z)) continue;
-          // Trees do not grow in the river bed.
-          if (this.riverAt(candidate.x, candidate.z).strength > 0.2) continue;
           placeTree(put, candidate.rng, candidate.x, groundY, candidate.z, {
             log: localDef.treeLog,
             leaves: localDef.treeLeaves,
@@ -601,7 +426,6 @@ export class TerrainGenerator {
         const def = biomeDef(biomes[lz * CHUNK_SIZE + lx]);
         const rng = mulberry32(hashInts(this.seed ^ 0xc0ffee, x, z));
         if (this.insideVillage(x, z)) continue;
-        if (this.riverAt(x, z).strength > 0.2) continue;
         const roll = rng();
         if (surface === Block.GRASS) {
           if (roll < def.flowerDensity) {

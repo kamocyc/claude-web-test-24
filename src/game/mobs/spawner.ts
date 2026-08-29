@@ -28,7 +28,7 @@ export interface MobUpdateContext {
   /** How many hostiles may exist and how hard they hit. Defaults to ふつう so a caller
    *  that does not care — a test, a tool — gets the plain game. */
   difficulty?: DifficultyRules;
-  /** Current in a cell, so mobs drift with the river. */
+  /** Current in a cell, so mobs drift with moving water. */
   currentAt?(x: number, y: number, z: number): { x: number; z: number };
   /** Called when the player takes damage from a mob. */
   onPlayerHit(damage: number, fromX: number, fromZ: number): void;

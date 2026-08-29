@@ -1301,8 +1301,9 @@ await evaluate(() => {
   const z = Math.round(g.player.z);
   g.player.teleportTo(x + 0.5, g.world.heightAt(x, z) + 1, z + 0.5);
   g.player.yaw = 0;
-  // Shallow, so the crosshair lands a dozen blocks out rather than at their feet.
-  g.player.pitch = -0.13;
+  // Steep, so the start goes down a few blocks out: the far end is chosen afterwards by
+  // turning and looking further off, and it has to be able to land beyond the start.
+  g.player.pitch = -0.6;
 });
 await settled(60000);
 /** The tool, in hand, now. A dozen console steps stand between here and where it was
@@ -1345,12 +1346,30 @@ if (!placed.pending) {
 }
 console.log('start placed by hand:', JSON.stringify(placed));
 // Turning on the spot is how the curve gets chosen: the far end follows the head.
-await evaluate(() => { window.voxelcraft.game.player.yaw = 0.5; });
+await evaluate(() => {
+  const p = window.voxelcraft.game.player;
+  p.yaw = 0.5;
+  p.pitch = -0.3;
+});
 await frame();
 await frame();
 const ghost = await evaluate(() => window.voxelcraft.trackView().ghost);
-console.log('the ghost while turning:', JSON.stringify(ghost));
 if (ghost === 'none') throw new Error('a start is down and nothing is being previewed');
+// The far end is wherever the crosshair lands, and how far out that is depends on the
+// ground ahead: too close and the curve doubles back behind its own start, too far and
+// it is past the 96 blocks the tool lays in one go. Lift the head a little at a time
+// until the shape being offered is one it will build — which is what a player does when
+// the readout tells them the span is wrong.
+for (let i = 0; i < 14 && await evaluate(() => window.voxelcraft.trackView().ghost) === 'invalid'; i++) {
+  await evaluate(() => { window.voxelcraft.game.player.pitch += 0.02; });
+  await frame();
+  await frame();
+}
+console.log('the ghost while turning:', JSON.stringify(await evaluate(() => ({
+  ghost: window.voxelcraft.trackView().ghost,
+  pitch: +window.voxelcraft.game.player.pitch.toFixed(2),
+  span: window.voxelcraft.trackTool().readout?.lines?.[0] ?? null,
+}))));
 const railsBefore = await evaluate(() => window.voxelcraft.game.player.inventory.count('rail'));
 let finished = await rightClick();
 for (let attempt = 1; attempt < 5 && finished.edges === 0; attempt++) finished = await rightClick();
@@ -1379,9 +1398,21 @@ const piered = await evaluate(() => {
   const x = Math.round(g.player.x);
   const z = Math.round(g.player.z);
   const y = g.world.heightAt(x, z) + 1;
+  const AIR = 0;
+  const STONE = 1;
+  // Level the strip the run crosses: whatever the ground was doing along it, the deck
+  // has to be in the open, or a hillside a few blocks along would bury it and the
+  // player would land on the hill instead of on the track.
+  for (let d = 0; d <= 30; d++) {
+    for (let w = -3; w <= 3; w++) {
+      for (let h = 0; h < 8; h++) g.world.setBlock(x + w, y + h, z - d, AIR);
+      g.world.setBlock(x + w, y - 1, z - d, STONE);
+    }
+  }
+  // And then the drop the legs are here to stand in.
   for (let d = 8; d < 20; d++) {
     for (let w = -3; w <= 3; w++) {
-      for (let h = 0; h < 5; h++) g.world.setBlock(x + w, y - 1 - h, z - d, 0);
+      for (let h = 0; h < 5; h++) g.world.setBlock(x + w, y - 1 - h, z - d, AIR);
     }
   }
   const laid = window.voxelcraft.layTrack({ x, y, z, yaw: 0 }, { x, y, z: z - 28, yaw: 0 });
@@ -1895,7 +1926,42 @@ const survived = await evaluate(QUEST_ROUTE);
 console.log('route after the village grew:', JSON.stringify({
   connected: survived?.connected, missing: survived?.missing,
 }));
-if (!survived?.connected) throw new Error('the village grew over its own road');
+if (!survived?.connected) {
+  // Where it was cut, and what is standing there now: a house on the road reads very
+  // differently from a step the levelling left behind.
+  const cut = await evaluate(() => {
+    const g = window.voxelcraft.game;
+    const q = window.voxelcraft.quest();
+    const route = g.transport.routes.find((r) =>
+      (r.from === q.origin && r.to === q.target) || (r.from === q.target && r.to === q.origin));
+    if (!route) return null;
+    const at = route.gapFrom ?? route.gapTo;
+    if (!at) return { gapFrom: route.gapFrom, gapTo: route.gapTo, missing: route.missing };
+    const column = (x, z) => {
+      const out = [];
+      for (let y = Math.round(at.y) - 2; y <= Math.round(at.y) + 3; y++) out.push(g.world.getBlock(x, y, z));
+      return `${x},${z}:${out.join(',')}`;
+    };
+    const around = [];
+    for (let dx = -6; dx <= 6; dx++) {
+      for (let dz = -6; dz <= 6; dz++) {
+        const x = Math.round(at.x) + dx;
+        const z = Math.round(at.z) + dz;
+        const level = g.roads?.columns?.get?.(`${x},${z}`);
+        around.push(`${column(x, z)}${level === undefined ? '' : `@${level}`}`);
+      }
+    }
+    return {
+      gapFrom: route.gapFrom,
+      gapTo: route.gapTo,
+      missing: route.missing,
+      faults: window.voxelcraft.roadFaults(400).filter((f) => Math.hypot(f.x - at.x, f.z - at.z) < 14),
+      around,
+    };
+  });
+  console.log('where the road was cut:', JSON.stringify(cut));
+  throw new Error('the village grew over its own road');
+}
 if (grown) {
   await evaluate((v) => window.voxelcraft.teleport(v.x, v.z), grown);
   await settled();
@@ -1969,9 +2035,12 @@ await closeScreen();
 // enormous one, so nothing that assumes a fixed step is handed a number it has never
 // seen. What it buys is the thing the logistics layer is actually made of: time.
 const clockAt = () => evaluate(() => ({
-  minutes: window.voxelcraft.game.weatherSeconds,
+  // The day clock runs 0 to 1 and wraps; three seconds is nowhere near a day, so the
+  // wrap only has to be undone, never counted.
+  clock: window.voxelcraft.game.day.time,
   delivered: window.voxelcraft.routes().reduce((sum, r) => sum + r.delivered, 0),
 }));
+const advanced = (from, to) => +((((to.clock - from.clock) + 1) % 1) * 1000).toFixed(2);
 await evaluate(() => window.voxelcraft.setSpeed(1));
 const slowStart = await clockAt();
 await page.waitForTimeout(3000);
@@ -1982,8 +2051,8 @@ await page.waitForTimeout(3000);
 const fastEnd = await clockAt();
 const badge = await page.locator('.speed-badge').innerText().catch(() => null);
 const rate = {
-  slow: +(slowEnd.minutes - slowStart.minutes).toFixed(1),
-  fast: +(fastEnd.minutes - fastStart.minutes).toFixed(1),
+  slow: advanced(slowStart, slowEnd),
+  fast: advanced(fastStart, fastEnd),
   badge,
   reported: await evaluate(() => window.voxelcraft.speed()),
 };
@@ -2184,99 +2253,64 @@ const torchLight = await evaluate(() => {
 });
 console.log('block light at player:', torchLight);
 
-// --- rivers, channels and floodgates -----------------------------------------
-const river = await evaluate(() => {
+// --- a dug pool, channels and floodgates --------------------------------------
+// There are no rivers: the water to work with is water the player put there. A basin
+// cut into the ground with a spring in the floor of it is the source everything below
+// is fed from — the channel, the gate, the pumps and the dive.
+const pool = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const AIR = 0;
+  const STONE = 1;
+  const WATER = 9;
+  const SPRING = 54;
   window.voxelcraft.heal();
-  return window.voxelcraft.gotoRiver();
-});
-console.log('river:', JSON.stringify(river));
-if (river) {
-  // The water surface is a fraction of a block; the block building below wants whole
-  // cells, so work from the topmost cell the water reaches.
-  river.surface = Math.floor(river.surface);
-  await settled();
-  // The river is still filling the chunks that just appeared; read it once it stops
-  // moving rather than after a duration picked to be long enough.
-  await stable(`window.voxelcraft.waterSurface(${river.x}, ${river.z})`);
-  await evaluate(() => {
-    window.voxelcraft.game.player.pitch = -0.3;
-  });
-  await frame();
-  await shot('15-river');
-  console.log('river depth:', await evaluate((r) => window.voxelcraft.waterDepth(r.x, r.surface, r.z), river));
-
-  // --- the weather upstream, and how late it gets here ------------------------
-  const calmLevel = await evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
-  // A drought begins in the headwaters. Downstream is still in the calm season, which
-  // is the whole point: the player has that long to fill a reservoir.
-  await evaluate(() => window.voxelcraft.setWeatherSeconds(30 * 60));
-  await until(() => window.voxelcraft.weather().upstream !== window.voxelcraft.weather().here);
-  const warning = await evaluate(() => window.voxelcraft.weather());
-  console.log('drought announced:', JSON.stringify(warning));
-  console.log('forecast panel:', (await page.locator('.forecast').textContent())?.trim());
-  await shot('15b-forecast');
-
-  // Once it arrives the river drops, and the bank it leaves behind is dry.
-  await evaluate(() => window.voxelcraft.setWeather('drought'));
-  await stable(`window.voxelcraft.waterSurface(${river.x}, ${river.z})`);
-  const dryLevel = await evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
-  await shot('15c-drought');
-
-  // Heavy rain lifts it again, without ever spilling over the bank.
-  await evaluate(() => window.voxelcraft.setWeather('rain'));
-  await stable(`window.voxelcraft.waterSurface(${river.x}, ${river.z})`);
-  const wetLevel = await evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
-  const spilled = await evaluate((r) => {
-    const g = window.voxelcraft.game;
-    let onLand = 0;
-    for (let dx = -14; dx <= 14; dx++) {
-      for (let dz = -14; dz <= 14; dz++) {
-        const x = r.x + dx;
-        const z = r.z + dz;
-        for (let y = 40; y < 70; y++) {
-          if (g.world.getWater(x, y, z) <= 0) continue;
-          if (g.world.getWater(x, y + 1, z) > 0) continue;
-          // Water sitting on top of solid ground with nothing under it to drain into.
-          for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            const solid = g.world.getBlock(x + ox, y, z + oz);
-            if (solid !== 0 && solid !== 9) continue;
-            if (g.world.getWater(x + ox, y, z + oz) > 0) continue;
-            if (g.world.getWater(x + ox, y - 1, z + oz) <= 0) onLand++;
-          }
-        }
+  const x = Math.floor(g.player.x) + 8;
+  const z = Math.floor(g.player.z) + 8;
+  const ground = g.world.heightAt(x, z);
+  if (ground < 0) return null;
+  const floorY = ground - 4;
+  for (let dx = -3; dx <= 3; dx++) {
+    for (let dz = -3; dz <= 3; dz++) {
+      const rim = Math.max(Math.abs(dx), Math.abs(dz)) === 3;
+      // A walled basin, so what it holds stands level with the ground around it rather
+      // than running off down the hill.
+      for (let y = floorY - 1; y <= ground + 6; y++) {
+        g.world.setBlock(x + dx, y, z + dz, rim && y <= ground ? STONE : AIR);
       }
+      if (rim) continue;
+      g.world.setBlock(x + dx, floorY - 1, z + dz, STONE);
+      // Filled by hand, because a spring only ever keeps the one cell over it full: it
+      // is what puts the water back as the channel below draws the pool down, not what
+      // digs the pool in the first place.
+      for (let y = floorY; y <= ground; y++) g.world.setBlock(x + dx, y, z + dz, WATER);
     }
-    return onLand;
-  }, river);
-  await shot('15d-rain');
+  }
+  g.world.setBlock(x, floorY, z, SPRING);
+  return { x, z, surface: ground, floorY };
+});
+console.log('pool:', JSON.stringify(pool));
+if (pool) {
+  await settled();
+  // Read it once the water has stopped moving rather than after a duration picked to be
+  // long enough.
+  await stable(`window.voxelcraft.waterSurface(${pool.x}, ${pool.z})`);
+  await evaluate((r) => {
+    const g = window.voxelcraft.game;
+    g.player.teleportTo(r.x + 0.5 - 6, r.surface + 3, r.z + 0.5);
+    g.player.yaw = -Math.PI / 2;
+    g.player.pitch = -0.3;
+  }, pool);
+  await frame();
+  await shot('15-pool');
+  console.log('pool depth:', await evaluate((r) => window.voxelcraft.waterDepth(r.x, r.surface, r.z), pool));
 
-  // And the calm season puts it back exactly where the generator had it.
-  await evaluate(() => window.voxelcraft.setWeather('normal'));
-  await stable(`window.voxelcraft.waterSurface(${river.x}, ${river.z})`);
-  const backLevel = await evaluate((r) => window.voxelcraft.waterSurface(r.x, r.z), river);
-  console.log(
-    'river level  calm:', calmLevel,
-    ' drought:', dryLevel,
-    ' rain:', wetLevel,
-    ' calm again:', backLevel,
-    ' water on land:', spilled,
-  );
-
-  // Build a stone aqueduct out of the river and check the water runs its length.
+  // Build a stone aqueduct out of the pool and check the water runs its length.
   const works = await evaluate((r) => {
     const g = window.voxelcraft.game;
     const AIR = 0;
     const STONE = 1;
-    // Head away from the river, towards dry ground.
-    let dir = null;
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      if (window.voxelcraft.riverAt(r.x + dx * 12, r.z + dz * 12).strength < 0.05) {
-        dir = [dx, dz];
-        break;
-      }
-    }
-    if (!dir) return null;
-    const [dx, dz] = dir;
+    // Out of the basin, across whatever ground lies that way.
+    const [dx, dz] = [1, 0];
     const LENGTH = 12;
     const floorY = r.surface - 2;
 
@@ -2302,7 +2336,7 @@ if (river) {
       floorY,
       surface: r.surface,
     };
-  }, river);
+  }, pool);
   console.log('aqueduct:', JSON.stringify(works));
 
   if (works) {
@@ -2365,12 +2399,18 @@ if (river) {
     }), pumped)));
   }
 
-  // Dive in and watch the breath meter drop.
+  // Dive in and watch the breath meter drop. The channel has been drawing on the basin
+  // for a while by now, so fill it again rather than diving into what is left.
   await evaluate((r) => {
     const g = window.voxelcraft.game;
     window.voxelcraft.heal();
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        for (let y = r.floorY; y <= r.surface; y++) g.world.setBlock(r.x + dx, y, r.z + dz, 9);
+      }
+    }
     g.player.teleportTo(r.x + 0.5, r.surface - 3, r.z + 0.5);
-  }, river);
+  }, pool);
   // Under water the breath meter is the thing being watched, so watch it.
   await until(() => window.voxelcraft.player.air < 9, null, 30000);
   console.log('breath:', JSON.stringify(await evaluate(() => ({

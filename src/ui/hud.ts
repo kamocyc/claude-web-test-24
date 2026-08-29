@@ -5,7 +5,6 @@ import { HOTBAR_SIZE } from '../game/inventory';
 import { clear, el } from './dom';
 import { Compass, type CompassMarker } from './compass';
 import { Minimap, type MinimapOverlay } from './minimap';
-import { ForecastPanel, type ForecastView } from './forecast';
 import { RoutePanel, type RoutePanelView } from './routePanel';
 import { CoordPanel } from './coords';
 import type { MapSurface } from '../game/cartography';
@@ -34,8 +33,6 @@ export interface NavigationInfo {
   markers: CompassMarker[];
   showCompass: boolean;
   showMinimap: boolean;
-  showForecast: boolean;
-  forecast: ForecastView;
   showRoutes: boolean;
   routes: RoutePanelView;
   showCoords: boolean;
@@ -78,7 +75,6 @@ export class Hud {
   private readonly creativeBadge = el('div', 'creative-badge', 'デバッグ: 全アイテム無限（C）');
   readonly compass = new Compass();
   readonly minimap: Minimap;
-  readonly forecast = new ForecastPanel();
   readonly routes = new RoutePanel();
   readonly coords = new CoordPanel();
   private debugVisible = false;
@@ -108,7 +104,6 @@ export class Hud {
       crosshair,
       this.compass.root,
       this.minimap.root,
-      this.forecast.root,
       left,
       this.coords.root,
       this.building,
@@ -176,8 +171,6 @@ export class Hud {
     if (navigation.showMinimap) {
       this.minimap.update(navigation.surface, player.x, player.z, player.yaw, navigation.overlay);
     }
-    this.forecast.setVisible(navigation.showForecast);
-    if (navigation.showForecast) this.forecast.update(navigation.forecast);
     this.routes.setVisible(navigation.showRoutes);
     if (navigation.showRoutes) this.routes.update(navigation.routes);
     this.coords.setVisible(navigation.showCoords);

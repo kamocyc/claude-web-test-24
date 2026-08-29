@@ -152,9 +152,6 @@ export interface SaveData {
   version: number;
   seed: number;
   time: number;
-  /** Seconds of world time, which the weather cycle runs on. Absent in saves written
-   *  before the seasons existed, where the cycle simply starts over. */
-  weatherSeconds?: number;
   savedAt: number;
   player: SavedPlayer;
   /** Chunk key -> base64 encoded (blockIndex, blockId) pairs. */
@@ -166,7 +163,7 @@ export interface SaveData {
   villagers: SavedVillager[];
   /** Chunks whose village villagers have already been spawned. */
   populatedChunks: string[];
-  /** The village economy. Optional, like `weatherSeconds`: a save written before it
+  /** The village economy. Optional: a save written before it
    *  existed opens with no villages found yet and the tutorial at its first step, which
    *  is exactly right. Bumping SAVE_VERSION instead would throw every world away. */
   villages?: SavedVillage[];

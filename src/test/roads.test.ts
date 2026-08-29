@@ -136,6 +136,32 @@ describe('road index', () => {
     expect(roads.columns.has('10,0')).toBe(false);
   });
 
+  it('keeps the road where it is when a village paves over it', () => {
+    // A village that grows beside a road raises its own ground and lays its own paving
+    // above it. Both levels are roads; the one the player walks is the one that was
+    // there first, and moving the index up onto the village's doorstep left a step in
+    // the middle of a road that had been carrying goods all game.
+    const world = new FakeWorld();
+    world.lay(10, GROUND, 0, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world);
+    roads.seedFromEdits();
+    expect(roads.columns.get('10,0')).toBe(GROUND);
+
+    const floor = GROUND + 11;
+    world.lay(10, floor, 0, Block.STONE_BRICKS);
+    roads.onBlockChanged(10, floor, 0, Block.AIR, Block.STONE_BRICKS);
+    expect(roads.columns.get('10,0')).toBe(GROUND);
+
+    // And it lets go, once the road that held it stops being one. What is up on the
+    // village's floor is only picked up when something happens up there, because the
+    // search only ever looks around the block that changed.
+    world.lay(10, GROUND, 0, Block.AIR);
+    roads.onBlockChanged(10, GROUND, 0, Block.DIRT_PATH, Block.AIR);
+    expect(roads.columns.has('10,0')).toBe(false);
+    roads.onBlockChanged(10, floor, 0, Block.AIR, Block.STONE_BRICKS);
+    expect(roads.columns.get('10,0')).toBe(floor);
+  });
+
   it('lists every block a player can pave with', () => {
     expect(ROAD_BLOCKS.has(Block.DIRT_PATH)).toBe(true);
     expect(ROAD_BLOCKS.has(Block.COBBLESTONE)).toBe(true);

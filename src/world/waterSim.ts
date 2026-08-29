@@ -76,11 +76,6 @@ export class WaterSimulator {
   private centerZ = 0;
   private limited = false;
 
-  /** How hard the springs are running, by column. A drought upstream reaches them the
-   *  same way it reaches the river, so a reservoir fed by a spring fills slowly in a dry
-   *  season and quickly in a wet one. */
-  flowFactor: (x: number, z: number) => number = () => 1;
-
   constructor(private readonly world: World) {}
 
   /** Restricts the simulation to the area around the player. Without a centre the
@@ -149,7 +144,7 @@ export class WaterSimulator {
     }
 
     // Wake the water along the seams so it can spill into the new chunk. Chunks that
-    // nobody has touched are skipped: generated rivers already hold the water the
+    // nobody has touched are skipped: the generated ocean already holds the water the
     // generator meant them to, and waking them would let the simulator level a sloping
     // channel into one flat pond that creeps up the banks and never settles.
     if (this.wasTouched(chunk) || this.touchesEditedChunk(chunk)) this.wakeSeams(chunk);
@@ -245,11 +240,10 @@ export class WaterSimulator {
         this.springs.delete(key);
         continue;
       }
-      // A spring keeps its own pool topped up rather than pumping without limit, so a
-      // river always flows but a blocked one never floods the valley.
+      // A spring keeps its own pool topped up rather than pumping without limit, so it
+      // always flows but a blocked one never floods the valley.
       const level = this.world.getWater(x, y + 1, z);
-      const rate = SPRING_RATE * this.flowFactor(x, z);
-      if (level < WATER_FULL) this.give(x, y + 1, z, Math.min(rate, WATER_FULL - level));
+      if (level < WATER_FULL) this.give(x, y + 1, z, Math.min(SPRING_RATE, WATER_FULL - level));
     }
   }
 

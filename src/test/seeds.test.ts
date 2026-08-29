@@ -3,7 +3,6 @@ import { VERIFICATION_SEED, VERIFICATION_SEED_TEXT, findSpawn, seedFromUrl } fro
 import { seedFromString } from '../core/rng';
 import { SEA_LEVEL } from '../world/chunk';
 import { TerrainGenerator } from '../world/generation/terrain';
-import { riverCovers } from '../world/generation/rivers';
 
 describe('seeds', () => {
   it('reads a seed out of the page URL', () => {
@@ -30,26 +29,8 @@ describe('seeds', () => {
     const spawn = findSpawn(generator);
 
     it('starts the player on dry land', () => {
-      expect(spawn).toEqual({ x: 8, y: 54, z: 0 });
+      expect(spawn).toEqual({ x: 0, y: 53, z: 0 });
       expect(generator.height(spawn.x, spawn.z)).toBeGreaterThan(SEA_LEVEL);
-    });
-
-    it('has a river within a short walk of the spawn', () => {
-      let found: { x: number; z: number; distance: number } | null = null;
-      for (let radius = 4; radius <= 120 && !found; radius += 4) {
-        for (let step = 0; step < 48; step++) {
-          const angle = (step / 48) * Math.PI * 2;
-          const x = Math.round(spawn.x + Math.cos(angle) * radius);
-          const z = Math.round(spawn.z + Math.sin(angle) * radius);
-          const river = generator.riverAt(x, z);
-          if (river.strength > 0.4 && riverCovers(river, generator.height(x, z))) {
-            found = { x, z, distance: radius };
-            break;
-          }
-        }
-      }
-      expect(found).not.toBeNull();
-      expect(found?.distance).toBeLessThanOrEqual(16);
     });
 
     it('has a village to trade at', () => {

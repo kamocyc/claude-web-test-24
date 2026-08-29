@@ -10,13 +10,12 @@ import { KEYS } from './help';
 import { el, show } from './dom';
 
 type ToggleKey =
-  | 'compass' | 'minimap' | 'forecast' | 'routes' | 'guide' | 'coords' | 'autoTool'
+  | 'compass' | 'minimap' | 'routes' | 'guide' | 'coords' | 'autoTool'
   | 'autoStep' | 'creative';
 
 const TOGGLE_LABELS: [ToggleKey, string][] = [
   ['compass', '方角コンパス'],
   ['minimap', 'ミニマップ'],
-  ['forecast', '天候の予報'],
   ['routes', '目標と輸送路'],
   ['guide', '道しるべ（道を光の線で表示）'],
   ['coords', '座標の表示'],
