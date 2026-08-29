@@ -3,29 +3,60 @@ import { TerrainGenerator } from '../world/generation/terrain';
 import {
   planVillage,
   plateauWeight,
-  villageInCell,
+  villageCandidates,
+  VILLAGE_CELL,
   VILLAGE_RADIUS,
+  VILLAGE_TRIES,
   type VillageVariant,
 } from '../world/generation/village';
 import { Block } from '../world/blocks';
 import { onStreet } from '../world/generation/districts';
 
+/** The first cell at or after `from` that offers candidates, so a test can talk about a
+ *  real cell without pinning which one a hash happens to pick. */
+function cellWithCandidates(seed: number, from = 0): { cellX: number; cellZ: number } {
+  for (let i = from; i < from + 200; i++) {
+    if (villageCandidates(seed, i, 0).length > 0) return { cellX: i, cellZ: 0 };
+  }
+  throw new Error('no cell in 200 offers a village');
+}
+
 describe('village placement', () => {
-  it('places the same villages for the same seed', () => {
-    const a = villageInCell(4242, 3, -2);
-    const b = villageInCell(4242, 3, -2);
+  it('offers the same candidates for the same seed', () => {
+    const a = villageCandidates(4242, 3, -2);
+    const b = villageCandidates(4242, 3, -2);
     expect(a).toEqual(b);
   });
 
-  it('places different villages for different seeds', () => {
-    const cells = Array.from({ length: 12 }, (_, i) => [villageInCell(1, i, 0), villageInCell(2, i, 0)]);
+  it('offers different candidates for different seeds', () => {
+    const cells = Array.from({ length: 12 }, (_, i) => [
+      villageCandidates(1, i, 0),
+      villageCandidates(2, i, 0),
+    ]);
     expect(cells.some(([a, b]) => JSON.stringify(a) !== JSON.stringify(b))).toBe(true);
   });
 
+  /** A cell offers several places to build so it can find its own flat ground rather than
+   *  going without a town whenever its one hashed point lands on a mountainside. */
+  it('offers a cell a choice of sites, all inside its own plateau margin', () => {
+    const { cellX, cellZ } = cellWithCandidates(11);
+    const candidates = villageCandidates(11, cellX, cellZ);
+    expect(candidates).toHaveLength(VILLAGE_TRIES);
+    // The margin is what keeps two towns in neighbouring cells apart. Every candidate has
+    // to respect it, or the search could pick one that puts two plateaus on top of each
+    // other — which is the one thing the grid exists to prevent.
+    const margin = VILLAGE_RADIUS + 16;
+    for (const site of candidates) {
+      expect(site.x - cellX * VILLAGE_CELL).toBeGreaterThanOrEqual(margin);
+      expect(site.x - cellX * VILLAGE_CELL).toBeLessThan(VILLAGE_CELL - margin);
+      expect(site.z - cellZ * VILLAGE_CELL).toBeGreaterThanOrEqual(margin);
+      expect(site.z - cellZ * VILLAGE_CELL).toBeLessThan(VILLAGE_CELL - margin);
+    }
+  });
+
   it('falls to zero influence outside the plateau', () => {
-    const site = villageInCell(7, 0, 0);
-    expect(site).not.toBeNull();
-    if (!site) return;
+    const { cellX, cellZ } = cellWithCandidates(7);
+    const site = villageCandidates(7, cellX, cellZ)[0];
     expect(plateauWeight(site, site.x, site.z)).toBe(1);
     expect(plateauWeight(site, site.x + VILLAGE_RADIUS + 1, site.z)).toBe(0);
   });

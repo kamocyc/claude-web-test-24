@@ -59,7 +59,16 @@ export const MINIMAP_RAIL_STEP = 6;
 export const SAMPLE_TRACK_STEP = 64;
 export const SAMPLE_TRACK_PROBE = 8;
 export const SAMPLE_TRACK_CLEAR = 2;
-export const SAMPLE_TRACK_GRADE = 0.15;
+/** How fast the laid deck may follow the ground down, as a rise over run.
+ *
+ *  Not `MAX_GRADE`, and it must not be: this is the *average* slope the deck is asked
+ *  for, while `MAX_GRADE` is the *steepest point* of the profile that gets laid. A
+ *  segment that comes level at both ends and drops h over L peaks at 1.5 h/L in the
+ *  middle, so anything above `MAX_GRADE / 1.5` — 0.133 — is an envelope the track solver
+ *  is then obliged to reject with a `grade` fault, and the railway simply does not get
+ *  built. It sat at 0.15 for as long as the terrain never handed it a long enough drop to
+ *  notice. */
+export const SAMPLE_TRACK_GRADE = 0.12;
 
 export const FAULT_TOAST_INTERVAL = 4;
 export const FAULT_REACH = 40;

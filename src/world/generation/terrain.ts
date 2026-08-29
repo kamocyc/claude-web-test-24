@@ -1,4 +1,4 @@
-import { Noise, clamp, lerp, smoothstep } from '../../core/noise';
+import { Noise, clamp, lerp, smoothstep, spline } from '../../core/noise';
 import { hashFloat, mulberry32, hashInts } from '../../core/rng';
 import { Block, type BlockId } from '../blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey } from '../chunk';
@@ -13,10 +13,9 @@ import {
   type VillageVariant,
   type VillagerMarker,
   VILLAGE_CELL,
-  nearbyVillageSites,
   planVillage,
   plateauWeight,
-  villageInCell,
+  villageCandidates,
 } from './village';
 
 export interface ChunkGenResult {
@@ -41,6 +40,10 @@ export interface VillageSeed {
 interface VillageInfo {
   site: VillageSite;
   valid: boolean;
+  /** How far the ground rises and falls around the centre, from the same six probes that
+   *  decide whether the site is usable at all. The score a cell picks its centre by:
+   *  a lower one is a town that sits on its plateau instead of being cut into a slope. */
+  spread: number;
   baseY: number;
   variant: VillageVariant;
 }
@@ -48,13 +51,52 @@ interface VillageInfo {
 const MIN_HEIGHT = 4;
 const MAX_HEIGHT = CHUNK_HEIGHT - 12;
 
-/** How far the land climbs from the coast to the interior. */
-const INLAND_CLIMB = 15;
+/** How wide the world's features are, as a multiple of what they used to be.
+ *
+ *  Only the fields that decide *where* things are get divided by this — continentalness,
+ *  erosion and climate. The fields that decide how *steep* the ground is keep something
+ *  close to their old frequency, because a mountain stretched to three times its width at
+ *  the same height is a hill. Separating the two is the whole trick: ranges and biomes are
+ *  three times the walk across, and the slopes inside them are as sharp as they ever were. */
+const FEATURE_SCALE = 3;
 
-/** How far inland a column is, from 0 at the coast to 1 deep in the interior. A monotone
- *  function of continentalness, so the land rises steadily rather than in steps. */
-function inlandness(continentalness: number): number {
-  return clamp((continentalness + 0.02) / 0.34, 0, 1);
+/** Where the land sits relative to the sea, read off continentalness alone.
+ *
+ *  A sum of noise gives every part of the range the same gradient, which is why the old
+ *  terrain was one long ramp from the beach to the peaks with nothing that read as a
+ *  *place*. These knots give each band its own: a short, steep run across the shoreline so
+ *  a coast is a coast, then a very long, nearly level run from +6 to +14 over the whole
+ *  interior — which is what makes a plain flat enough to put a town on.
+ *
+ *  The crossing at -0.206 is not chosen, it is measured: it is where this noise field puts
+ *  23.8% of the world under water, which is the share the old generator put there.
+ *  Lowering the sea was supposed to buy height, not drain the oceans. */
+const CONTINENT_SPLINE: readonly (readonly [number, number])[] = [
+  [-1.00, -16],
+  [-0.45, -12],
+  [-0.30, -7],
+  [-0.206, 0],
+  [-0.16, 4],
+  [-0.05, 7],
+  [0.15, 9],
+  [0.45, 12],
+  [1.00, 16],
+];
+
+/** Tallest a crest may stand above the plain it rises from. Sized to the budget: the
+ *  interior sits at about +12, so this plus the hill and roughness terms lands a peak just
+ *  under `MAX_HEIGHT` instead of shearing off against it. */
+const RIDGE_AMP = 54;
+
+/** What the ground is doing at a column, before any village flattens it. */
+interface Shape {
+  height: number;
+  /** 0 at sea, 1 well inland. Relief is masked by this so mountains stay off the beach. */
+  land: number;
+  /** 0 where the ground is flat enough to build on, 1 where it is mountain. Every relief
+   *  term is multiplied by it, so a lowland column gets no relief at all rather than a
+   *  scaled-down share of it — which is what puts a hard edge between plain and range. */
+  rugged: number;
 }
 
 /** Turns a seed into terrain. Every method is a pure function of the seed plus the
@@ -72,6 +114,14 @@ export class TerrainGenerator {
 
   private readonly villageInfoCache = new Map<string, VillageInfo>();
   private readonly villagePlanCache = new Map<string, VillagePlan>();
+  private readonly cellSiteCache = new Map<string, VillageSite | null>();
+  /** The last column `shape` was asked about.
+   *
+   *  Every caller wants two things out of the same column and asks for them separately:
+   *  `generateChunk` takes the height and then the biome, and `height()` itself is called
+   *  again a moment later by whatever wanted the ground under a road. One slot is all that
+   *  needs, and it halves the noise sampling of the column loop. */
+  private lastShape: (Shape & { x: number; z: number }) | null = null;
 
   constructor(readonly seed: number) {
     this.continent = new Noise(seed ^ 0x1001);
@@ -85,30 +135,72 @@ export class TerrainGenerator {
     this.cavern = new Noise(seed ^ 0x9009);
   }
 
-  /** Terrain height before villages flatten anything. */
-  rawHeight(x: number, z: number): number {
-    const cont = this.continent.fbm2(x * 0.0011, z * 0.0011, 4);
-    const ero = this.erosion.fbm2(x * 0.0027, z * 0.0027, 3);
-    const ridge = this.ridge.ridged2(x * 0.0042, z * 0.0042, 4);
+  /** The ground at a column: how high it is, and what kind of ground it is.
+   *
+   *  Height is not a sum of noise terms. Continentalness alone decides the base level
+   *  through `CONTINENT_SPLINE`, and erosion decides — separately, and before any relief
+   *  is computed — how much relief this part of the world is allowed to have at all.
+   *  Below the `rugged` threshold every relief term is multiplied by zero, so the ground
+   *  is exactly the spline: flat, buildable, and the same for hundreds of blocks. Above
+   *  it the ridge term gets the whole height budget. There is deliberately very little in
+   *  between, because the ground that is neither is the rolling-hills mush that made the
+   *  old terrain read the same everywhere.
+   *
+   *  Both the height and the `rugged` reading come out of here together, so classifying a
+   *  biome costs no extra noise: `MOUNTAINS` can mean "steep" rather than merely "high"
+   *  without sampling the neighbours of every column. */
+  private shape(x: number, z: number): Shape {
+    const cached = this.lastShape;
+    if (cached && cached.x === x && cached.z === z) return cached;
+
+    // Where things are. Three times the old wavelength, so a continent, a mountain belt
+    // and a climate band are all three times the walk across.
+    const cont = this.continent.fbm2(
+      (x * 0.0011) / FEATURE_SCALE,
+      (z * 0.0011) / FEATURE_SCALE,
+      4,
+    );
+    const ero = this.erosion.fbm2((x * 0.0027) / FEATURE_SCALE, (z * 0.0027) / FEATURE_SCALE, 3);
+
+    // How steep things are. The ridge frequency is unchanged from the old generator, and
+    // deliberately so: what got three times wider is the *belt* the ranges sit in, which
+    // `ero` decides, and widening the crests inside it as well would have traded every
+    // mountain for a long shallow ramp. The domain warp bends a range instead of letting
+    // it run in a straight line, and is free — both fields have been sampled anyway.
+    const ridge = this.ridge.ridged2((x + cont * 90) * 0.0042, (z + ero * 90) * 0.0042, 4);
+    const hill = this.detail.fbm2(x * 0.006, z * 0.006, 2);
     const detail = this.detail.fbm2(x * 0.02, z * 0.02, 3);
 
-    // Thresholds are tuned so land covers roughly three quarters of the map and
-    // mountains stay rare enough to feel like landmarks.
-    // The bias pushes the sea/land boundary out so oceans stay a minority of the map.
-    const land = smoothstep(-0.22, 0.05, cont + 0.16);
-    const hilly = smoothstep(-0.15, 0.28, ero);
-    const mountain = smoothstep(0.15, 0.42, ero) * smoothstep(0.3, 0.68, ridge);
+    const land = smoothstep(-0.19, 0.05, cont);
+    // The band is narrow on purpose: below it the world is dead flat, above it the world
+    // is mountain, and only about a fifth of the map is in transit between the two.
+    const rugged = smoothstep(0.05, 0.26, ero);
+    // Squared, so even the transition band leans towards the flat end. A half-rugged
+    // column gets a quarter of the range, not half of one.
+    const upland = rugged * rugged;
+    // The raw ridged field clusters around 0.42, which would spend the whole budget on
+    // making every mountain the same middling height. Stretching it puts the valleys on
+    // the floor and lets the crests actually reach the top of the world.
+    const crest = smoothstep(0.2, 0.8, ridge);
 
-    // Land rises steadily towards the interior, so the coast reads as a coast and the
-    // mountains are inland.
-    const base =
-      SEA_LEVEL -
-      14 +
-      land * 17 +
-      land * inlandness(cont) * INLAND_CLIMB +
-      land * hilly * (6 + detail * 6) +
-      land * mountain * (26 + ridge * 30);
-    return clamp(Math.round(base + detail * 2), MIN_HEIGHT, MAX_HEIGHT);
+    // The roughness rides on `upland` rather than `rugged`, so it is a property of rock
+    // faces and not of the ground in general — a plain has none of it at all.
+    const relief = upland * RIDGE_AMP * crest + rugged * hill * 7 + upland * detail * 5;
+
+    // The last term is the only relief a plain gets, and it is deliberately under one
+    // block of swing: enough that a field is not a single stamped-out terrace, small
+    // enough that every step on it is inside a walker's stride (`MAX_STEP`).
+    const height =
+      SEA_LEVEL + spline(CONTINENT_SPLINE, cont) + land * relief + detail * 0.8;
+
+    const shaped = { x, z, height: clamp(Math.round(height), MIN_HEIGHT, MAX_HEIGHT), land, rugged };
+    this.lastShape = shaped;
+    return shaped;
+  }
+
+  /** Terrain height before villages flatten anything. */
+  rawHeight(x: number, z: number): number {
+    return this.shape(x, z).height;
   }
 
   /** Terrain height including the flat plateau a village sits on. */
@@ -127,15 +219,29 @@ export class TerrainGenerator {
     // fBm output clusters near zero, so it is stretched to make the whole
     // temperature/humidity range reachable and keep every biome represented.
     return {
-      temperature: clamp(this.temperature.fbm2(x * 0.0009, z * 0.0009, 3) * 2.2, -1, 1),
-      humidity: clamp(this.humidity.fbm2(x * 0.0013, z * 0.0013, 3) * 2.2, -1, 1),
+      temperature: clamp(
+        this.temperature.fbm2((x * 0.0009) / FEATURE_SCALE, (z * 0.0009) / FEATURE_SCALE, 3) * 2.2,
+        -1,
+        1,
+      ),
+      humidity: clamp(
+        this.humidity.fbm2((x * 0.0013) / FEATURE_SCALE, (z * 0.0013) / FEATURE_SCALE, 3) * 2.2,
+        -1,
+        1,
+      ),
     };
   }
 
   biomeAt(x: number, z: number): BiomeId {
     const height = this.height(x, z);
     const { temperature, humidity } = this.climate(x, z);
-    return classifyBiome({ height, temperature, humidity, seaLevel: SEA_LEVEL });
+    return classifyBiome({
+      height,
+      temperature,
+      humidity,
+      seaLevel: SEA_LEVEL,
+      rugged: this.shape(x, z).rugged,
+    });
   }
 
   /** True when the column is carved out by a cave system. */
@@ -145,7 +251,7 @@ export class TerrainGenerator {
     const a = this.cave1.noise3(x * 0.019, yScale, z * 0.019);
     const b = this.cave2.noise3(x * 0.019, yScale, z * 0.019);
     if (Math.abs(a) < 0.062 && Math.abs(b) < 0.062) return true;
-    if (y < 44) {
+    if (y < SEA_LEVEL - 2) {
       const room = this.cavern.fbm3(x * 0.013, y * 0.024, z * 0.013, 3);
       if (room > 0.52) return true;
     }
@@ -154,10 +260,44 @@ export class TerrainGenerator {
 
   /** Villages whose plateau may influence this column. */
   private villagesNear(x: number, z: number): VillageInfo[] {
-    const sites = nearbyVillageSites(this.seed, x, z);
+    const cellX = Math.floor(x / VILLAGE_CELL);
+    const cellZ = Math.floor(z / VILLAGE_CELL);
     const out: VillageInfo[] = [];
-    for (const site of sites) out.push(this.villageInfo(site));
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const info = this.siteInCell(cellX + dx, cellZ + dz);
+        if (info) out.push(info);
+      }
+    }
     return out;
+  }
+
+  /** Where the town in a grid cell stands, or null when that cell has none.
+   *
+   *  The cell offers a handful of candidate centres and this picks the one on the best
+   *  ground: valid first, then flattest. That matters far more now than it used to. With
+   *  features three times as wide, a cell can fall entirely inside a mountain belt, and
+   *  the old one-hashed-point rule would answer by leaving a quarter of the world without
+   *  towns while the plains next door had one in every cell. Searching keeps towns where
+   *  the flat ground is, which is where somebody would have built one.
+   *
+   *  Cached per cell, and every candidate's own survey is cached too, because this sits
+   *  under `height()` — the hottest call in the generator. */
+  private siteInCell(cellX: number, cellZ: number): VillageInfo | null {
+    const key = `${cellX},${cellZ}`;
+    const cached = this.cellSiteCache.get(key);
+    if (cached !== undefined) return cached ? this.villageInfo(cached) : null;
+
+    let best: VillageInfo | null = null;
+    for (const candidate of villageCandidates(this.seed, cellX, cellZ)) {
+      const info = this.villageInfo(candidate);
+      if (!info.valid) continue;
+      if (!best || info.spread < best.spread) best = info;
+      // Nothing beats ground that is already level, so stop rather than survey the rest.
+      if (best.spread === 0) break;
+    }
+    this.cellSiteCache.set(key, best ? best.site : null);
+    return best;
   }
 
   private villageInfo(site: VillageSite): VillageInfo {
@@ -165,12 +305,19 @@ export class TerrainGenerator {
     const cached = this.villageInfoCache.get(key);
     if (cached) return cached;
 
-    const baseY = this.rawHeight(site.x, site.z);
+    const { height: baseY, rugged } = this.shape(site.x, site.z);
     const { temperature, humidity } = this.climate(site.x, site.z);
-    const biome = classifyBiome({ height: baseY, temperature, humidity, seaLevel: SEA_LEVEL });
+    const biome = classifyBiome({
+      height: baseY,
+      temperature,
+      humidity,
+      seaLevel: SEA_LEVEL,
+      rugged,
+    });
     const def = biomeDef(biome);
     // Villages need reasonably flat, dry, buildable ground.
     let valid = def.allowsVillage && baseY > SEA_LEVEL + 2 && baseY < SEA_LEVEL + 24;
+    let spread = Infinity;
     if (valid) {
       // Reject sites where the surrounding land is too steep to plausibly flatten.
       let min = baseY;
@@ -180,11 +327,12 @@ export class TerrainGenerator {
         if (h < min) min = h;
         if (h > max) max = h;
       }
-      if (max - min > 16) valid = false;
+      spread = max - min;
+      if (spread > 16) valid = false;
     }
     const variant: VillageVariant =
       biome === Biome.DESERT ? 'desert' : isSnowy(biome) ? 'snowy' : 'plains';
-    const info: VillageInfo = { site, valid, baseY: baseY + 1, variant };
+    const info: VillageInfo = { site, valid, spread, baseY: baseY + 1, variant };
     this.villageInfoCache.set(key, info);
     return info;
   }
@@ -199,19 +347,17 @@ export class TerrainGenerator {
     return plan;
   }
 
-  /** Every valid village within `cellRadius` cells. Cheap: deciding a village exists is a
-   *  hash of its grid cell, and validating one is cached, so this is a grid walk. */
+  /** Every valid village within `cellRadius` cells. Cheap: which cells have a town is a
+   *  hash, and siting one is cached per cell, so this is a grid walk. */
   villagesAround(x: number, z: number, cellRadius = 2): VillageSeed[] {
     const cellX = Math.floor(x / VILLAGE_CELL);
     const cellZ = Math.floor(z / VILLAGE_CELL);
     const out: VillageSeed[] = [];
     for (let dz = -cellRadius; dz <= cellRadius; dz++) {
       for (let dx = -cellRadius; dx <= cellRadius; dx++) {
-        const site = villageInCell(this.seed, cellX + dx, cellZ + dz);
-        if (!site) continue;
-        const info = this.villageInfo(site);
-        if (!info.valid) continue;
-        out.push({ x: site.x, z: site.z, baseY: info.baseY, variant: info.variant });
+        const info = this.siteInCell(cellX + dx, cellZ + dz);
+        if (!info) continue;
+        out.push({ x: info.site.x, z: info.site.z, baseY: info.baseY, variant: info.variant });
       }
     }
     return out;
@@ -269,7 +415,13 @@ export class TerrainGenerator {
         const z = originZ + lz;
         const h = this.height(x, z);
         const { temperature, humidity } = this.climate(x, z);
-        const biome = classifyBiome({ height: h, temperature, humidity, seaLevel: SEA_LEVEL });
+        const biome = classifyBiome({
+          height: h,
+          temperature,
+          humidity,
+          seaLevel: SEA_LEVEL,
+          rugged: this.shape(x, z).rugged,
+        });
         const def = biomeDef(biome);
         heights[lz * CHUNK_SIZE + lx] = h;
         biomes[lz * CHUNK_SIZE + lx] = biome;
@@ -368,15 +520,7 @@ export class TerrainGenerator {
   private villagesForChunk(cx: number, cz: number): VillageInfo[] {
     const centerX = cx * CHUNK_SIZE + CHUNK_SIZE / 2;
     const centerZ = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
-    const seen = new Set<string>();
-    const out: VillageInfo[] = [];
-    for (const site of nearbyVillageSites(this.seed, centerX, centerZ)) {
-      const key = `${site.x},${site.z}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(this.villageInfo(site));
-    }
-    return out;
+    return this.villagesNear(centerX, centerZ);
   }
 
   /** Lays whatever ore breaks the surface around here.

@@ -10,7 +10,7 @@ export const SAVE_KEY = 'voxelcraft.save.v1';
  *  goods would be somewhere no line calls, in towns that no longer make what they made.
  *  So a version 2 save is refused rather than half converted, and the player starts a new
  *  world. That is the cost of the change and it is paid once. */
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 
 /** The id the old block railway used, and what a world that still has some in it opens
  *  with instead.

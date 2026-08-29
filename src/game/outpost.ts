@@ -38,6 +38,10 @@ export const OUTPOST_FAR = OUTPOST_NEAR + 30;
  *  up to the highest column it covers, and it will only fill so far — see OUTPOST_FILL,
  *  which is what this has to stay under. */
 export const OUTPOST_LEVEL = OUTPOST_FILL - 1;
+/** How uneven the ground may be before the hamlet would rather stand somewhere else.
+ *  Two blocks is a pad whose rim is a step, not a wall — near enough to the ground beside
+ *  it that a road runs onto it and a walker can get off it anywhere. */
+export const OUTPOST_EVEN = 2;
 
 /** What a hamlet makes. Deliberately humble and always raw: it is the far end of the
  *  first road the player ever lays, not a workshop with an appetite. */
@@ -63,7 +67,15 @@ export type GroundAt = (x: number, z: number) => number;
  *
  *  The bearing is seed-derived so the same world always puts the hamlet in the same
  *  place, and the ring is walked from that bearing outwards so the first acceptable spot
- *  is the closest thing to the intended one. */
+ *  is the closest thing to the intended one.
+ *
+ *  The ring is walked twice, though, because "acceptable" and "good" are not the same
+ *  question. `OUTPOST_LEVEL` is how far the hamlet *can* fill, not how far it *should*:
+ *  filling six blocks up to the highest column of a slope leaves the pad standing on a
+ *  step that high at its low rim, with the road climbing onto it and everything on the
+ *  ground beside it out of reach. So the first pass asks for ground that is already
+ *  level, which flat country has plenty of, and only the second settles for whatever the
+ *  hamlet is able to fill. */
 export function outpostSite(
   seed: number,
   parent: { id: VillageId; x: number; z: number },
@@ -71,15 +83,17 @@ export function outpostSite(
 ): OutpostSite | null {
   const rng = mulberry32(hashInts(seed ^ 0x0b7c, parent.x, parent.z));
   const start = rng() * Math.PI * 2;
-  // Distance first, nearest the intended one first: a hamlet a little off the bearing is
-  // barely noticeable, one twelve blocks further out is a longer walk every time.
-  for (const distance of distances()) {
-    for (let step = 0; step < 24; step++) {
-      // Alternate sides of the starting bearing rather than sweeping one way, so a
-      // blocked direction costs a little detour instead of half a circle.
-      const turn = Math.ceil(step / 2) * (Math.PI / 12) * (step % 2 === 0 ? 1 : -1);
-      const spot = levelSpot(start + turn, distance, parent, ground);
-      if (spot) return spot;
+  for (const limit of [OUTPOST_EVEN, OUTPOST_LEVEL]) {
+    // Distance first, nearest the intended one first: a hamlet a little off the bearing is
+    // barely noticeable, one twelve blocks further out is a longer walk every time.
+    for (const distance of distances()) {
+      for (let step = 0; step < 24; step++) {
+        // Alternate sides of the starting bearing rather than sweeping one way, so a
+        // blocked direction costs a little detour instead of half a circle.
+        const turn = Math.ceil(step / 2) * (Math.PI / 12) * (step % 2 === 0 ? 1 : -1);
+        const spot = levelSpot(start + turn, distance, parent, ground, limit);
+        if (spot) return spot;
+      }
     }
   }
   return null;
@@ -100,6 +114,7 @@ function levelSpot(
   distance: number,
   parent: { x: number; z: number },
   ground: GroundAt,
+  limit: number,
 ): OutpostSite | null {
   const x = parent.x + Math.round(Math.cos(angle) * distance);
   const z = parent.z + Math.round(Math.sin(angle) * distance);
@@ -118,7 +133,7 @@ function levelSpot(
       high = Math.max(high, here);
     }
   }
-  if (high - low > OUTPOST_LEVEL) return null;
+  if (high - low > limit) return null;
   return { x, z, baseY: high + 1 };
 }
 

@@ -23,13 +23,17 @@ describe('seeds', () => {
   });
 
   /** These landmarks are what the browser smoke test walks to. If terrain generation
-   *  changes shape they move, and that should be a decision rather than a surprise. */
+   *  changes shape they move, and that should be a decision rather than a surprise.
+   *
+   *  They last moved when the terrain generator was rewritten around a ruggedness field
+   *  and the sea was dropped from y=46 to y=34 to pay for taller mountains. Every number
+   *  below was re-measured against that world, deliberately, in the same commit. */
   describe('the verification world', () => {
     const generator = new TerrainGenerator(VERIFICATION_SEED);
     const spawn = findSpawn(generator);
 
     it('starts the player on dry land', () => {
-      expect(spawn).toEqual({ x: 0, y: 53, z: 0 });
+      expect(spawn).toEqual({ x: 0, y: 42, z: 0 });
       expect(generator.height(spawn.x, spawn.z)).toBeGreaterThan(SEA_LEVEL);
     });
 
@@ -45,19 +49,29 @@ describe('seeds', () => {
       }
     });
 
-    /** The transport tutorial needs somewhere to transport to. Without this the slice
-     *  could quietly become unplayable in the very world CI and the smoke test use. */
-    it('has a second village close enough to link with a road', () => {
-      const village = generator.findNearestVillage(spawn.x, spawn.z, 3);
-      expect(village).not.toBeNull();
-      if (!village) return;
-      const neighbours = generator
-        .villagesAround(village.x, village.z, 2)
-        .filter((other) => other.x !== village.x || other.z !== village.z)
-        .map((other) => Math.hypot(other.x - village.x, other.z - village.z))
-        .sort((a, b) => a - b);
-      expect(neighbours.length).toBeGreaterThan(0);
-      expect(neighbours[0]).toBeLessThan(700);
+    /** The transport tutorial needs two towns a road can join. Without this the slice
+     *  could quietly become unplayable in the very world CI and the smoke test use.
+     *
+     *  Asked of the towns *near the start* rather than of the neighbours of one of them,
+     *  because that is the property the tutorial actually needs and the narrower question
+     *  is luck. Terrain features are three times as wide as they used to be, so whether
+     *  any one town happens to have a close neighbour now depends on where the plains it
+     *  stands in happen to end — this world's nearest town to the spawn is an isolated
+     *  one, and its own nearest neighbour is 979 blocks off. There is still a pair 248
+     *  blocks apart within reach of the spawn, which is the road the tutorial teaches. */
+    it('has two villages near the start close enough to link with a road', () => {
+      const nearStart = generator
+        .villagesAround(spawn.x, spawn.z, 4)
+        .filter((v) => Math.hypot(v.x - spawn.x, v.z - spawn.z) < 1200);
+      expect(nearStart.length).toBeGreaterThan(1);
+      let closest = Infinity;
+      for (const a of nearStart) {
+        for (const b of nearStart) {
+          if (a === b) continue;
+          closest = Math.min(closest, Math.hypot(a.x - b.x, a.z - b.z));
+        }
+      }
+      expect(closest).toBeLessThan(700);
     });
   });
 });

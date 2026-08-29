@@ -4593,6 +4593,9 @@ export class Game {
     return {
       game: this,
       player: this.player,
+      /** Where the water surface is. Exposed so the browser smoke test can say "above the
+       *  sea" and "under the sea" without hard-coding a number that a terrain change moves. */
+      seaLevel: SEA_LEVEL,
       isReady: (): boolean => this.ready,
       waterAt: (x: number, y: number, z: number): number => this.world.getWater(x, y, z),
       waterDepth: (x: number, y: number, z: number): number => this.water.depthAt(x, y, z),

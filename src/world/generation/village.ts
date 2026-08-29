@@ -25,7 +25,22 @@ export const VILLAGE_CELL = VILLAGE_CELL_CHUNKS * CHUNK_SIZE;
  *  inside this radius. A town on a smaller plateau builds its outer blocks down the side
  *  of its own hill. */
 export const VILLAGE_RADIUS = 56;
-const VILLAGE_CHANCE = 0.62;
+/** Share of grid cells that get to try for a village at all.
+ *
+ *  Lower than it used to be because the *siting* got better, not because there are fewer
+ *  towns: a cell no longer stakes everything on one hashed point, it picks the best of
+ *  `VILLAGE_TRIES`, so many more of the cells that try end up with a town on them. The
+ *  number is set by measurement — see `terrainShape.test.ts`, which pins the villages per
+ *  square kilometre this produces against what the old generator produced. */
+const VILLAGE_CHANCE = 0.38;
+
+/** Candidate centres considered inside a cell that has a village.
+ *
+ *  With features three times as wide, a whole cell can land inside one mountain range or
+ *  one plain. One hashed point per cell would answer that by leaving the range empty and
+ *  the plain full; a handful of points lets a cell find the flat corner of itself, which
+ *  is what a town needs and what somebody founding one would have done. */
+export const VILLAGE_TRIES = 12;
 
 export type VillageVariant = 'plains' | 'desert' | 'snowy';
 
@@ -141,32 +156,30 @@ export interface VillagePlan {
   buildings: HouseRecord[];
 }
 
-/** Returns the village centre inside a grid cell, or null when the cell has none. */
-export function villageInCell(seed: number, cellX: number, cellZ: number): VillageSite | null {
-  if (hashFloat(seed ^ 0x5eed1, cellX, cellZ, 17) > VILLAGE_CHANCE) return null;
+/** Where a cell would put a village, best candidate first. Empty when the cell has none.
+ *
+ *  Every candidate lands inside the same inset box the single hashed point used to, so the
+ *  nearest two towns in adjacent cells are still at least `VILLAGE_CELL - 2 * margin`
+ *  apart however the search goes — 144 blocks, unchanged.
+ *
+ *  This is deliberately world-blind: it says where a town *could* stand, and the terrain
+ *  generator, which is the only thing that knows what the ground is like, decides which of
+ *  them it does stand on. */
+export function villageCandidates(seed: number, cellX: number, cellZ: number): VillageSite[] {
+  if (hashFloat(seed ^ 0x5eed1, cellX, cellZ, 17) > VILLAGE_CHANCE) return [];
   const jitter = mulberry32(hashInts(seed ^ 0x5eed2, cellX, cellZ));
   const margin = VILLAGE_RADIUS + 16;
   const span = VILLAGE_CELL - margin * 2;
-  return {
-    cellX,
-    cellZ,
-    x: cellX * VILLAGE_CELL + margin + Math.floor(jitter() * span),
-    z: cellZ * VILLAGE_CELL + margin + Math.floor(jitter() * span),
-  };
-}
-
-/** Every candidate village whose plateau could reach the given block column. */
-export function nearbyVillageSites(seed: number, blockX: number, blockZ: number): VillageSite[] {
-  const cellX = Math.floor(blockX / VILLAGE_CELL);
-  const cellZ = Math.floor(blockZ / VILLAGE_CELL);
-  const sites: VillageSite[] = [];
-  for (let dz = -1; dz <= 1; dz++) {
-    for (let dx = -1; dx <= 1; dx++) {
-      const site = villageInCell(seed, cellX + dx, cellZ + dz);
-      if (site) sites.push(site);
-    }
+  const out: VillageSite[] = [];
+  for (let i = 0; i < VILLAGE_TRIES; i++) {
+    out.push({
+      cellX,
+      cellZ,
+      x: cellX * VILLAGE_CELL + margin + Math.floor(jitter() * span),
+      z: cellZ * VILLAGE_CELL + margin + Math.floor(jitter() * span),
+    });
   }
-  return sites;
+  return out;
 }
 
 /** 1 inside the flat core, falling to 0 at the plateau edge. The band is wide because a

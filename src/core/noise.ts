@@ -191,3 +191,28 @@ export function smoothstep(edge0: number, edge1: number, x: number): number {
   const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
   return t * t * (3 - 2 * t);
 }
+
+/** Piecewise interpolation over a table of `[input, output]` knots, sorted by input.
+ *
+ *  A terrain height that is a plain sum of noise terms can only ever be as interesting as
+ *  the sum: every part of the range gets the same slope, so a coastline, a plain and a
+ *  plateau all come out as the same gentle ramp at different offsets. A spline lets each
+ *  band of the input have its own gradient — a narrow, steep one across the shoreline so a
+ *  coast reads as a coast, and a wide, nearly level one over the interior so a plain is
+ *  actually flat.
+ *
+ *  Segments are joined with `smoothstep` rather than straight lines, so there is no crease
+ *  in the ground at a knot. Inputs outside the table clamp to its ends. */
+export function spline(knots: readonly (readonly [number, number])[], t: number): number {
+  const first = knots[0];
+  if (t <= first[0]) return first[1];
+  const last = knots[knots.length - 1];
+  if (t >= last[0]) return last[1];
+  for (let i = 1; i < knots.length; i++) {
+    const [x1, y1] = knots[i];
+    if (t > x1) continue;
+    const [x0, y0] = knots[i - 1];
+    return lerp(y0, y1, smoothstep(x0, x1, t));
+  }
+  return last[1];
+}
