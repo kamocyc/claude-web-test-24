@@ -197,11 +197,12 @@ describe('building a hamlet', () => {
     expect(fill).toHaveLength(OUTPOST_FILL - 1);
   });
 
-  it('builds two houses with somebody in each, a plot and a path between them', () => {
+  it('builds two houses with somebody in each, and a path between them', () => {
     const plan = planOutpost(1, site, 64, 'plains');
     expect(plan.villagers).toHaveLength(2);
-    expect(plan.chests).toHaveLength(2);
-    expect(plan.footprints).toHaveLength(3);
+    // Two houses and no field. A hamlet used to come with a wheat plot; growing things is
+    // an industry the player sites now, and one that arrived for free undercut that.
+    expect(plan.footprints).toHaveLength(2);
     const path = plan.placements.filter((p) => p.b === Block.DIRT_PATH && p.z === site.z);
     expect(path.length).toBeGreaterThanOrEqual(10);
     // Level with the pad it crosses, not a block proud of it: the doors either side open

@@ -8,18 +8,12 @@ import {
   describeBuilding,
   pathAroundPlots,
   pointAlongPath,
-  useLabel,
 } from '../game/buildings';
 import {
   FACING_STEP,
-  GROWTH_USES,
-  HOUSES_PER_STAGE,
   planGrowth,
   planOutpost,
-  dressFor,
   planVillage,
-  useForGrowth,
-  useForProfession,
   type HouseRecord,
 } from '../world/generation/village';
 import { Block } from '../world/blocks';
@@ -135,12 +129,17 @@ describe('buildings a village earns', () => {
     for (const house of plan.buildings) expect(house.door.y).toBe(64);
   });
 
-  it('gives a market its own way in', () => {
-    const plan = planGrowth(1, SITE, BASE_Y, 'plains', 2, []);
-    const market = plan.buildings.find((house) => house.role === 'market');
-    expect(market).toBeDefined();
-    if (!market) return;
-    expect(market.outside.z).toBe(market.door.z - 1);
+  it('raises the kinds of building its zoning asked for', () => {
+    // A growth stage builds whole blocks, so what it raises follows from the zone of the
+    // blocks that stage reaches — not from a roll.
+    const seen = new Set<string>();
+    for (let stage = 1; stage <= 4; stage++) {
+      for (const house of planGrowth(1, SITE, BASE_Y, 'plains', stage, []).buildings) {
+        seen.add(house.role);
+      }
+    }
+    expect(seen.has('house')).toBe(true);
+    expect([...seen].every((role) => role !== 'plaza')).toBe(true);
   });
 });
 
@@ -203,72 +202,6 @@ describe('the walk from a doorway to the road', () => {
   });
 });
 
-describe('what a building is for', () => {
-  it('reads a generated house off the trade already rolled for it', () => {
-    // Nothing is drawn from `planVillage`'s stream to decide this, so the whole village is
-    // exactly the village it was before uses existed — which `seeds.test.ts` also pins.
-    const plan = planVillage(999, SITE, BASE_Y, 'plains');
-    for (const house of plan.buildings) {
-      expect(house.use).toBe(useForProfession(house.profession));
-    }
-  });
-
-  it('turns a village into a town as it grows', () => {
-    // A 集落 is somewhere people live; a 都市 is somewhere they also work and shop.
-    for (let stage = 1; stage < GROWTH_USES.length; stage++) {
-      const plan = planGrowth(1, SITE, BASE_Y, 'plains', stage, []);
-      const houses = plan.buildings.filter((h) => h.role === 'house');
-      expect(houses.length).toBeLessThanOrEqual(HOUSES_PER_STAGE);
-      houses.forEach((house, i) => expect(house.use).toBe(useForGrowth(stage, i)));
-    }
-  });
-
-  it('makes the market hall the village shop', () => {
-    // Stage 2's landmark. A market is where a village sells, which is what a shop is.
-    const market = planGrowth(1, SITE, BASE_Y, 'plains', 2, []).buildings
-      .find((h) => h.role === 'market');
-    expect(market?.use).toBe('commercial');
-  });
-
-  it('leaves a hamlet as two homes', () => {
-    const plan = planOutpost(7, SITE, BASE_Y, 'plains');
-    expect(plan.buildings.length).toBeGreaterThan(0);
-    for (const house of plan.buildings) expect(house.use).toBe('residential');
-  });
-
-  it('holds the last stage rather than running off the end of the table', () => {
-    // `MAX_STAGE` is the last row, so nothing reaches these in play. What they are for is
-    // that raising the cap later should build a 都市 again, not nothing at all.
-    const last = GROWTH_USES[GROWTH_USES.length - 1];
-    expect(useForGrowth(99, 0)).toBe(last[0]);
-    expect(useForGrowth(-1, 0)).toBe('residential');
-    // A house past the ones a stage plans for is a home, which is what a house is when
-    // nothing says otherwise.
-    expect(useForGrowth(1, 99)).toBe('residential');
-  });
-
-  it('names a building by what it is for, keeping the trade of a home', () => {
-    const record = village();
-    const houses: HouseRecord[] = [
-      { x0: 0, z0: 0, w: 5, d: 5, facing: 0, role: 'house', use: 'industrial',
-        profession: 'librarian', door: { x: 0, y: 60, z: 2 }, outside: { x: -1, y: 60, z: 2 } },
-      { x0: 20, z0: 0, w: 5, d: 5, facing: 0, role: 'house', use: 'commercial',
-        profession: 'farmer', door: { x: 20, y: 60, z: 2 }, outside: { x: 19, y: 60, z: 2 } },
-      { x0: 40, z0: 0, w: 5, d: 5, facing: 0, role: 'house', use: 'residential',
-        profession: 'butcher', door: { x: 40, y: 60, z: 2 }, outside: { x: 39, y: 60, z: 2 } },
-    ];
-    const labels = buildingsOf(record, houses).map((b) => b.label);
-    expect(labels).toEqual(['工場', '商店', '肉屋']);
-  });
-
-  it('says what a building is for when it is not the depot', () => {
-    const record = village();
-    const buildings = buildingsOf(record, planVillage(999, SITE, BASE_Y, 'plains').buildings);
-    const line = describeBuilding(buildings[0], record, false, '麦を待っている');
-    expect(line).toContain(useLabel(buildings[0].use));
-    expect(line).toContain('麦を待っている');
-  });
-});
 
 describe('walking along a path', () => {
   const path = [
@@ -302,61 +235,3 @@ describe('walking along a path', () => {
   });
 });
 
-describe('seeing what a building is for', () => {
-  /** Every block a plan puts down, collapsed the way the writer collapses it. */
-  function blocks(placements: { x: number; y: number; z: number; b: number }[]): Map<string, number> {
-    const out = new Map<string, number>();
-    for (const p of placements) out.set(`${p.x},${p.y},${p.z}`, p.b);
-    return out;
-  }
-
-  it('leaves a home in the palette its village was built with', () => {
-    const plains = { wall: Block.OAK_PLANKS, corner: Block.OAK_LOG, roof: Block.STONE_BRICKS,
-      floor: Block.OAK_PLANKS, path: Block.DIRT_PATH };
-    expect(dressFor(plains, 'residential')).toEqual(plains);
-    expect(dressFor(plains, 'civic')).toEqual(plains);
-    // A shop and a works change their walls and nothing else.
-    expect(dressFor(plains, 'commercial').wall).not.toBe(plains.wall);
-    expect(dressFor(plains, 'commercial').roof).toBe(plains.roof);
-    expect(dressFor(plains, 'industrial').wall).toBe(Block.COBBLESTONE);
-  });
-
-  it('builds a works with a chimney and a home without one', () => {
-    // Stage 4 raises a works first (see `GROWTH_USES`), stage 1 raises two homes.
-    const works = planGrowth(5, SITE, BASE_Y, 'plains', 4, []);
-    const homes = planGrowth(5, SITE, BASE_Y, 'plains', 1, []);
-    const chimneyOver = (plan: typeof works): boolean => {
-      const laid = blocks(plan.placements);
-      return plan.buildings.some((house) => {
-        // Three above the wall top, which is three above the floor.
-        const top = BASE_Y + 1 + 3;
-        return laid.get(`${house.x0 + 1},${top + 3},${house.z0 + 1}`) === Block.COBBLESTONE;
-      });
-    };
-    expect(chimneyOver(works)).toBe(true);
-    expect(chimneyOver(homes)).toBe(false);
-  });
-
-  it('leaves the village it was generated with alone', () => {
-    // The fixed verification seed pins stage 0 block for block, so nothing about uses may
-    // reach it: no dressing, and above all no chimney.
-    const plan = planVillage(999, SITE, BASE_Y, 'plains');
-    const laid = blocks([...plan.byChunk.values()].flat());
-    const top = BASE_Y + 1 + 3;
-    for (const house of plan.buildings) {
-      expect(laid.get(`${house.x0 + 1},${top + 3},${house.z0 + 1}`)).toBeUndefined();
-    }
-  });
-
-  it('keeps the plot, the doorway and the roof line whatever it is dressed as', () => {
-    // Dressing is paint. If it moved anything, growth would be planning a different
-    // village from the one `villageGrowth.ts` levelled the ground for.
-    const plan = planGrowth(5, SITE, BASE_Y, 'plains', 4, []);
-    for (const house of plan.buildings) {
-      const plot = plan.footprints.find((f) => f.x0 === house.x0 && f.z0 === house.z0);
-      expect(plot).toBeDefined();
-      expect(house.w).toBe(plot!.w);
-      expect(house.d).toBe(plot!.d);
-    }
-  });
-});

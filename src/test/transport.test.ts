@@ -22,7 +22,7 @@ import {
   type TransportEvents,
   type Vehicle,
 } from '../game/transport';
-import { RoadNetwork, roadGrade, type RoadPoint, type RoadWorld } from '../game/roads';
+import { STREET_REACH, RoadNetwork, roadGrade, type RoadPoint, type RoadWorld } from '../game/roads';
 import {
   MAX_STAGE,
   PASSENGER,
@@ -34,6 +34,13 @@ import {
 } from '../game/villages';
 import { Block, type BlockId } from '../world/blocks';
 import { blockIndex, chunkKey, toChunkCoord, toLocalCoord } from '../world/chunk';
+
+/** The two ends every road in this file runs between: one column past each town's
+ *  outermost street, so a finished road touches the grid at both ends. Derived rather than
+ *  written down, because the town that decides it is generated geometry. */
+const FROM = STREET_REACH + 1;
+const TO = 240 - STREET_REACH - 1;
+
 
 const GROUND = 60;
 /** The same pair `villages.test.ts` pins: A grows wheat, B bakes it into bread and can
@@ -197,8 +204,8 @@ interface BuildOptions {
   town?: FakeTown | null;
 }
 
-/** The villages' streets end at x=30 and x=210, and a road connects by touching one, so
- *  an unbroken run from 31 to 209 is the finished road. */
+/** The villages' streets end at x=30 and x=(TO + 1), and a road connects by touching one, so
+ *  an unbroken run from FROM to TO is the finished road. */
 /** A town that always has somebody wanting to leave, and remembers what arrived.
  *
  *  Stands in for `TownEconomy`, which is a whole simulation and not the thing under test
@@ -236,7 +243,7 @@ function build({ surface = Block.DIRT_PATH, host, width = 1, rails, depots, town
   const world = new FakeWorld();
   const span = Math.floor((width - 1) / 2);
   if (surface !== null) {
-    for (let x = 31; x <= 209; x++) {
+    for (let x = FROM; x <= TO; x++) {
       for (let z = -span; z <= span; z++) world.lay(x, GROUND, z, surface);
     }
   }
@@ -396,7 +403,7 @@ describe('transport routes', () => {
       plotsOf: () => [],
     };
     const world = new FakeWorld();
-    for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    for (let x = FROM; x <= TO; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     const registry = new VillageRegistry(SEED, SOURCE);
@@ -431,7 +438,7 @@ describe('transport routes', () => {
       plotsOf: (id: string) => (id === ID_A ? houses : []),
     };
     const world = new FakeWorld();
-    for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    for (let x = FROM; x <= TO; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     const registry = new VillageRegistry(SEED, SOURCE);
@@ -596,7 +603,7 @@ describe('transport routes', () => {
 
   it('keeps trying to survey a route whose villages are not known yet', () => {
     const world = new FakeWorld();
-    for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    for (let x = FROM; x <= TO; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     // A save restores routes before the player has walked near enough for the villages
@@ -692,9 +699,9 @@ describe('what a detour is worth', () => {
 
     const winding = build({ surface: null });
     // Out to z=60 and back: a road half again as long between the same two villages.
-    for (let z = 0; z <= 60; z++) winding.world.lay(31, GROUND, z, Block.DIRT_PATH);
-    for (let x = 31; x <= 209; x++) winding.world.lay(x, GROUND, 60, Block.DIRT_PATH);
-    for (let z = 0; z <= 60; z++) winding.world.lay(209, GROUND, z, Block.DIRT_PATH);
+    for (let z = 0; z <= 60; z++) winding.world.lay(FROM, GROUND, z, Block.DIRT_PATH);
+    for (let x = FROM; x <= TO; x++) winding.world.lay(x, GROUND, 60, Block.DIRT_PATH);
+    for (let z = 0; z <= 60; z++) winding.world.lay(TO, GROUND, z, Block.DIRT_PATH);
     winding.roads.seedFromEdits();
     winding.transport.requestRoute(ID_A, ID_B);
     run(winding.transport, 3);

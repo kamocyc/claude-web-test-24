@@ -69,8 +69,8 @@ function labelFor(house: HouseRecord, taken: Map<string, number>): string {
 }
 
 function stemFor(house: HouseRecord): string {
-  if (house.role === 'market') return '市場';
-  if (house.use === 'industrial') return house.profession === 'blacksmith' ? '鍛冶屋' : '工場';
+  if (house.role === 'plaza') return '広場';
+  if (house.use === 'industrial') return '工場';
   if (house.use === 'commercial') return '商店';
   return PROFESSION_LABELS[house.profession] ?? '住宅';
 }

@@ -24,6 +24,7 @@
 import { blockDef, Block, type BlockId } from '../world/blocks';
 import { CHUNK_SIZE, blockIndex, parseChunkKey, toChunkCoord, toLocalCoord } from '../world/chunk';
 import { VILLAGE_RADIUS } from '../world/generation/village';
+import { nearestStreet, onStreet, townExtent } from '../world/generation/districts';
 import type { VillageRecord } from './villages';
 
 /** Blocks a player lays to make a road, and how fast a porter walks on each. Bare stone
@@ -101,8 +102,11 @@ const MAX_FAULTS = 64;
 const BUCKET = 16;
 /** Search cap. The graph is only what the player laid, so this is never reached in play. */
 export const MAX_NODES = 4096;
-/** Half width of a village's street cross, from `putRoad` in village.ts. */
-export const STREET_REACH = VILLAGE_RADIUS - 8;
+/** How far a town's own streets reach from its middle. Taken from the grid that lays them
+ *  rather than guessed from the plateau: the flattened ground is a good deal wider than
+ *  the streets on it, and a road that stopped at the edge of the field would be called
+ *  connected while it went nowhere. */
+export const STREET_REACH = townExtent();
 
 /** The two straight lines through a column: along x and along z. */
 const AXES: readonly (readonly [number, number])[] = [
@@ -439,22 +443,8 @@ export class RoadNetwork {
   /** Nearest cell of a village's street cross to an arbitrary point. Derived from the
    *  geometry `planVillage` lays down, so no plan has to be built to ask. */
   private nearestStreet(village: VillageRecord, x: number, z: number): RoadPoint {
-    const clamp = (v: number, limit: number): number => Math.max(-limit, Math.min(limit, v));
-    const dx = x - village.x;
-    const dz = z - village.z;
-    const alongX: RoadPoint = {
-      x: village.x + clamp(dx, STREET_REACH),
-      z: village.z + clamp(dz, 1),
-      y: village.baseY,
-    };
-    const alongZ: RoadPoint = {
-      x: village.x + clamp(dx, 1),
-      z: village.z + clamp(dz, STREET_REACH),
-      y: village.baseY,
-    };
-    const da = Math.hypot(alongX.x - x, alongX.z - z);
-    const db = Math.hypot(alongZ.x - x, alongZ.z - z);
-    return da <= db ? alongX : alongZ;
+    const at = nearestStreet(village, x, z);
+    return { x: at.x, z: at.z, y: village.baseY };
   }
 
   /** The cell of a village's street cross nearest a point: where a road has to arrive,
@@ -463,11 +453,12 @@ export class RoadNetwork {
     return this.nearestStreet(village, x, z);
   }
 
-  /** A road has arrived when it runs up against the village's own streets — which are
-   *  generated, not recorded, so they are synthesised from the cross `planVillage` lays
-   *  rather than read out of the index. Touching an arm is arriving; the road does not
-   *  have to reach the middle. */
+  /** A road has arrived when it runs up against the town's own streets — which are
+   *  generated, not recorded, so they are read off the grid that laid them rather than out
+   *  of the index. Touching any street is arriving; the road does not have to reach the
+   *  middle, and with a grid there is no single arm to reach for. */
   private touchesVillage(village: VillageRecord, column: RoadPoint): boolean {
+    if (onStreet(village, column.x, column.z)) return true;
     const street = this.nearestStreet(village, column.x, column.z);
     return this.touches(street, column);
   }

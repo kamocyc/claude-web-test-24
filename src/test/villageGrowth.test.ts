@@ -12,7 +12,7 @@ import { overlaps, planGrowth, planVillage, type Footprint } from '../world/gene
 import { Block, blockDef, type BlockId } from '../world/blocks';
 import { Chunk, CHUNK_SIZE, CHUNK_VOLUME } from '../world/chunk';
 import { World } from '../world/world';
-import { RoadNetwork } from '../game/roads';
+import { ROAD_BLOCKS, RoadNetwork } from '../game/roads';
 import type { VillageRecord } from '../game/villages';
 
 const SITE = { cellX: 0, cellZ: 0, x: 100, z: 200 };
@@ -165,25 +165,11 @@ describe('growing past the first stage', () => {
     }
   });
 
-  it('lights the streets when the village becomes a town', () => {
-    clearGrowthCache();
-    const village = planVillage(999, SITE, BASE_Y, 'plains');
-    const torches = (stage: number): number =>
-      growthFor(999, record(stage), stage, village.buildings)
-        .placements.filter((p) => p.b === Block.TORCH).length;
-    // Houses light themselves; the lamp posts are a different order of magnitude.
-    expect(torches(3)).toBeGreaterThan(torches(1) + 10);
-  });
+  // The lamp posts and gate towers that used to mark stages 3 and 4 are gone with the
+  // village they belonged to. A town grows by whole city blocks now, which is a far
+  // louder change than a lamp — there is nothing left for a landmark to say.
 
-  it('raises gate towers taller than any house at the last stage', () => {
-    clearGrowthCache();
-    const village = planVillage(999, SITE, BASE_Y, 'plains');
-    const tallest = (stage: number): number =>
-      growthFor(999, record(stage), stage, village.buildings)
-        .placements.reduce((top, p) => Math.max(top, p.y), 0);
-    expect(tallest(4)).toBeGreaterThan(tallest(1));
-    expect(tallest(4)).toBeGreaterThanOrEqual(BASE_Y + 6);
-  });
+
 });
 
 describe('a house somebody can walk into', () => {
@@ -403,7 +389,10 @@ describe('a village that grows around somebody else\'s road', () => {
     const plot = growthFor(1, record(1), 1, []).footprints[0];
     const lane = plot.z0 + (plot.d >> 1);
     const cells: [number, number][] = [];
-    for (let x = plot.x0 - 12; x < plot.x0 + plot.w + 12; x++) cells.push([x, lane]);
+    // Across this block and no further. A town's blocks are three apart, so a road with
+    // twelve blocks of run-up either side crosses its neighbours too — and then "the plots
+    // the road misses" is every plot, which proves nothing.
+    for (let x = plot.x0 - 1; x < plot.x0 + plot.w + 1; x++) cells.push([x, lane]);
     return { plot, ...layRoad(world, cells, BASE_Y) };
   }
 
@@ -485,9 +474,11 @@ describe('a village that grows around somebody else\'s road', () => {
     const { roadAt } = layRoad(world, cells, BASE_Y);
     const own = ownPaving(1, record(1), []);
     expect(roadCrosses(plot, FLOOR, world, roadAt, own)).toBe(false);
-    // An empty plot with the same road across it is still given up.
-    const empty = { x0: plot.x0, z0: plot.z0 + plot.d + 4, w: plot.w, d: plot.d };
-    for (let x = empty.x0; x < empty.x0 + empty.w; x++) cells.push([x, empty.z0 + 1]);
+    // An empty plot with the same road across it is still given up. Well clear of the
+    // town: a plot a few blocks over is another of its blocks, and the ground a town has
+    // laid for itself is never "somebody's road".
+    const empty = { x0: plot.x0, z0: SITE.z + 40, w: plot.w, d: plot.d };
+    for (let x = empty.x0 - 2; x < empty.x0 + empty.w + 2; x++) cells.push([x, empty.z0 + 1]);
     const road = layRoad(world, cells, BASE_Y);
     expect(roadCrosses(empty, FLOOR, world, road.roadAt, own)).toBe(true);
   });
@@ -618,13 +609,14 @@ describe('a village that has already built something', () => {
     for (const chunk of chunksOf(world)) applyGrowth(world, 1, record(1), chunk, [], roadAt);
     const own = ownPaving(1, record(1), []);
 
-    // A block of path the village laid outside one of its own doors, standing in the open
-    // at street level: exactly what the index is looking for.
+    // Something the town laid for itself that the index has picked up. A house floor is
+    // planks and a street is dirt path, and both are road materials lying at street level
+    // — so without `own` a town reads as a road running through its own plots.
     const paved = [...own].find(([key, block]) => {
       const [x, y, z] = key.split(',').map(Number);
-      return block === Block.DIRT_PATH && roadAt(x, z) === y;
+      return ROAD_BLOCKS.has(block) && roadAt(x, z) === y;
     });
-    expect(paved, 'the village paved nothing the index picked up').toBeDefined();
+    expect(paved, 'the town laid nothing the index picked up').toBeDefined();
     if (!paved) return;
     const [x, , z] = paved[0].split(',').map(Number);
     const plot = { x0: x, z0: z, w: 1, d: 1 };
