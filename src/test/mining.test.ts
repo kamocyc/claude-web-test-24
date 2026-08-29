@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { Block } from '../world/blocks';
-import { bestToolSlot, blockDrops, canHarvest, heldTool, miningTime } from '../game/mining';
+import { BLOCKS } from '../world/blocks';
+import {
+  MAX_MINING_SECONDS,
+  bestToolSlot,
+  blockDrops,
+  canHarvest,
+  heldTool,
+  miningTime,
+} from '../game/mining';
 import { itemDef } from '../game/items';
 
 const wooden = itemDef('wooden_pickaxe');
@@ -16,6 +24,28 @@ describe('mining', () => {
     expect(miningTime(Block.STONE, wooden)).toBeLessThan(hand);
     expect(miningTime(Block.STONE, iron)).toBeLessThan(miningTime(Block.STONE, stone));
     expect(miningTime(Block.STONE, diamond)).toBeLessThan(miningTime(Block.STONE, iron));
+  });
+
+  it('breaks anything breakable inside a second, with anything in hand', () => {
+    const tools = [undefined, wooden, stone, iron, diamond, shovel];
+    for (const def of BLOCKS) {
+      if (def.hardness < 0) continue;
+      for (const tool of tools) {
+        const seconds = miningTime(def.id, tool);
+        expect(
+          seconds,
+          `${def.name} with ${tool?.id ?? 'a bare hand'} took ${seconds.toFixed(2)}s`,
+        ).toBeLessThanOrEqual(MAX_MINING_SECONDS);
+      }
+    }
+  });
+
+  it('still rewards the right tool at the slow end, where the cap bites', () => {
+    // The hardest thing in the game, which is where a plain clamp would have made every
+    // tool identical.
+    const hand = miningTime(Block.FURNACE, undefined);
+    expect(miningTime(Block.FURNACE, wooden)).toBeLessThan(hand - 0.2);
+    expect(miningTime(Block.FURNACE, diamond)).toBeLessThan(miningTime(Block.FURNACE, stone));
   });
 
   it('never returns zero or negative time and refuses bedrock', () => {

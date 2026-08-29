@@ -6,6 +6,15 @@ import { type ItemDef, itemDef } from './items';
 const HARDNESS_TO_SECONDS = 1.5;
 /** Extra penalty for breaking a block without the tool it requires. */
 const WRONG_TOOL_PENALTY = 3.33;
+/** The longest any one block may take, whatever it is and whatever is in hand.
+ *
+ *  Digging is not what this game is about — the network is — and the worst case used to be
+ *  a seventeen-second stare at a furnace with your bare hands. That is seventeen seconds
+ *  not spent building a line, and it taught the player nothing they did not already know
+ *  from the first second of it. */
+export const MAX_MINING_SECONDS = 1;
+/** The floor, so a block never breaks on the same frame the button goes down. */
+export const MIN_MINING_SECONDS = 0.05;
 
 export function heldTool(item: ItemStack | null): ItemDef | undefined {
   if (!item) return undefined;
@@ -30,7 +39,19 @@ export function miningTime(block: BlockId, tool: ItemDef | undefined): number {
   const stats = tool?.tool;
   if (stats && stats.kind === def.tool) seconds /= stats.speed;
   if (!canHarvest(block, tool)) seconds *= WRONG_TOOL_PENALTY;
-  return Math.max(0.05, seconds);
+  return Math.max(MIN_MINING_SECONDS, softCap(seconds));
+}
+
+/** Bends the long times down under `MAX_MINING_SECONDS` without flattening them.
+ *
+ *  A plain `Math.min` would make every slow block exactly as slow as every other one, and
+ *  a pickaxe would stop being worth picking up for anything harder than stone. This is the
+ *  raw time as a share of itself plus a second: strictly increasing, so every tool that
+ *  used to be faster than another still is; asymptotic, so nothing ever reaches the cap.
+ *  A furnace goes from 17.5 seconds bare-handed to 0.95, and a wooden pickaxe still takes
+ *  a quarter of a second off that. */
+function softCap(seconds: number): number {
+  return (MAX_MINING_SECONDS * seconds) / (seconds + MAX_MINING_SECONDS);
 }
 
 /** Hotbar slot holding the best tool for a block: the one that harvests it, and among
