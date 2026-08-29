@@ -15,7 +15,6 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   }
   if (message.type === 'generate') {
     if (!generator) throw new Error('worker used before init');
-    generator.weatherSeconds = message.weatherSeconds;
     const result = generator.generateChunk(message.cx, message.cz);
     const response: ChunkReadyMessage = {
       type: 'chunk',
@@ -23,16 +22,10 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       cz: message.cz,
       blocks: result.blocks,
       water: result.water,
-      riverSurface: result.riverSurface,
-      weatherSeconds: result.weatherSeconds,
       springs: result.springs,
       villagers: result.villagers,
       chests: result.chests,
     };
-    (self as unknown as Worker).postMessage(response, [
-      result.blocks.buffer,
-      result.water.buffer,
-      result.riverSurface.buffer,
-    ]);
+    (self as unknown as Worker).postMessage(response, [result.blocks.buffer, result.water.buffer]);
   }
 };

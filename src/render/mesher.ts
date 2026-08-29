@@ -8,7 +8,7 @@ import type { Atlas, TileUv } from './textures';
 export const PASS_OPAQUE = 0;
 export const PASS_CUTOUT = 1;
 export const PASS_TRANSPARENT = 2;
-/** Water gets its own pass so a flowing river only rebuilds this small geometry. */
+/** Water gets its own pass so moving water only rebuilds this small geometry. */
 export const PASS_WATER = 3;
 export type Pass = 0 | 1 | 2 | 3;
 
@@ -165,7 +165,7 @@ function textureFor(id: BlockId, dirY: number): string {
 }
 
 export interface MeshOptions {
-  /** Skip everything except water, for the cheap rebuild while a river flows. */
+  /** Skip everything except water, for the cheap rebuild while water is moving. */
   waterOnly?: boolean;
 }
 
@@ -241,7 +241,7 @@ export function buildChunkMesh(
         count++;
       } else if (waterAt(x + ox, y - 1, z + oz) > 0) {
         // The sheet passes below this cell here: counting it as empty is what keeps a
-        // gently sloping river smooth where its surface crosses a block boundary.
+        // gently sloping sheet of water smooth where it crosses a block boundary.
         count++;
       }
     }

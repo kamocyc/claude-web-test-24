@@ -152,9 +152,6 @@ export interface SaveData {
   version: number;
   seed: number;
   time: number;
-  /** Seconds of world time, which the weather cycle runs on. Absent in saves written
-   *  before the seasons existed, where the cycle simply starts over. */
-  weatherSeconds?: number;
   savedAt: number;
   player: SavedPlayer;
   /** Chunk key -> base64 encoded (blockIndex, blockId) pairs. */
@@ -166,7 +163,7 @@ export interface SaveData {
   villagers: SavedVillager[];
   /** Chunks whose village villagers have already been spawned. */
   populatedChunks: string[];
-  /** The village economy. Optional, like `weatherSeconds`: a save written before it
+  /** The village economy. Optional: a save written before it
    *  existed opens with no villages found yet and the tutorial at its first step, which
    *  is exactly right. Bumping SAVE_VERSION instead would throw every world away. */
   villages?: SavedVillage[];
@@ -182,9 +179,13 @@ export interface SaveData {
    *  with no track laid, which is exactly right, and bumping SAVE_VERSION to say so would
    *  throw every world away instead. */
   tracks?: SavedTracks;
+  /** The map's memory: chunk key -> the surveyed surface of that chunk. Optional in the
+   *  same way as the rest — a save written before the survey existed opens with a blank
+   *  map that fills in again as the player walks, which costs nothing but a walk. */
+  explored?: Record<string, string>;
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
+export function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   const step = 0x8000;
   for (let i = 0; i < bytes.length; i += step) {
@@ -193,7 +194,7 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function base64ToBytes(text: string): Uint8Array {
+export function base64ToBytes(text: string): Uint8Array {
   const binary = atob(text);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -222,31 +223,41 @@ export function decodeEdits(text: string): Map<number, number> {
   return map;
 }
 
-/** Run length encodes water levels: long stretches of dry or full cells collapse to a
- *  couple of bytes, which keeps a reservoir cheap to store. */
-export function encodeWater(levels: Uint8Array): string {
+/** Run length encodes a plane of bytes: long stretches of the same value collapse to a
+ *  couple of bytes, which is what keeps a reservoir — or a chunk of surveyed map — cheap
+ *  to store. */
+export function encodeRuns(bytes: Uint8Array): string {
   const out: number[] = [];
   let index = 0;
-  while (index < levels.length) {
-    const value = levels[index];
+  while (index < bytes.length) {
+    const value = bytes[index];
     let run = 1;
-    while (run < 255 && index + run < levels.length && levels[index + run] === value) run++;
+    while (run < 255 && index + run < bytes.length && bytes[index + run] === value) run++;
     out.push(run, value);
     index += run;
   }
   return bytesToBase64(new Uint8Array(out));
 }
 
-export function decodeWater(text: string, length: number): Uint8Array {
+export function decodeRuns(text: string, length: number): Uint8Array {
   const bytes = base64ToBytes(text);
-  const levels = new Uint8Array(length);
+  const values = new Uint8Array(length);
   let index = 0;
   for (let i = 0; i + 1 < bytes.length; i += 2) {
     const run = bytes[i];
     const value = bytes[i + 1];
-    for (let n = 0; n < run && index < length; n++) levels[index++] = value;
+    for (let n = 0; n < run && index < length; n++) values[index++] = value;
   }
-  return levels;
+  return values;
+}
+
+/** Water levels, which are the runs above under the name the save calls them by. */
+export function encodeWater(levels: Uint8Array): string {
+  return encodeRuns(levels);
+}
+
+export function decodeWater(text: string, length: number): Uint8Array {
+  return decodeRuns(text, length);
 }
 
 export function writeSave(data: SaveData): boolean {
@@ -254,18 +265,72 @@ export function writeSave(data: SaveData): boolean {
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
     return true;
   } catch {
-    // Quota exceeded or storage disabled: the game keeps running, just unsaved.
-    return false;
+    // Quota exceeded or storage disabled. The survey is the one part of a save that can
+    // be had again by walking, and it is much the largest, so a world that will not fit
+    // is written without it rather than lost.
+    if (!data.explored) return false;
+    try {
+      const { explored: _dropped, ...rest } = data;
+      localStorage.setItem(SAVE_KEY, JSON.stringify(rest));
+      return true;
+    } catch {
+      // The game keeps running, just unsaved.
+      return false;
+    }
+  }
+}
+
+/** A save out of whatever held it — local storage, or a file the player chose. Null for
+ *  anything that is not one, including a save from a version this build cannot read. */
+export function parseSave(text: string): SaveData | null {
+  try {
+    const data = JSON.parse(text) as SaveData;
+    if (!data || typeof data !== 'object') return null;
+    if (data.version !== SAVE_VERSION) return null;
+    if (typeof data.seed !== 'number' || !data.player || !data.edits) return null;
+    return data;
+  } catch {
+    return null;
   }
 }
 
 export function readSave(): SaveData | null {
   try {
     const text = localStorage.getItem(SAVE_KEY);
-    if (!text) return null;
-    const data = JSON.parse(text) as SaveData;
-    if (data.version !== SAVE_VERSION) return null;
-    return data;
+    return text ? parseSave(text) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** What a world is called once it is a file: the seed it grew from and the day it was
+ *  put down, so a folder of them can be told apart without opening any. */
+export function saveFileName(data: SaveData): string {
+  const when = new Date(data.savedAt || Date.now());
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  const stamp =
+    `${when.getFullYear()}${pad(when.getMonth() + 1)}${pad(when.getDate())}` +
+    `-${pad(when.getHours())}${pad(when.getMinutes())}`;
+  return `voxelcraft-${data.seed}-${stamp}.json`;
+}
+
+/** Hands the world to the browser as a download, and says what it called it. */
+export function downloadSave(data: SaveData): string {
+  const name = saveFileName(data);
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  // Not before the click has been processed, or the browser is handed a dead URL.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  return name;
+}
+
+/** Reads a save the player picked out of their own files. */
+export async function readSaveFile(file: File): Promise<SaveData | null> {
+  try {
+    return parseSave(await file.text());
   } catch {
     return null;
   }

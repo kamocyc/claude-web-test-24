@@ -11,15 +11,20 @@
  *  the same block colours with the same overlay, so a road that reads one way in the
  *  corner cannot read another way here.
  *
+ *  What it shows is what the player has seen. The ground is drawn from the chunks that
+ *  are loaded and, beyond them, from the survey the game keeps of every chunk that ever
+ *  was — so a coastline walked an hour ago is still on the map, and a valley nobody has
+ *  been down is not there at all. A map that guessed would be worse than a small one.
+ *
  *  It stays centred on the player and does not pan. Panning would need a way to get back,
  *  and "where am I" is the one question a map must never be able to lose the answer to;
  *  zooming out to sixteen blocks a pixel already puts four thousand blocks on screen,
  *  which is further than anybody walks in a session. */
 
 import type { Atlas } from '../render/textures';
+import type { MapSurface } from '../game/cartography';
 import { el } from './dom';
 import { Minimap, ZOOM_STEPS, type MinimapOverlay } from './minimap';
-import type { World } from '../world/world';
 
 /** Pixels across. Square, because the terrain pass walks a square and a rectangle would
  *  mean two spans to think about; large enough that at the closest zoom a village fills a
@@ -82,9 +87,9 @@ export class WorldMap {
     this.map.setZoom(ZOOM_STEPS[next]);
   }
 
-  update(world: World, x: number, z: number, yaw: number, overlay: MinimapOverlay): void {
+  update(surface: MapSurface, x: number, z: number, yaw: number, overlay: MinimapOverlay): void {
     if (!this.open) return;
-    this.map.update(world, x, z, yaw, overlay);
+    this.map.update(surface, x, z, yaw, overlay);
     this.readout.textContent =
       `${Math.round(x)}, ${Math.round(z)} · 1 ドット ${this.map.zoom} マス · 一辺 ${this.map.span} マス`;
   }

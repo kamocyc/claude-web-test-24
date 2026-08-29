@@ -34,7 +34,7 @@ function flatWorld(groundY = 20): World {
 }
 
 /** A pool three blocks deep with a bank standing one block clear of the water, which
- *  is the shape the river generator now produces. */
+ *  is the shape a dug out pool leaves behind. */
 function poolWithBank(): World {
   const world = flatWorld(20);
   for (let z = -12; z < 12; z++) {

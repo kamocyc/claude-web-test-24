@@ -67,8 +67,8 @@ describe('random ticks', () => {
   });
 
   it('wilts a crop that stays dry, and kills it in the end', () => {
-    // A drought upstream is what usually dries a field out, so this is the pressure
-    // that makes a reservoir worth building.
+    // Ground out of reach of water is what dries a field out, and this is the pressure
+    // that makes a channel or a reservoir worth digging.
     const { world, chunk } = farmWorld();
     for (let z = 0; z < 16; z++) {
       for (let x = 0; x < 16; x++) {

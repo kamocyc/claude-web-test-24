@@ -39,10 +39,6 @@ export class Chunk {
   readonly water: Uint8Array;
   /** Y of the highest non-air block in each column, -1 when the column is empty. */
   readonly heightMap: Int16Array;
-  /** Per column, the height of the river's water in a normal season, 0 where there is
-   *  no river. `RiverFlow` moves the water between here and whatever the season calls
-   *  for without having to run terrain generation again. */
-  riverSurface: Float32Array;
   /** Set while the mesh no longer matches the block data. */
   dirty = true;
   /** Set when only the water levels changed, which needs a much cheaper rebuild. */
@@ -62,7 +58,6 @@ export class Chunk {
     this.light = new Uint8Array(CHUNK_VOLUME);
     this.water = water ?? new Uint8Array(CHUNK_VOLUME);
     this.heightMap = new Int16Array(CHUNK_AREA).fill(-1);
-    this.riverSurface = new Float32Array(CHUNK_AREA);
   }
 
   get key(): string {

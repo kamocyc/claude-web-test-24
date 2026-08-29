@@ -12,8 +12,6 @@ export interface Settings {
   compass: boolean;
   /** Overhead map in the top right corner. */
   minimap: boolean;
-  /** Panel showing the season, and how long before the weather upstream arrives. */
-  forecast: boolean;
   /** Panel showing the current objective and whether each transport route is joined up. */
   routes: boolean;
   /** The road network drawn in the world itself: a line along what carries goods, dashes
@@ -56,7 +54,6 @@ export const DEFAULT_SETTINGS: Settings = {
   sensitivity: 0.0022,
   compass: true,
   minimap: true,
-  forecast: true,
   routes: true,
   guide: true,
   coords: true,
@@ -92,7 +89,6 @@ export function loadSettings(): Settings {
       difficulty: isDifficulty(parsed.difficulty) ? parsed.difficulty : DEFAULT_SETTINGS.difficulty,
       compass: parsed.compass ?? DEFAULT_SETTINGS.compass,
       minimap: parsed.minimap ?? DEFAULT_SETTINGS.minimap,
-      forecast: parsed.forecast ?? DEFAULT_SETTINGS.forecast,
       routes: parsed.routes ?? DEFAULT_SETTINGS.routes,
       guide: parsed.guide ?? DEFAULT_SETTINGS.guide,
       coords: parsed.coords ?? DEFAULT_SETTINGS.coords,

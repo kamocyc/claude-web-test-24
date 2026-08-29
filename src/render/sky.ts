@@ -6,9 +6,7 @@ const DAY_SKY = new THREE.Color(0x7ec0ee);
 const SUNSET_SKY = new THREE.Color(0xe8925a);
 const NIGHT_SKY = new THREE.Color(0x05070f);
 /** Overcast grey the sky is dragged towards in heavy rain. */
-const RAIN_SKY = new THREE.Color(0x5c6470);
 /** Dusty haze of a dry season. */
-const DROUGHT_SKY = new THREE.Color(0xc9c2a4);
 
 /** Sky colour, sun, moon, stars and the scene lights that mobs are lit by. */
 export class Sky {
@@ -20,7 +18,7 @@ export class Sky {
   private readonly ambient: THREE.HemisphereLight;
   private readonly directional: THREE.DirectionalLight;
   private readonly color = new THREE.Color();
-  /** Fog distances for clear weather, which rain and haze pull in from. */
+  /** How far the fog reaches. */
   private baseNear: number;
   private baseFar: number;
 
@@ -62,12 +60,7 @@ export class Sky {
   }
 
   /** Repositions everything around the camera and applies the current lighting. */
-  update(
-    day: DayCycle,
-    camera: THREE.Camera,
-    renderer: THREE.WebGLRenderer,
-    wetness = 0,
-  ): void {
+  update(day: DayCycle, camera: THREE.Camera, renderer: THREE.WebGLRenderer): void {
     const sun = day.sunLight;
     const angle = day.sunAngle;
     const sunDir = new THREE.Vector3(Math.cos(angle), Math.sin(angle), 0.25).normalize();
@@ -76,16 +69,10 @@ export class Sky {
     const dusk = Math.max(0, 1 - Math.abs(Math.sin(angle)) * 2.6);
     this.color.copy(NIGHT_SKY).lerp(DAY_SKY, sun);
     this.color.lerp(SUNSET_SKY, dusk * sun * 0.85);
-    // The season tints the sky, but only in daylight: a drought does not brighten the
-    // night, it just leaves the air dusty by day.
-    if (wetness > 0) this.color.lerp(RAIN_SKY, Math.min(1, wetness) * 0.75 * sun);
-    else if (wetness < 0) this.color.lerp(DROUGHT_SKY, Math.min(1, -wetness) * 0.3 * sun);
     renderer.setClearColor(this.color);
     this.fog.color.copy(this.color);
-    // Rain closes the view in; a dry haze does the same, more gently.
-    const closeIn = wetness > 0 ? wetness * 0.45 : -wetness * 0.15;
-    this.fog.near = this.baseNear * (1 - closeIn);
-    this.fog.far = this.baseFar * (1 - closeIn * 0.75);
+    this.fog.near = this.baseNear;
+    this.fog.far = this.baseFar;
 
     const position = camera.position;
     this.group.position.copy(position);

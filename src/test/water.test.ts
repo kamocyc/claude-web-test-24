@@ -222,7 +222,7 @@ function columnHeight(r: Rig, x: number): number {
 
 describe('loading a chunk', () => {
   /** A chunk holding a pool that stands above the open ground of its neighbour, the
-   *  way a generated river sits above the land it steps down towards. */
+   *  way a pool sits above the land it steps down towards. */
   function pair(): { world: World; sim: WaterSimulator; loaded: Chunk } {
     const world = new World(1);
     const sim = new WaterSimulator(world);

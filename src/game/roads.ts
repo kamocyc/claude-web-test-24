@@ -353,8 +353,22 @@ export class RoadNetwork {
 
   /** Picks the highest qualifying road level in a column, over the range of levels the
    *  changed cell could have affected: itself, and the `HEADROOM` levels beneath it whose
-   *  clearance it is part of. */
+   *  clearance it is part of.
+   *
+   *  A column that already carries a road keeps it. A village growing beside one raises
+   *  its own ground and lays its own paving ten blocks over the player's road, and both
+   *  levels are roads: taking the higher one would lift the middle of somebody's road
+   *  onto the village's doorstep and leave a step in it that nothing can walk. So the
+   *  road a column has only moves when the level it was at stops being a road — which
+   *  is what happens when the player repaves it, or digs it up, or builds over it. */
   private refresh(x: number, z: number, around: number): void {
+    const held = this.columns.get(key(x, z));
+    if (held !== undefined && held !== around && this.qualifies(x, held, z)) {
+      // Still a road, and still where it was. Only what it is made of can have changed.
+      const surface = editAt(this.world, x, held, z);
+      if (surface !== undefined) this.surfaces.set(key(x, z), surface);
+      return;
+    }
     let best = -1;
     for (let y = around + 1; y >= around - HEADROOM - 1; y--) {
       if (this.qualifies(x, y, z)) {

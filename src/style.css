@@ -785,86 +785,6 @@ body.screen-open #viewport {
   opacity: 0.9;
 }
 
-.forecast {
-  position: absolute;
-  top: 168px;
-  right: 14px;
-  width: 116px;
-  padding: 6px 8px 7px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.42);
-  color: #f2f2f2;
-  font-size: 11px;
-  line-height: 1.35;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
-  pointer-events: none;
-}
-
-.forecast-head {
-  display: flex;
-  align-items: baseline;
-  gap: 4px;
-}
-
-.forecast-icon {
-  font-size: 13px;
-}
-
-.forecast-season {
-  font-weight: 700;
-}
-
-.forecast-timer {
-  margin-left: auto;
-  opacity: 0.85;
-  font-variant-numeric: tabular-nums;
-}
-
-.forecast-next {
-  opacity: 0.75;
-}
-
-.forecast-next.urgent {
-  opacity: 1;
-  color: #ffd479;
-}
-
-.forecast-bar {
-  position: relative;
-  height: 4px;
-  margin: 5px 0 3px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.16);
-}
-
-/* The centre line is the river's normal level, so the fill reads as a rise or a fall. */
-.forecast-bar::after {
-  content: '';
-  position: absolute;
-  top: -1px;
-  bottom: -1px;
-  left: 50%;
-  width: 1px;
-  background: rgba(255, 255, 255, 0.5);
-}
-
-.forecast-fill {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  border-radius: 2px;
-  background: #9ad8ff;
-}
-
-.forecast.drought .forecast-fill {
-  background: #ffb35c;
-}
-
-.forecast-level {
-  opacity: 0.75;
-  font-variant-numeric: tabular-nums;
-}
-
 .minimap {
   position: absolute;
   top: 46px;
@@ -968,6 +888,17 @@ body.screen-open #viewport {
 .menu-button.subtle {
   font-size: 13px;
   opacity: 0.75;
+}
+
+/* What happened to the last file the player picked. Empty until there is something to
+   say, and it takes no room while it is. */
+.file-note:empty {
+  display: none;
+}
+
+.file-note {
+  color: #ffd479;
+  text-align: center;
 }
 
 /* ---------- objective and transport routes ---------- */
