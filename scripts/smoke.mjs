@@ -5,6 +5,7 @@
  */
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
+import { QUEST_ROUTE, createSmokeHelpers } from './smoke-helpers.mjs';
 
 const url = process.argv[2] ?? 'http://localhost:5173/';
 const outDir = process.argv[3] ?? 'screenshots';
@@ -50,126 +51,9 @@ page.on('console', (message) => {
   }
 });
 
-const shot = async (name) => page.screenshot({ path: `${outDir}/${name}.png` });
-/** Escape only when a screen is actually open, otherwise it would pause the game. */
-const closeScreen = async () => {
-  if (await page.evaluate(() => window.voxelcraft?.game?.screens.isOpen === true)) {
-    await page.keyboard.press('Escape');
-    await page.waitForFunction(() => window.voxelcraft.game.screens.isOpen === false, null, { timeout: 10000 });
-  }
-};
-const debugText = () => page.locator('.debug').textContent();
-/** The tutorial's own leg, looked up by the two towns its stops serve. `routes()` is
- *  ordered by line, so a second service is enough to shuffle the indices. */
-const QUEST_ROUTE = `(() => {
-  const q = window.voxelcraft.quest();
-  return window.voxelcraft.routes().find((r) =>
-    (r.fromTown === q.origin && r.toTown === q.target)
-    || (r.fromTown === q.target && r.toTown === q.origin)) ?? null;
-})()`;
-/** Stands the player on flat, open, loaded ground and drops a villager in front of them.
- *  Spawning where a teleport landed risks a roof, a wall, or an unloaded chunk, and a
- *  villager that falls out of the world cannot be talked to. */
-const villagerInFront = async () => {
-  await settled(60000);
-  const spot = await page.evaluate(() => {
-    const g = window.voxelcraft.game;
-    window.voxelcraft.heal();
-    for (let r = 4; r < 80; r += 2) {
-      for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
-        const x = Math.round(g.player.x + Math.cos(a) * r);
-        const z = Math.round(g.player.z + Math.sin(a) * r);
-        const here = g.world.heightAt(x, z);
-        const ahead = g.world.heightAt(x, z + 3);
-        if (here > 0 && here === ahead && g.world.getBlock(x, here + 1, z) === 0
-            && g.world.getBlock(x, here + 1, z + 3) === 0) {
-          g.player.teleportTo(x + 0.5, here + 1, z + 0.5);
-          g.player.yaw = Math.PI;
-          g.player.pitch = 0;
-          return { x, z, ground: here };
-        }
-      }
-    }
-    return null;
-  });
-  await frame();
-  await page.evaluate(() => window.voxelcraft.spawnMob('villager', 2.5));
-  await until(() => window.voxelcraft.mobs().at(-1)?.onGround === true, null, 10000).catch(() => {});
-  return spot;
-};
-const evaluate = (fn, arg) => page.evaluate(fn, arg);
-/** Waits for something the page can actually observe, rather than guessing at a duration.
- *  Throws on timeout, deliberately: a wait that quietly gives up turns a broken feature
- *  into a run that still says it passed. */
-const until = (condition, arg = null, timeout = 30000) =>
-  page.waitForFunction(condition, arg, { timeout });
-/** Waits for a number to stop moving. The simulation runs well below real time under
- *  software rendering, so "has the water finished flowing" cannot be a fixed sleep — but
- *  it can be readings that agree.
- *
- *  `dwell` is why this is not just "two samples match": for the first moment after a gate
- *  opens the far end still reads what it read before, and a pair of samples taken in that
- *  window would call it settled and log the old value as the result. Nothing may be
- *  reported stable until the simulation has had that long to react. */
-const stable = (expression, { tolerance = 0.001, dwell = 900, timeout = 60000 } = {}) =>
-  page.waitForFunction(
-    `(() => {
-      const value = ${expression};
-      const state = window.__smokeStable ?? (window.__smokeStable = { since: Date.now() });
-      const previous = state.value;
-      state.value = value;
-      if (Date.now() - state.since < ${dwell}) return false;
-      return previous !== undefined && Math.abs(previous - value) <= ${tolerance};
-    })()`,
-    null,
-    { timeout, polling: 300 },
-  ).finally(() => page.evaluate(() => { delete window.__smokeStable; }));
-/** Nothing left to generate or re-mesh. */
-const settled = (timeout = 90000) => until(() => window.voxelcraft.backlog() === 0, null, timeout);
-/** Turns the world's clock until something is true, rather than sitting through it.
- *
- *  Almost everything this file waits for is the world's own clock: a road being re-walked
- *  (every two seconds), a porter covering a hundred metres, a works converting, an industry
- *  digging. Under software rendering the game runs well below real time, so waiting those
- *  out honestly is most of a ten minute run — for seconds that are simulated identically
- *  whether or not anybody sat through them.
- *
- *  So this runs them by hand. `voxelcraft.fastForward` is `stepWorld` in a loop with no
- *  frame budget, which is exactly what game speed does; the assertion is the same one
- *  `until` makes and it throws the same way, saying how much world it spent. What it will
- *  not do is skip chunk generation, which happens on workers — anything waiting for the
- *  world to *exist* still wants `settled()`. */
-const advance = async (condition, { seconds = 240, chunk = 4, arg = null } = {}) => {
-  for (let spent = 0; spent <= seconds; spent += chunk) {
-    if (await page.evaluate(condition, arg)) return spent;
-    await page.evaluate((n) => window.voxelcraft.fastForward(n), chunk);
-  }
-  if (await page.evaluate(condition, arg)) return seconds;
-  throw new Error(`nothing came of ${seconds}s of world: ${String(condition).slice(0, 160)}`);
-};
-/** One painted frame, for a screenshot taken straight after a change. */
-const frame = () =>
-  page.evaluate(() => new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(resolve));
-  }));
-/** Right-clicks at the crosshair until the world reacts. A single dropped frame on the
- *  software renderer can swallow the press, and a retry is cheaper than a flaky run. */
-const useUntil = async (predicate, arg = null, attempts = 6) => {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    await page.mouse.move(640, 360);
-    await page.mouse.down({ button: 'right' });
-    await page.mouse.up({ button: 'right' });
-    // Poll for the outcome rather than sleeping through it: most presses land on the
-    // first frame, and the ones that do not are why the loop is here.
-    try {
-      await page.waitForFunction(predicate, arg, { timeout: 900 });
-      return true;
-    } catch {
-      // Dropped frame, or the press landed on nothing. Try again.
-    }
-  }
-  return false;
-};
+const {
+  advance, closeScreen, debugText, evaluate, frame, settled, shot, stable, until, useUntil, villagerInFront,
+} = createSmokeHelpers(page, outDir);
 
 await page.goto(url, { waitUntil: 'domcontentloaded' });
 await page.locator('.menu-button:has-text("検証用ワールド")').waitFor({ timeout: 30000 });

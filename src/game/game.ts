@@ -38,7 +38,6 @@ import { Block, type BlockId, blockDef, isFarmland, isReplaceable, supportsPlant
 import {
   CHUNK_HEIGHT,
   CHUNK_SIZE,
-  CHUNK_VOLUME,
   Chunk,
   SEA_LEVEL,
   blockIndex,
@@ -58,8 +57,6 @@ import type { ChunkReadyMessage } from '../workers/chunkMessages';
 import { Hud, type NavigationInfo } from '../ui/hud';
 import { WorldMap } from '../ui/worldMap';
 import type { CompassMarker } from '../ui/compass';
-import type { Input } from '../ui/input';
-import type { Menus } from '../ui/menus';
 import { ScreenManager } from '../ui/screens';
 import { WarpDialog } from '../ui/warpDialog';
 import { clampWarpY, type WarpTarget } from './warp';
@@ -69,7 +66,7 @@ import { DIFFICULTIES, type Difficulty, difficultyRules } from './difficulty';
 import { DayCycle } from './daycycle';
 import { DropManager } from './drops';
 import { EXHAUSTION } from './hunger';
-import { HOTBAR_SIZE, Inventory, type ItemStack } from './inventory';
+import { HOTBAR_SIZE, type ItemStack } from './inventory';
 import { allItems, itemDef, itemLabel } from './items';
 import { fillVillageChest } from './loot';
 import { bestToolSlot, blockDrops, heldTool, miningTime } from './mining';
@@ -80,22 +77,16 @@ import { MapMemory, SurveyedTerrain } from './cartography';
 import { NO_INPUT, PLAYER_HEIGHT, PLAYER_WIDTH, Player, type PlayerInput } from './player';
 import {
   type SaveData,
-  SAVE_VERSION,
-  decodeEdits,
-  decodeWater,
   downloadSave,
-  encodeEdits,
-  encodeWater,
   writeSave,
 } from './save';
 import { findSpawn } from './seeds';
-import { SPEEDS, nearestSpeed, type Settings } from './settings';
+import { SPEEDS, nearestSpeed } from './settings';
 import { tickFurnace } from './smelting';
-import { generateTrades, restockTrades, tradesFromJSON, tradesToJSON } from './trading';
+import { generateTrades, restockTrades } from './trading';
 import { VILLAGE_RADIUS, type Footprint, type HouseRecord } from '../world/generation/village';
 import {
   HEADROOM,
-  MAX_STEP,
   ROAD_SPEED,
   RoadNetwork,
   faultText,
@@ -104,9 +95,6 @@ import {
   type RoadPoint,
 } from './roads';
 import {
-  MAX_GRADE,
-  MAX_SPAN,
-  MIN_RADIUS,
   MIN_SPAN,
   SNAP_RADIUS,
   STATION_REACH,
@@ -122,11 +110,9 @@ import {
   summarise,
   tangentAt,
   type TrackAnchor,
-  type TrackEdge,
   type TrackFault,
   type TrackNode,
   type TrackPoint,
-  type TrackSummary,
   type TrackSample,
 } from './tracks';
 import { runRoad, treadBrush, treadLine, TREAD_DIRT, type PaveMaterial, type PaveTarget } from './paving';
@@ -187,216 +173,84 @@ import {
 import { outpostRecord, outpostSite } from './outpost';
 import { MILESTONES, Questline, gapText, type NetworkState, type QuestInteraction } from './questline';
 import { biomeDef } from '../world/generation/biome';
+import {
+  ATTACK_REACH,
+  AUTOSAVE_SECONDS,
+  BUILDING_REACH,
+  COMMUTE_VISIBLE,
+  FAULT_REACH,
+  FAULT_TOAST_INTERVAL,
+  GUIDE_DEPOT,
+  GUIDE_FAULT,
+  GUIDE_GAP,
+  GUIDE_LINK,
+  GUIDE_NARROW,
+  GUIDE_NOLINK,
+  GUIDE_PORTER,
+  GUIDE_RAILGAP,
+  GUIDE_ROAD,
+  GUIDE_STALL,
+  GUIDE_STATION,
+  GUIDE_TILE_REACH,
+  INDUSTRY_REACH,
+  LINK_VISIBLE,
+  MESH_BUDGET,
+  MINIMAP_RAIL_STEP,
+  MINIMAP_REACH,
+  PAVE_BRIDGE,
+  PAVE_INTERVAL,
+  PIER_MIN_GAP,
+  PIER_STEP,
+  PORT_MARK_OUT,
+  REACH,
+  ROAD_GRADE,
+  ROAD_REACH,
+  SAMPLE_ROAD,
+  SAMPLE_STATIONS,
+  SAMPLE_STOPS,
+  SAMPLE_TRACK_CLEAR,
+  SAMPLE_TRACK_GAP,
+  SAMPLE_TRACK_GRADE,
+  SAMPLE_TRACK_OFFSET,
+  SAMPLE_TRACK_PROBE,
+  SAMPLE_TRACK_SPARE,
+  SAMPLE_TRACK_STEP,
+  SAMPLE_WIDTH,
+  STALL_LIGHT,
+  STARTING_COUNT,
+  STARTING_KIT,
+  STOP_REACH,
+  TRACK_DRAW,
+  TRACK_END_MARK,
+  TRACK_LIFT,
+  TRACK_PICK,
+  TRACK_REACH,
+  TRACK_SPLIT_MARK,
+  TRACK_START_MARK,
+  TRACK_VIEW_INTERVAL,
+  TUTORIAL_STOPS,
+  UNLOAD_MARGIN,
+  WATER_MESH_BUDGET,
+  WORLD_BUDGET_MS,
+} from './gameConstants';
+import { rayBoxDistance, roundPoint } from './gameGeometry';
+import { movementFromInput, punctuationCommand } from './gameInput';
+import { bearingBetween, isWithin } from './gameNavigation';
+import { createGameSnapshot, restoreSaveFoundation, restoreSavedVillagers } from './gamePersistence';
+import type { GameOptions, StopLink } from './gameTypes';
+import {
+  LEVEL,
+  RIDE_LOST,
+  bendWord,
+  centreOf,
+  slopeWord,
+  trackFaultText,
+  trackLines,
+  type TrackAim,
+  type TrackRun,
+} from './trackInteraction';
 
-const UNLOAD_MARGIN = 2;
-const REACH = 5;
-
-/** How near the player has to be to put a stop down or take one back up. The same reach
- *  the rest of the world uses for placing things, so it needs no explaining. */
-const STOP_REACH = 6;
-/** How near the player has to be to take an industry back down, and how far from its
- *  middle a block still counts as part of it. A works is a seven-by-seven yard, so this is
- *  its far corner and a step: pointing anywhere at one is pointing at it. */
-const INDUSTRY_REACH = 8;
-const ATTACK_REACH = 3.6;
-const AUTOSAVE_SECONDS = 30;
-/** Half the span the minimap covers, so only nearby roads are handed to it. */
-const MINIMAP_REACH = 130;
-/** How far away a building can be named. Longer than the player's reach, because naming
- *  a building is about looking at it, not about touching it. */
-const BUILDING_REACH = 28;
-/** How far the road tiles of the in-world guide reach. Small on purpose: it is there to
- *  answer "does the game count *this* as road", which is a question about the ground the
- *  player is standing on. */
-const GUIDE_TILE_REACH = 40;
-/** Line colours, matching the minimap and the panel so the three read as one thing. */
-const GUIDE_ROAD = 0x5cff92;
-const GUIDE_GAP = 0xffa04d;
-const GUIDE_PORTER = 0x8ef0b8;
-/** Road the index refuses, and road too narrow for a cart. Both are "you built this and
- *  it does not count", which is the one thing the world itself has to say out loud. */
-const GUIDE_FAULT = 0xff5a5a;
-const GUIDE_NARROW = 0xffc457;
-/** Where the railway runs out. Violet, because amber already means "too narrow" and red
- *  already means "does not count" — three different jobs need three different colours. */
-const GUIDE_RAILGAP = 0xb08cff;
-/** How near the player has to be for the people walking across a town to be worth
- *  drawing. Shorter than a porter's `PORTER_VISIBLE`, because a commute is a walk between
- *  two doorways rather than a line across the map: somebody outside this is not just far
- *  away, they are in a town the player is not standing in. */
-const COMMUTE_VISIBLE = 48;
-
-/** The station that is not built yet. A warmer violet than the railhead's, because the
- *  two are next door to each other and the answer to them is not the same. */
-const GUIDE_STATION = 0xff9adf;
-/** The doorway a route loads and unloads at. */
-const GUIDE_DEPOT = 0xffd479;
-/** The tether between a stop or a station and the town or industry it is judged to serve.
- *  Cyan, because it is the only thing on the guide that is not about a road at all. */
-const GUIDE_LINK = 0x35c8ff;
-/** And one that is judged to serve nothing: a stop the player put down that no town and no
- *  works can be loaded through. Grey rather than red — it is a legitimate thing to be
- *  halfway through building, not a fault. */
-const GUIDE_NOLINK = 0x9aa4b0;
-/** How far a tether is worth drawing. About a screen: this answers a question about the
- *  place the player is standing in. */
-const LINK_VISIBLE = 110;
-
-/** A rail end's floating-point position, on the block grid the guide draws on. */
-function roundPoint(point: TrackPoint): { x: number; y: number; z: number } {
-  return { x: Math.round(point.x), y: Math.round(point.y), z: Math.round(point.z) };
-}
-
-/** What a stop at a point is attached to, or would be.
- *
- *  Both nearest are kept whether or not they are in reach, so "this reaches nothing" can
- *  say how far off it is instead of only that it is. */
-interface StopLink {
-  town: VillageRecord | null;
-  works: Industry | null;
-  nearTown: { village: VillageRecord; distance: number } | null;
-  nearWorks: { works: Industry; distance: number } | null;
-}
-/** A railway held at a signal that is never going to clear. Amber, matching the lamp on
- *  the signal itself, because they are one thing seen from two distances. */
-const GUIDE_STALL = 0xf5c02a;
-/** Blocks of height a laid road may gain or lose per column — deliberately gentler than
- *  the step the index will walk.
- *
- *  Matching the index exactly is not enough once a road is wide. An angled road is a
- *  staircase, so the band either side of the line is made of cells that belong to columns
- *  several steps apart, and a line climbing a block at every one of them leaves that band
- *  two blocks out of level with what it is widening — a road three columns across
- *  everywhere and passable nowhere. Half a block per column keeps the whole ribbon within
- *  the one step the rule allows. */
-const ROAD_GRADE = MAX_STEP / 2;
-/** How far ahead `[R]` will run a road back to the player's feet. A road is continuous
- *  now, so this is the one place the player says "and the twenty blocks in between". */
-const ROAD_REACH = 20;
-
-/** How far the free-form track tool reaches.
- *
- *  Far further than the hand's REACH, and further again than `R`: one gesture lays a
- *  whole curve, so what the tool can touch has to be the length of one. */
-const TRACK_REACH = 48;
-/** Clear of the face the click landed on, so the deck cannot z-fight with the ground. */
-const TRACK_LIFT = 0.06;
-/** How near the crosshair has to pass a laid curve to pick it up for removal. */
-const TRACK_PICK = 1.2;
-/** Track beyond this is not built into the mesh. */
-const TRACK_DRAW = 128;
-/** Spacing of the legs under floating track, and the drop one has to bridge to appear. */
-const PIER_STEP = 4;
-const PIER_MIN_GAP = 0.4;
-/** How often the track's geometry is worked out again even though nothing about the track
- *  changed. Piers are the reason: the ground under a run streams in after the run does,
- *  and a leg that only appeared when the player next laid something would never appear. */
-const TRACK_VIEW_INTERVAL = 1;
-/** The pending start of a curve, and every end a new curve could be joined to. The
- *  second one is how a player finds out that snapping exists at all. */
-const TRACK_START_MARK = 0xffbb33;
-const TRACK_END_MARK = 0x66ccff;
-/** Where a click would cut a laid run and start a branch out of it. */
-const TRACK_SPLIT_MARK = 0xffa0d8;
-/** How near a jam has to be reported to a signal for that signal to be the one showing
- *  amber. A shipment stops with its nose at the boundary, so this only has to be wider
- *  than the step it takes in a frame. */
-const STALL_LIGHT = 6;
-/** How far out along its own heading a free port's marker stands. Far enough that a
- *  switch's three show as three and not as one smudge, near enough that the one being
- *  pointed at is unmistakably that node's. */
-const PORT_MARK_OUT = 0.9;
-/** The length of road the sample world starts with, in blocks. Villages sit on a 320
- *  block grid, so this picks a neighbour rather than the village next door. */
-const SAMPLE_ROAD = 400;
-/** Seconds between two passes of a held shovel, so paving happens at a walking pace
- *  rather than at the frame rate. */
-const PAVE_INTERVAL = 0.06;
-/** How far behind a jumped cursor the sweep will fill in. A crosshair skips several
- *  blocks whenever the player turns, and a road with a hole in it is two roads. */
-const PAVE_BRIDGE = 12;
-/** Width of the road the sample world is built with. Three columns is what a cart needs,
- *  and a sample road nobody can run a cart down teaches the wrong half of the lesson. */
-const SAMPLE_WIDTH = 3;
-/** Blocks of the sample railway left unlaid, at the end the player starts on.
- *
- *  A railway handed over finished shows the train and nothing else: not the tool, not the
- *  violet beacon over the break, not what a line looks like while it is half done.
- *  Leaving the near end open puts all three in front of the player at once. Short enough
- *  that one curve closes it: from the open end, a village is inside both the tool's reach
- *  and a station's, so the lesson is one gesture rather than a march. */
-const SAMPLE_TRACK_GAP = 48;
-/** Rails the sample world hands over: enough for the gap, and enough over it that a
- *  wandering line or a second thought does not strand the player halfway. */
-const SAMPLE_TRACK_SPARE = 24;
-/** Stations in the sample world's pack. One to build at the near end, one spare: a station
- *  put down in the wrong place is picked back up, but a player who has to work that out
- *  before they can finish the line has been charged for a rule they were still learning. */
-const SAMPLE_STATIONS = 2;
-/** Stops the sample world hands over spare, so the invitation is "extend this", not
- *  "start again". */
-const SAMPLE_STOPS = 4;
-/** How far to one side of the sample road its railway runs.
- *
- *  Not on top of it. The road and the railway are the two halves of the demonstration and
- *  a deck laid over the road would hide one of them — and, standing on the road, the point
- *  of a railway is much easier to see from underneath it. */
-const SAMPLE_TRACK_OFFSET = 6;
-/** How finely a curve is cut up for the map. Two blocks to the pixel there, so anything
- *  under about eight is drawing detail nobody can see. */
-const MINIMAP_RAIL_STEP = 6;
-/** Blocks between two ends of the sample railway. Comfortably inside MAX_SPAN, and long
- *  enough that the line is a handful of curves rather than a hundred stitches. */
-const SAMPLE_TRACK_STEP = 64;
-/** How often the ground under the sample railway is asked how high it is. */
-const SAMPLE_TRACK_PROBE = 8;
-/** How far over the highest ground it passes the sample deck is held. Two is enough to
- *  walk under and to see daylight through, and low enough that the piers stay short. */
-const SAMPLE_TRACK_CLEAR = 2;
-/** The steepest the sample line is laid at.
- *
- *  Under MAX_GRADE, but not by much, and the reason is the opposite of the obvious one: a
- *  *gentler* line is a *higher* one. The deck is an envelope over the ground, so it falls
- *  away from every hill at exactly this slope — halve it and every peak throws its shadow
- *  twice as far, and the whole line rises to clear a mountain a quarter of a mile off. A
- *  demonstration that crosses the country thirty blocks up demonstrates the wrong thing.
- *
- *  It cannot go to MAX_GRADE itself. The profile between two ends is a curve rather than a
- *  ramp, so the middle of a run is steeper than its ends are apart, and a line laid at the
- *  limit would have the solver refuse half of it. */
-const SAMPLE_TRACK_GRADE = 0.15;
-/** Seconds between two complaints about a road that will not take. Often enough to catch
- *  the branch the player is standing under, rarely enough to stay out of the way. */
-const FAULT_TOAST_INTERVAL = 4;
-/** How far around the player the world looks for faults to draw. */
-const FAULT_REACH = 40;
-/** Milliseconds a frame will spend running the world forward before it gives up on the
- *  rest of the requested speed. Roughly half a 30fps frame. */
-const WORLD_BUDGET_MS = 12;
-/** Stops the town hands over when it explains what a line is. Exactly the two a first
- *  line needs — the third is the player's to make. */
-const TUTORIAL_STOPS = 2;
-/** What a brand new world hands the player, and how much of each. */
-const STARTING_KIT: readonly string[] = ['oak_planks', 'dirt'];
-const STARTING_COUNT = 32;
-
-/** Chunk meshes rebuilt per frame; higher values load faster but stutter more. */
-const MESH_BUDGET = 3;
-/** Water-only rebuilds are much cheaper, so more of them fit in a frame. */
-const WATER_MESH_BUDGET = 6;
-
-export interface GameOptions {
-  canvas: HTMLCanvasElement;
-  input: Input;
-  menus: Menus;
-  seed: number;
-  save: SaveData | null;
-  settings: Settings;
-  /** Start with a road already built between two villages, and the player standing on
-   *  one end of it. See `buildSampleRoad`. */
-  sample?: boolean;
-  onQuit(): void;
-}
+export type { GameOptions } from './gameTypes';
 
 export class Game {
   readonly world: World;
@@ -1019,12 +873,7 @@ export class Game {
         quest: objective,
         // How far, and which way. The compass carries the same marker, but the panel is
         // where the player looks to know whether it is a walk or an expedition.
-        aim: aim
-          ? {
-              distance: Math.hypot(aim.x - this.player.x, aim.z - this.player.z),
-              bearing: (Math.atan2(aim.x - this.player.x, -(aim.z - this.player.z)) * 180) / Math.PI,
-            }
-          : null,
+        aim: aim ? bearingBetween(this.player, aim) : null,
         // Only the lines worth a row: the ones that work, the one the tutorial is asking
         // for, and any that used to work and have been dug up. Every other watched pair
         // would just be a wall of "not connected".
@@ -1262,18 +1111,17 @@ export class Game {
   /** The keys that are punctuation rather than a named key, handled by what they type.
    *  Returns true when the event was one of them and has been dealt with. */
   private punctuation(event: KeyboardEvent): boolean {
-    switch (event.key) {
-      case '[':
-      case ']':
+    const command = punctuationCommand(event.key);
+    switch (command) {
+      case 'slower':
+      case 'faster':
         if (this.paused || this.player.isDead || this.uiOpen) return true;
-        this.nudgeSpeed(event.key === '[' ? -1 : 1);
+        this.nudgeSpeed(command === 'slower' ? -1 : 1);
         return true;
-      // `=` is where `+` lives without the shift key, and both are the zoom in.
-      case '+':
-      case '=':
+      case 'zoom-in':
         if (this.worldMap.isOpen) this.worldMap.zoom(-1);
         return true;
-      case '-':
+      case 'zoom-out':
         if (this.worldMap.isOpen) this.worldMap.zoom(1);
         return true;
       default:
@@ -1289,17 +1137,7 @@ export class Game {
       this.player.inventory.selected = (this.player.inventory.selected + wheel + size) % size;
       this.hud.showHeldItem(this.player.inventory.held?.id ?? null);
     }
-    return {
-      forward: input.isDown('KeyW'),
-      back: input.isDown('KeyS'),
-      left: input.isDown('KeyA'),
-      right: input.isDown('KeyD'),
-      jump: input.isDown('Space'),
-      // Shift is the key under the little finger and travel is what this world is made
-      // of, so Shift is the dash. Going slowly is the rarer thing, and it is Ctrl.
-      sprint: input.isDown('ShiftLeft') || input.isDown('ShiftRight'),
-      sneak: input.isDown('ControlLeft') || input.isDown('ControlRight'),
-    };
+    return movementFromInput(input);
   }
 
   /** Finds the building in the middle of the screen, so it can be named and chosen.
@@ -3297,10 +3135,7 @@ export class Game {
 
   /** How far off and which way something is, in the terms the panel speaks. */
   private bearingTo(point: { x: number; z: number }): { distance: number; bearing: number } {
-    return {
-      distance: Math.hypot(point.x - this.player.x, point.z - this.player.z),
-      bearing: (Math.atan2(point.x - this.player.x, -(point.z - this.player.z)) * 180) / Math.PI,
-    };
+    return bearingBetween(this.player, point);
   }
 
   /** Places where road blocks are laid and the index refuses them. Near the player, or
@@ -3310,7 +3145,7 @@ export class Game {
   }
 
   private nearPlayer(point: { x: number; z: number }, within: number): boolean {
-    return Math.hypot(point.x - this.player.x, point.z - this.player.z) <= within;
+    return isWithin(this.player, point, within);
   }
 
   /** A line laid over the ground rather than through it, cached until its shape changes.
@@ -4724,79 +4559,23 @@ export class Game {
   /** Everything worth keeping about this world, in the shape a save file has. Written to
    *  local storage by `save`, and handed to the player as a file by `exportSave`. */
   snapshot(): SaveData {
-    // The survey is written when a chunk arrives and again when it goes; the loaded ones
-    // have done neither since the player last changed anything in them.
-    for (const chunk of this.world.chunks.values()) this.mapMemory.record(chunk);
-    const edits: Record<string, string> = {};
-    const water: Record<string, string> = {};
-    for (const [key, map] of this.world.edits) {
-      if (map.size === 0) continue;
-      edits[key] = encodeEdits(map);
-      // Water in edited chunks was shaped by the player, so it cannot be regenerated.
-      const levels = this.world.waterOf(key);
-      if (levels) water[key] = encodeWater(levels);
-    }
-    const chests: SaveData['chests'] = [];
-    const furnaces: SaveData['furnaces'] = [];
-    for (const [key, entity] of this.world.blockEntities) {
-      const [x, y, z] = key.split(',').map(Number);
-      if (isChest(entity)) chests.push({ pos: [x, y, z], slots: entity.slots.toJSON() });
-      else if (isFurnace(entity)) {
-        furnaces.push({
-          pos: [x, y, z],
-          slots: entity.slots.toJSON(),
-          burnLeft: entity.burnLeft,
-          burnTotal: entity.burnTotal,
-          cookProgress: entity.cookProgress,
-        });
-      }
-    }
-    const data: SaveData = {
-      version: SAVE_VERSION,
+    return createGameSnapshot({
       seed: this.options.seed,
       time: this.day.time,
-      savedAt: Date.now(),
-      player: {
-        x: this.player.x,
-        y: this.player.y,
-        z: this.player.z,
-        yaw: this.player.yaw,
-        pitch: this.player.pitch,
-        health: this.player.health,
-        food: this.player.hunger.food,
-        saturation: this.player.hunger.saturation,
-        selected: this.player.inventory.selected,
-        inventory: this.player.inventory.toJSON(),
-        armor: this.player.inventory.armor.toJSON(),
-      },
-      edits,
-      water,
-      chests,
-      furnaces,
-      villagers: this.mobs.mobs
-        // A commuter is a view of a walk the town re-derives on its own, exactly as a
-        // porter is a view of a shipment. Saving one would put a second villager in the
-        // street every time the world was opened.
-        .filter((mob) => mob.kind === 'villager' && !this.commuterMobs.has(mob.id))
-        .map((mob) => ({
-          x: mob.x,
-          y: mob.y,
-          z: mob.z,
-          profession: mob.profession ?? 'farmer',
-          trades: tradesToJSON(mob.trades),
-          villageStage: mob.villageStage,
-        })),
-      populatedChunks: [...this.populatedChunks],
+      world: this.world,
+      mapMemory: this.mapMemory,
+      player: this.player,
+      mobs: this.mobs.mobs,
+      isCommuter: (id) => this.commuterMobs.has(id),
+      populatedChunks: this.populatedChunks,
       villages: this.villages.toJSON(),
       freight: this.freightEarned,
       network: this.lines.toJSON(),
       industries: this.industries.toJSON(),
       quest: this.questline.toJSON(),
-      pendingVillagers: [...this.pendingVillagers],
+      pendingVillagers: this.pendingVillagers,
       tracks: this.trackNet.toJSON(),
-      explored: this.mapMemory.toJSON(),
-    };
-    return data;
+    });
   }
 
   /** Writes the world out as a file the player keeps. Local storage is one slot per
@@ -5596,39 +5375,12 @@ export class Game {
   }
 
   private applySave(data: SaveData): void {
-    this.day.time = data.time;
-    this.mapMemory.load(data.explored);
-    const player = data.player;
-    this.player.x = player.x;
-    this.player.y = player.y;
-    this.player.z = player.z;
-    this.player.yaw = player.yaw;
-    this.player.pitch = player.pitch;
-    this.player.health = player.health;
-    this.player.hunger.loadJSON({ food: player.food, saturation: player.saturation });
-    this.player.inventory.loadJSON(player.inventory);
-    this.player.inventory.armor.loadJSON(player.armor);
-    this.player.inventory.selected = player.selected;
-
-    for (const [key, encoded] of Object.entries(data.edits)) {
-      this.world.edits.set(key, decodeEdits(encoded));
-    }
-    for (const [key, encoded] of Object.entries(data.water ?? {})) {
-      this.world.waterSnapshots.set(key, decodeWater(encoded, CHUNK_VOLUME));
-    }
-    for (const chest of data.chests) {
-      const slots = new Inventory(27);
-      slots.loadJSON(chest.slots);
-      this.world.setBlockEntity(chest.pos[0], chest.pos[1], chest.pos[2], createChest(slots));
-    }
-    for (const furnace of data.furnaces) {
-      const entity = createFurnace();
-      entity.slots.loadJSON(furnace.slots);
-      entity.burnLeft = furnace.burnLeft;
-      entity.burnTotal = furnace.burnTotal;
-      entity.cookProgress = furnace.cookProgress;
-      this.world.setBlockEntity(furnace.pos[0], furnace.pos[1], furnace.pos[2], entity);
-    }
+    restoreSaveFoundation(data, {
+      day: this.day,
+      mapMemory: this.mapMemory,
+      player: this.player,
+      world: this.world,
+    });
     // After the edits are in place: the road index is built from them, not from the
     // world, which is what lets a road be surveyed while its chunks are still unloaded.
     this.villages.loadJSON(data.villages);
@@ -5648,128 +5400,6 @@ export class Game {
     if (data.tracks) this.trackNet = TrackNetwork.fromJSON(data.tracks);
     for (const pending of data.pendingVillagers ?? []) this.pendingVillagers.push(pending);
     for (const key of data.populatedChunks) this.populatedChunks.add(key);
-    for (const villager of data.villagers) {
-      const mob = this.mobs.addVillager(villager.x, villager.y, villager.z, villager.profession);
-      const trades = tradesFromJSON(villager.trades);
-      if (trades.length > 0) mob.trades = trades;
-      // Without this the offers would be rolled again the first time the player opened
-      // the screen, quietly restocking everything they had already bought.
-      mob.villageStage = villager.villageStage ?? -1;
-    }
+    restoreSavedVillagers(data, this.mobs);
   }
-}
-
-/** Slab method: distance along the ray at which it enters the box, or null. */
-function rayBoxDistance(
-  origin: { x: number; y: number; z: number },
-  direction: { x: number; y: number; z: number },
-  minX: number,
-  minY: number,
-  minZ: number,
-  maxX: number,
-  maxY: number,
-  maxZ: number,
-): number | null {
-  let near = 0;
-  let far = Infinity;
-  const axes: [number, number, number, number][] = [
-    [origin.x, direction.x, minX, maxX],
-    [origin.y, direction.y, minY, maxY],
-    [origin.z, direction.z, minZ, maxZ],
-  ];
-  for (const [start, delta, low, high] of axes) {
-    if (Math.abs(delta) < 1e-8) {
-      if (start < low || start > high) return null;
-      continue;
-    }
-    const t1 = (low - start) / delta;
-    const t2 = (high - start) / delta;
-    near = Math.max(near, Math.min(t1, t2));
-    far = Math.min(far, Math.max(t1, t2));
-    if (near > far) return null;
-  }
-  return far < 0 ? null : near;
-}
-
-/** Why a curve was refused, in a sentence the player can act on. The numbers come from
- *  `tracks.ts` rather than being typed out again here. */
-function trackFaultText(fault: TrackFault, value: number, turn: 'left' | 'right' | null = null): string {
-  switch (fault) {
-    case 'short':
-      return `始点に近すぎる（${MIN_SPAN} マス以上はなれた所を指す）`;
-    case 'long':
-      return `一度に敷けるのは ${MAX_SPAN} マスまで（今 ${Math.round(value)} マス）`;
-    case 'behind':
-      return '始点の向きの後ろへはつなげない';
-    case 'radius':
-      // Which way it was turning, because "too tight" is not something a player can act
-      // on until they know which way to turn their head to loosen it.
-      return `曲がりが急すぎる（${turn ? `${bendWord(turn)} ` : ''}半径 ${value.toFixed(1)} マス、${MIN_RADIUS} マス以上必要）`;
-    case 'grade':
-      return `勾配が急すぎる（${slopeWord(value)} ${Math.round(Math.abs(value) * 100)}%、${Math.round(MAX_GRADE * 100)}% まで）`;
-    case 'occupied':
-      return '本線から分かれるには角度が急すぎる（もっと線路に沿って向く）';
-    default:
-      return 'この向きではつなげない';
-  }
-}
-
-/** How far a carriage may move under its passenger in one frame and still be carrying
- *  them. Generous, because the frame this has to survive is the one the browser dropped;
- *  short of a whole storey, because past that the honest answer is that they fell off. */
-const RIDE_LOST = 4;
-
-/** A laid run the crosshair is on, and how far along it. */
-interface TrackRun {
-  edge: TrackEdge;
-  at: number;
-}
-
-/** What the track tool is pointing at: a place, and whichever of an end or the middle of a
- *  run is under the crosshair. A run is only offered where there is no end, because an end
- *  is what somebody aiming near one meant. */
-interface TrackAim {
-  point: TrackPoint;
-  node: TrackNode | null;
-  run: TrackRun | null;
-}
-
-/** Anything under half a percent is level, and saying "up 0%" would be worse than
- *  saying nothing. */
-const LEVEL = 0.005;
-
-/** Where in a waypoint a hauler stands.
- *
- *  A road waypoint is a block, and something walking it stands in the middle. A railway
- *  waypoint is a point on a curve that never asked the grid where its corners were, so
- *  the middle of it is itself — and half a block off the centreline of a two block deck
- *  is most of the way to the edge of it. */
-function centreOf(kind: MobKind): number {
-  return kind === 'train' ? 0 : 0.5;
-}
-
-function slopeWord(grade: number): string {
-  return Math.abs(grade) < LEVEL ? '水平' : grade > 0 ? '上り' : '下り';
-}
-
-function bendWord(turn: 'left' | 'right'): string {
-  return turn === 'right' ? '右' : '左';
-}
-
-/** The shape under the crosshair, in the three lines the readout shows and the toast
- *  borrows. Horizontal length, because that is what everything in `tracks.ts` measures. */
-function trackLines(summary: TrackSummary): string[] {
-  // Signed off the rounded number, not the raw one: a run that drops four centimetres
-  // should not be labelled "-0.0".
-  const climbed = Math.abs(summary.rise).toFixed(1);
-  const rise = climbed === '0.0' ? '±0.0' : `${summary.rise > 0 ? '+' : '-'}${climbed}`;
-  const slope = Math.abs(summary.steepest) < LEVEL
-    ? '勾配 なし（水平）'
-    : `勾配 ${slopeWord(summary.steepest)} ${Math.round(Math.abs(summary.steepest) * 100)}%（高低差 ${rise} マス）`;
-  const bend = summary.bend === 'straight'
-    ? '曲がり なし（直線）'
-    : summary.bend === 's'
-      ? `曲がり S字 半径 ${summary.radius.toFixed(1)} マス`
-      : `曲がり ${bendWord(summary.bend)} 半径 ${summary.radius.toFixed(1)} マス`;
-  return [`長さ ${summary.length.toFixed(1)} マス`, slope, bend];
 }
