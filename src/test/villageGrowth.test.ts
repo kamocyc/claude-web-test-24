@@ -23,7 +23,7 @@ function record(stage: number): VillageRecord {
     id: '100,200', x: SITE.x, z: SITE.z, baseY: BASE_Y, variant: 'plains',
     name: '麦', produces: 'bread', inputs: ['wheat'], inputStock: new Map(), needs: [],
     stage, points: 0, stock: 0, received: 0,
-    discovered: true, spawnedStage: 0, progress: 0,
+    discovered: true, spawnedStage: 0, progress: 0, harvest: 0, harvestProgress: 0,
   };
 }
 

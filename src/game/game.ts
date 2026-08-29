@@ -170,6 +170,8 @@ import type { LedgerTown, LedgerView } from '../ui/ledger';
 import type { RouteIdle } from '../ui/routePanel';
 import type { LineActions, LinePanelView } from '../ui/linePanel';
 import { helpView, type HelpView } from '../ui/help';
+import { applyFields } from './villageFields';
+import { fieldArea, fieldTarget, fieldsAt } from '../world/generation/fields';
 import { applyGrowth, growthChunks, growthFor, growthVillagers, outpostBuildings, ownPaving, roadCrosses } from './villageGrowth';
 import {
   buildingAt,
@@ -1118,10 +1120,12 @@ export class Game {
     // Before lighting is seeded, so a village that grew while this chunk was away has its
     // new walls in place when the light is baked against them.
     for (const village of this.villages.byId.values()) {
-      if (village.stage <= 0 && !village.outpost) continue;
       if (Math.abs(village.x - chunk.originX) > VILLAGE_RADIUS + CHUNK_SIZE) continue;
       if (Math.abs(village.z - chunk.originZ) > VILLAGE_RADIUS + CHUNK_SIZE) continue;
-      this.buildGrowth(village, chunk);
+      if (village.stage > 0 || village.outpost) this.buildGrowth(village, chunk);
+      // A town ploughs from the day it is generated, so this one is not behind the stage
+      // check: stage 0 has fields, it simply has fewer of them.
+      this.buildFields(village);
     }
     this.light.seedChunk(chunk);
     this.water.registerChunk(chunk, message.springs ?? []);
@@ -2906,6 +2910,9 @@ export class Game {
     const here = this.villages.at(this.player.x, this.player.z);
     if (here && this.villages.discover(here.id)) {
       this.hud.toast(`${here.name}に着いた`);
+      // Walking in is the moment every chunk of it is loaded, which is the moment the
+      // fields can be ploughed whole.
+      this.buildFields(here);
       // Before the questline picks a target: the hamlet has to exist for it to be chosen.
       if (this.questline.step === 'find_village') this.ensureOutpost(here);
       this.toast(this.questline.onVillageDiscovered(here));
@@ -3474,7 +3481,18 @@ export class Game {
       const chunk = this.world.getChunk(cx, cz);
       if (chunk) this.buildGrowth(village, chunk);
     }
+    // A bigger town works more land. The parcels this stage earned are ploughed now if the
+    // player is standing in it, and when they next come back if they are not.
+    this.buildFields(village);
     this.refreshVillageTrades(village);
+  }
+
+  /** Ploughs whatever of a town's fields it owes into the chunks that are loaded.
+   *
+   *  Cheap when there is nothing to do, which is almost always: one look at the middle of
+   *  each parcel says whether it has been turned over already. */
+  private buildFields(village: VillageRecord): void {
+    applyFields(this.world, this.options.seed, village, this.roadLevelAt);
   }
 
   /** Builds whatever growth this village owes into one loaded chunk, and moves its new
@@ -3755,6 +3773,11 @@ export class Game {
       name: displayName(here),
       people: this.towns.populationOf(here.id),
       waiting: town.waiting,
+      fields: {
+        parcels: fieldsAt(this.options.seed, here, here.stage).length,
+        area: fieldArea(here.stage),
+        harvest: here.harvest,
+      },
       buildings: [...town.cells.values()]
         .map((cell) => ({
           label: buildings.find((b) => b.id === cell.id)?.label ?? cell.id,
@@ -4952,6 +4975,30 @@ export class Game {
           townReach: STOP_TOWN_REACH,
           worksReach: STOP_SITE_REACH,
         };
+      },
+      /** Every town's fields: what it works, and what is waiting at its depot. */
+      fields: () =>
+        this.villages
+          .discovered()
+          .filter((village) => !village.outpost)
+          .map((village) => ({
+            town: displayName(village),
+            stage: village.stage,
+            parcels: fieldsAt(this.options.seed, village, village.stage).length,
+            area: fieldArea(village.stage),
+            target: fieldTarget(village.stage),
+            harvest: village.harvest,
+            distance: Math.round(Math.hypot(village.x - this.player.x, village.z - this.player.z)),
+          })),
+      /** Ploughs the fields of the town underfoot now, rather than waiting for a chunk to
+       *  arrive. Says how much soil it actually turned over, which is the number the
+       *  ground has the final say in. */
+      plough: () => {
+        const here = this.villages.at(this.player.x, this.player.z)
+          ?? this.nearestTownWithin(this.player.x, this.player.z, VILLAGE_RADIUS * 2);
+        if (!here) return { ok: false as const, why: 'no-town' as const };
+        const work = applyFields(this.world, this.options.seed, here, this.roadLevelAt);
+        return { ok: true as const, town: displayName(here), ...work };
       },
       /** Every industry the player has sited. */
       industries: () =>

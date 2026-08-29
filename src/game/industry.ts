@@ -25,7 +25,7 @@ import { Block, type BlockId } from '../world/blocks';
 import type { GoodId } from './villages';
 
 export type IndustryId = string;
-export type IndustryKind = 'farm' | 'forestry' | 'quarry' | 'colliery' | 'ironworks';
+export type IndustryKind = 'forestry' | 'quarry' | 'colliery' | 'ironworks';
 
 /** One kind of industry, and the ground it needs.
  *
@@ -79,18 +79,14 @@ export const INDUSTRY_TYPES: readonly IndustryType[] = [
     count: 120,
     density: 0.2,
   },
-  {
-    kind: 'farm',
-    label: '農場',
-    good: 'wheat',
-    blocks: [Block.GRASS, Block.FARMLAND, Block.FARMLAND_WET],
-    count: 200,
-    density: 0.6,
-  },
 ];
 
-/** Everything an industry can put on a line. Every craft in `villages.ts` takes one of
- *  these, and nothing else is raw material — so the two lists are each other's shape. */
+/** Everything an industry can put on a line.
+ *
+ *  Every craft in `villages.ts` takes one of these or one of its `FARMED` goods, and
+ *  nothing else is raw material. Food is the exception and is deliberately not here: a town
+ *  grows its own out in its own fields, so there is no farm for the player to site and no
+ *  wheat for a line to carry. Everything a player builds digs or cuts something instead. */
 export const INDUSTRY_GOODS: readonly GoodId[] = INDUSTRY_TYPES.map((type) => type.good);
 
 export function industryType(kind: IndustryKind): IndustryType | undefined {

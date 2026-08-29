@@ -33,7 +33,7 @@
 
 import { hashInts, mulberry32 } from '../core/rng';
 import type { BuildingId } from './buildings';
-import type { GoodId, VillageId, VillageRecord } from './villages';
+import { FARMED, type GoodId, type VillageId, type VillageRecord } from './villages';
 import type { BuildingUse } from '../world/generation/village';
 
 /** As much of a building as the economy needs. The game hands over its `VillageBuilding`s;
@@ -114,6 +114,12 @@ export const MAX_COMMUTERS = 12;
 export const HOUSEHOLD_GOODS: readonly GoodId[] = ['bread', 'torch', 'oak_planks'];
 /** What a shop sells. Same rule. */
 export const SHOP_GOODS: readonly GoodId[] = ['glass', 'sandstone', 'iron_ingot'];
+/** And what every shop sells whatever else it sells: the food off the town's own fields.
+ *
+ *  Guaranteed rather than shuffled in with the rest, because it is the only good with
+ *  nowhere else to go. The harvest lands at the depot and is carried to the shops; a shop
+ *  that happened not to stock it would be a shop the town's own crop could not reach. */
+export const SHOP_STAPLE: GoodId = 'wheat';
 
 /** Goods one building of each use asks for. Two apiece: one is a single point of failure,
  *  and four is a shopping list nobody reads. */
@@ -189,7 +195,8 @@ export function goodsFor(
   if (cell.use === 'civic') return [];
   const pool = (cell.use === 'residential' ? HOUSEHOLD_GOODS : SHOP_GOODS)
     .filter((good) => good !== village.produces);
-  if (pool.length === 0) return [];
+  const staple = cell.use === 'commercial' ? [SHOP_STAPLE] : [];
+  if (pool.length === 0) return staple;
   const rng = mulberry32(hashInts(seed ^ 0x70b1, ...idNumbers(cell.id)));
   // Shuffle a copy and take a prefix, the same way `villageNeeds` does, so a building
   // asked for more later would keep asking for what it already asked for.
@@ -200,7 +207,7 @@ export function goodsFor(
     shuffled[i] = shuffled[j];
     shuffled[j] = tmp;
   }
-  return shuffled.slice(0, Math.min(GOODS_PER_CELL, shuffled.length));
+  return [...staple, ...shuffled.slice(0, Math.min(GOODS_PER_CELL, shuffled.length))];
 }
 
 /** A building id is its own corner — `"x0,z0"` — so this is the two numbers back out of
@@ -470,6 +477,10 @@ export class TownEconomy {
     for (const cell of town.cells.values()) {
       if (cell.use !== 'residential' && cell.staff <= 0) continue;
       for (const [good, held] of cell.wants) {
+        // What the town grows for itself never goes on this list. It is the town's own
+        // business, carried in from its own depot, and putting it on the panel would ask
+        // the player for a good nothing on the map sells.
+        if (FARMED.includes(good)) continue;
         totals.set(good, (totals.get(good) ?? 0) + (CELL_STOCK - held));
       }
     }

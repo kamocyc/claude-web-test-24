@@ -10,6 +10,7 @@ import {
   MAX_COMMUTERS,
   MAX_WAITING,
   SHOP_GOODS,
+  SHOP_STAPLE,
   SHOP_JOBS,
   TRADE_SECONDS,
   TownEconomy,
@@ -27,7 +28,7 @@ function village(over: Partial<VillageRecord> = {}): VillageRecord {
     id: '0,0', x: 0, z: 0, baseY: 60, variant: 'plains', name: '麦',
     produces: 'bread', inputs: [], inputStock: new Map(),
     needs: [], stage: 0, points: 0, stock: 0, received: 0,
-    discovered: true, spawnedStage: 0, progress: 0,
+    discovered: true, spawnedStage: 0, progress: 0, harvest: 0, harvestProgress: 0,
     ...over,
   };
 }
@@ -125,7 +126,13 @@ describe('what a building asks for', () => {
     expect(home.length).toBeGreaterThan(0);
     for (const good of home) expect(HOUSEHOLD_GOODS).toContain(good);
     const shop = goodsFor(SEED, { id: '10,20', use: 'commercial' }, record);
-    for (const good of shop) expect(SHOP_GOODS).toContain(good);
+    // Every shop sells the food the town's own fields grow, whatever else it sells: the
+    // harvest is carried from the depot to the shops and has nowhere else to go.
+    expect(shop).toContain(SHOP_STAPLE);
+    for (const good of shop) {
+      if (good === SHOP_STAPLE) continue;
+      expect(SHOP_GOODS).toContain(good);
+    }
   });
 
   it('never asks a town for what it already makes', () => {

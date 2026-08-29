@@ -838,7 +838,7 @@ describe('a line out to an industry', () => {
     const beside = network.addStop({ x: 120, y: GROUND, z: 0 }, null);
     if (!beside.ok) throw new Error('the fixture could not put its stop down');
     const built = industries.place({ x: 122, y: GROUND, z: 4 }, {
-      kind: 'farm', label: '農場', good: 'wheat', count: 400, density: 0.9, richness: 1,
+      kind: 'forestry', label: '農場', good: 'wheat', count: 400, density: 0.9, richness: 1,
     });
     if (!built.ok) throw new Error('the fixture could not site its industry');
 
@@ -865,7 +865,7 @@ describe('a line out to an industry', () => {
     const beside = network.addStop({ x: 120, y: GROUND, z: 0 }, null);
     if (!beside.ok) throw new Error('the fixture could not put its stop down');
     industries.place({ x: 122, y: GROUND, z: 4 }, {
-      kind: 'farm', label: '農場', good: 'wheat', count: 400, density: 0.9, richness: 1,
+      kind: 'forestry', label: '農場', good: 'wheat', count: 400, density: 0.9, richness: 1,
     });
     link(stopA, beside.stop);
     run(transport, 3);

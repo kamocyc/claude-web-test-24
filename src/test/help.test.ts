@@ -10,6 +10,7 @@ import { itemLabel } from '../game/items';
 import { MAX_SWITCH_ANGLE } from '../game/tracks';
 import { MAX_LINE_STOPS, STOP_SPACING } from '../game/lines';
 import { DEPOSIT_RADIUS, INDUSTRY_TYPES } from '../game/industry';
+import { FIELD_SIZE } from '../world/generation/fields';
 
 function view(step: Parameters<typeof helpView>[0]['step'], milestone = 0) {
   return helpView({ step, milestone, objective: null });
@@ -92,6 +93,16 @@ describe('the 遊びかた screen', () => {
     // Both halves of a deposit count, and the page has to say so or an outcrop is just
     // scenery the player walks past.
     expect(body).toContain('地中の鉱脈も、地表に出ている露頭も');
+  });
+
+  it('explains the one thing the player does not build — the fields', () => {
+    const body = text(view('done', 0));
+    expect(body).toContain('畑と食料');
+    expect(body).toContain(`1 区画 ${FIELD_SIZE}×${FIELD_SIZE} マス`);
+    expect(body).toContain('2 倍の面積');
+    // Where the crop goes, which is the whole of what the player needs to know about it.
+    expect(body).toContain('集荷所の在庫');
+    expect(body).toContain('商店');
   });
 
   it('explains the two halves of a signalled railway', () => {

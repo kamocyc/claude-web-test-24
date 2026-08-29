@@ -27,7 +27,7 @@ function village(id: string, x: number, z: number): VillageRecord {
     id, x, z, baseY: 60, variant: 'plains', name: `村${id}`,
     produces: craft.produces, inputs: craft.inputs, inputStock: new Map(),
     needs: [], stage: 0, points: 0, stock: 0, received: 0,
-    discovered: true, spawnedStage: 0, progress: 0,
+    discovered: true, spawnedStage: 0, progress: 0, harvest: 0, harvestProgress: 0,
   };
 }
 

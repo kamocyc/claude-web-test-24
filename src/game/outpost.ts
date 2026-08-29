@@ -154,6 +154,8 @@ export function outpostRecord(
     discovered: false,
     spawnedStage: 0,
     progress: 0,
+    harvest: 0,
+    harvestProgress: 0,
     outpost: true,
     parent: parent.id,
   };

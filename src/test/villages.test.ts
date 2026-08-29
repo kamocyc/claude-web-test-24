@@ -15,10 +15,14 @@ import {
   villageName,
   villageNeeds,
   townCraft,
+  FARMED,
+  HARVEST_LARDER,
+  MAX_HARVEST,
   type VillageSeed,
   type VillageSource,
 } from '../game/villages';
 import { itemDef } from '../game/items';
+import { fieldArea } from '../world/generation/fields';
 
 /** Chosen so the pair is the whole economy in miniature: a bakery that turns wheat into
  *  bread, and a glassworks that needs two raw materials rather than one — and each of them
@@ -171,16 +175,19 @@ describe('village registry', () => {
 
 describe('a town works', () => {
   it('makes nothing at all until somebody delivers the raw material', () => {
-    const registry = registryOf(FARM);
+    // The glassworks, not the bakery: a bakery's raw material grows in its own fields, and
+    // starvation is only a thing that happens to a town waiting on the player.
+    const registry = registryOf(SHOP);
     registry.produce(600);
-    expect(registry.get(FARM_ID)?.stock).toBe(0);
+    expect(registry.get(SHOP_ID)?.stock).toBe(0);
 
-    registry.deliver(FARM_ID, 'wheat', 4);
-    expect(registry.get(FARM_ID)?.inputStock.get('wheat')).toBe(4);
+    registry.deliver(SHOP_ID, 'sand', 4);
+    registry.deliver(SHOP_ID, 'coal', 4);
+    expect(registry.get(SHOP_ID)?.inputStock.get('sand')).toBe(4);
     registry.produce(600);
-    // One loaf per unit of wheat, and then it stops again.
-    expect(registry.get(FARM_ID)?.stock).toBe(4);
-    expect(registry.get(FARM_ID)?.inputStock.get('wheat')).toBe(0);
+    // One pane per unit of each, and then it stops again.
+    expect(registry.get(SHOP_ID)?.stock).toBe(4);
+    expect(registry.get(SHOP_ID)?.inputStock.get('coal')).toBe(0);
   });
 
   it('needs one of everything, not one of something', () => {
@@ -200,22 +207,27 @@ describe('a town works', () => {
   });
 
   it('does not bank starved time and then empty a delivery in one frame', () => {
-    const registry = registryOf(FARM);
+    const registry = registryOf(SHOP);
     registry.produce(600);
     // Two is deliberately under a stage's worth, so the rate cannot change underneath.
-    registry.deliver(FARM_ID, 'wheat', 2);
-    expect(registry.get(FARM_ID)?.stage).toBe(0);
+    registry.deliver(SHOP_ID, 'sand', 2);
+    registry.deliver(SHOP_ID, 'coal', 2);
+    // Two deliveries of a good it asked for are worth a stage between them, and a stage
+    // changes the rate this test is about. Held down, so the only thing moving is time.
+    const works = registry.get(SHOP_ID)!;
+    works.stage = 0;
+    works.points = 0;
     registry.produce(produceSeconds(0) * 1.5);
-    expect(registry.get(FARM_ID)?.stock).toBe(1);
-    expect(registry.get(FARM_ID)?.inputStock.get('wheat')).toBe(1);
+    expect(registry.get(SHOP_ID)?.stock).toBe(1);
+    expect(registry.get(SHOP_ID)?.inputStock.get('coal')).toBe(1);
   });
 
   it('ignores goods that are not its raw material', () => {
-    const registry = registryOf(FARM);
-    registry.deliver(FARM_ID, 'coal', 6);
-    expect(registry.get(FARM_ID)?.inputStock.get('coal')).toBeUndefined();
+    const registry = registryOf(SHOP);
+    registry.deliver(SHOP_ID, 'oak_log', 6);
+    expect(registry.get(SHOP_ID)?.inputStock.get('oak_log')).toBeUndefined();
     registry.produce(600);
-    expect(registry.get(FARM_ID)?.stock).toBe(0);
+    expect(registry.get(SHOP_ID)?.stock).toBe(0);
   });
 });
 
@@ -324,5 +336,73 @@ describe('village saves', () => {
     registry.loadJSON(undefined);
     registry.ensureNear(0, 0);
     expect(registry.get(FARM_ID)?.stage).toBe(0);
+  });
+});
+
+describe('a town feeds itself', () => {
+  it('cuts its own crop and fills its own mill, with nobody delivering anything', () => {
+    const registry = registryOf(FARM);
+    const bakery = registry.get(FARM_ID)!;
+    expect(bakery.inputs).toContain('wheat');
+    registry.produce(600);
+    // Bread on the shelf, off a network that does not exist. The flour does not pile up
+    // because the mill is faster than the fields — which is the shape this should have.
+    expect(bakery.stock).toBeGreaterThan(0);
+    // And it keeps making bread for as long as the fields keep cutting, which is what
+    // "feeds itself" has to mean.
+    const made = bakery.stock;
+    registry.produce(600);
+    expect(bakery.stock).toBeGreaterThan(made);
+  });
+
+  it('never asks the player for what it grows', () => {
+    for (const good of FARMED) {
+      expect(villageNeeds(SEED, 0, 0, 'bread', ['wheat'], 4)).not.toContain(good);
+    }
+    expect(registryOf(FARM).get(FARM_ID)?.needs).not.toContain('wheat');
+  });
+
+  it('fills the barn and stops when nothing comes to collect', () => {
+    const registry = registryOf(SHOP);
+    const town = registry.get(SHOP_ID)!;
+    // A glassworks has no use for wheat and there is no town economy to carry it to a
+    // shop, so it piles up at the depot and the reaping stops.
+    registry.produce(100000);
+    expect(town.harvest).toBe(MAX_HARVEST);
+    expect(town.harvestProgress).toBe(0);
+  });
+
+  it('carries what the mill does not take to the shops', () => {
+    const carried: { good: string; count: number }[] = [];
+    const registry = new VillageRegistry(SEED, source(FARM), {
+      waitingAt: () => 0,
+      takeWaiting: () => 0,
+      returnWaiting: () => {},
+      deliver: (_id, good, count) => {
+        carried.push({ good, count });
+        return count;
+      },
+    });
+    registry.ensureNear(0, 0);
+    registry.discover(FARM_ID);
+    registry.produce(600);
+    const wheat = carried.filter((entry) => entry.good === 'wheat');
+    expect(wheat.length).toBeGreaterThan(0);
+    // And the mill kept only a larder's worth back for itself.
+    expect(registry.get(FARM_ID)?.inputStock.get('wheat') ?? 0).toBeLessThanOrEqual(HARVEST_LARDER);
+  });
+
+  it('grows more as the town does', () => {
+    expect(fieldArea(4)).toBeGreaterThan(fieldArea(0));
+  });
+
+  it('gives a hamlet no fields', () => {
+    const registry = registryOf(FARM);
+    const record = registry.get(FARM_ID)!;
+    record.outpost = true;
+    record.harvest = 0;
+    record.inputStock.clear();
+    registry.produce(600);
+    expect(record.harvest).toBe(0);
   });
 });

@@ -77,7 +77,7 @@ function state(
 /** One industry, for the goals that are about having built any. */
 function works(): Industry {
   return {
-    id: 'i1', kind: 'farm', good: 'wheat', x: 40, y: 60, z: 0,
+    id: 'i1', kind: 'forestry', good: 'wheat', x: 40, y: 60, z: 0,
     name: '農場 1', richness: 1, stock: 0, progress: 0, shipped: 0,
   };
 }

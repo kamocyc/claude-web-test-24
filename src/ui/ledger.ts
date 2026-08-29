@@ -52,6 +52,9 @@ export interface LedgerTown {
   name: string;
   people: number;
   waiting: number;
+  /** The town's own fields: what it works, and what is at the depot waiting to be carried
+   *  in. Nothing the player has to act on — which is the point of showing it. */
+  fields: { parcels: number; area: number; harvest: number };
   buildings: LedgerBuilding[];
 }
 
@@ -186,6 +189,12 @@ export function buildLedger(view: LedgerView): HTMLElement {
     summary.append(
       el('div', 'ledger-stat', `人口 ${view.town.people}`),
       el('div', 'ledger-stat', `旅に出たい人 ${view.town.waiting}`),
+      el(
+        'div',
+        'ledger-stat',
+        `畑 ${view.town.fields.parcels} 区画・${view.town.fields.area} マス`,
+      ),
+      el('div', 'ledger-stat', `収穫の在庫 ${view.town.fields.harvest}`),
     );
     root.appendChild(summary);
     const table = el('div', 'ledger-table');

@@ -15,7 +15,7 @@ import {
   type BlockReader,
   type Deposit,
 } from '../game/industry';
-import { CRAFTS } from '../game/villages';
+import { CRAFTS, FARMED } from '../game/villages';
 import { itemDef } from '../game/items';
 import { Block, type BlockId } from '../world/blocks';
 
@@ -97,8 +97,12 @@ describe('the goods an industry can put on a line', () => {
     const inputs = new Set(CRAFTS.flatMap((craft) => craft.inputs));
     // Neither list may grow a member the other has not heard of: an industry nobody's
     // works can use is a mine with nowhere to send its ore, and a works waiting on
-    // something no industry digs is a town that can never start.
-    expect([...inputs].sort()).toEqual([...INDUSTRY_GOODS].sort());
+    // something no industry digs is a town that can never start. Food is the one
+    // exception and is the interesting one — a town grows its own, so there is no farm to
+    // site and no line to build for it.
+    expect([...inputs].filter((good) => !FARMED.includes(good)).sort())
+      .toEqual([...INDUSTRY_GOODS].sort());
+    for (const good of FARMED) expect(INDUSTRY_GOODS).not.toContain(good);
   });
 
   it('gives every kind a distinct good', () => {

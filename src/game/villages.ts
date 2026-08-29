@@ -19,6 +19,7 @@
  *  itself, and neither half is worth anything without the other. */
 
 import { hashInts, mulberry32 } from '../core/rng';
+import { fieldArea } from '../world/generation/fields';
 import type { VillageVariant } from '../world/generation/village';
 import { VILLAGE_RADIUS } from '../world/generation/village';
 
@@ -82,6 +83,32 @@ export const PASSENGER: GoodId = 'passenger';
 /** What to call them. `itemLabel` cannot answer, because this is the one good that is not
  *  an item — so anything naming a cargo has to ask this first. */
 export const PASSENGER_LABEL = '人';
+
+/** What a town grows for itself, out in the fields on its own outskirts.
+ *
+ *  The one raw material no line ever carries. Everything else the economy eats is dug or
+ *  cut somewhere the player chose to put an industry; food is not, because a settlement
+ *  that cannot feed itself is not a settlement. The crop lands in the town's own depot and
+ *  is carried from there to the shops that sell it and the works that bakes with it —
+ *  entirely inside the town, by the people who live in it.
+ *
+ *  So it is never on a `needs` list and never on the panel: asking the player for a good
+ *  nothing on the map can supply is the worst thing an economy can do to them. */
+export const FARMED: readonly GoodId[] = ['wheat'];
+
+/** Seconds of ploughing per column of field per unit of crop.
+ *
+ *  Divided by the acreage, so the rate is a property of the fields rather than a number
+ *  chosen for a town: a 集落 with three parcels harvests one every half minute, and a 都市
+ *  with seven manages one every twelve seconds. Both are comfortably ahead of what their
+ *  shops get through, which is the point — a town's own food is not meant to be a problem
+ *  the player solves, it is meant to be the reason the town is there. */
+export const FIELD_SECONDS = 45000;
+/** What the depot holds before the fields stop cutting. A barn, not a warehouse. */
+export const MAX_HARVEST = 24;
+/** What a town's own works keeps of its own crop in hand. Small, so a mill town does not
+ *  eat the whole harvest before a shop has seen any of it. */
+export const HARVEST_LARDER = 8;
 
 /** Goods a town consumes whatever it makes. Every one of them comes out of some town's
  *  works, so a demand is always something another part of the network could be built to
@@ -174,6 +201,11 @@ export interface VillageRecord {
   spawnedStage: number;
   /** Fractional carry so production does not depend on the frame rate. */
   progress: number;
+  /** Crop cut in the town's own fields and waiting at the depot to be carried into the
+   *  town. Not saved: it refills in seconds, and a barn's worth of wheat is not what a
+   *  world is made of. */
+  harvest: number;
+  harvestProgress: number;
   /** A tutorial hamlet rather than a village off the grid. It behaves like a village in
    *  every way the rest of the game cares about; it is only smaller, closer, and stored
    *  in full because nothing can re-derive it. */
@@ -235,6 +267,8 @@ export function outpostFromSave(entry: SavedVillage): VillageRecord | null {
     discovered: entry.discovered,
     spawnedStage: entry.spawnedStage,
     progress: 0,
+    harvest: 0,
+    harvestProgress: 0,
     outpost: true,
     parent: entry.parent,
     depot: entry.depot,
@@ -263,7 +297,9 @@ export function villageNeeds(
   inputs: readonly GoodId[],
   stage: number,
 ): GoodId[] {
-  const needs: GoodId[] = [...inputs];
+  // What the town grows for itself never goes on the list: its own fields supply it, and a
+  // demand nothing on the map can meet is a demand that only wastes the player's walk.
+  const needs: GoodId[] = inputs.filter((good) => !FARMED.includes(good));
   const rng = mulberry32(hashInts(seed ^ 0x51ee3, x, z));
   const pool = CONSUMED.filter((good) => good !== produces && !inputs.includes(good));
   // Shuffle once and take a prefix, so a village that grows keeps asking for what it
@@ -353,6 +389,8 @@ export class VillageRegistry {
           discovered: false,
           spawnedStage: 0,
           progress: 0,
+          harvest: 0,
+          harvestProgress: 0,
         };
         this.byId.set(id, record);
         // A village named in the save is re-derived from the seed the first time the
@@ -420,7 +458,9 @@ export class VillageRegistry {
    *  sand in the world and no coal is a glassworks standing still. */
   produce(dt: number): void {
     for (const record of this.byId.values()) {
-      if (!record.discovered || record.stock >= MAX_STOCK) continue;
+      if (!record.discovered) continue;
+      this.harvest(record, dt);
+      if (record.stock >= MAX_STOCK) continue;
       if (!this.fed(record)) {
         // Nothing to work with. Hold the carry so a starved works does not bank time and
         // then empty a whole delivery in one frame.
@@ -437,6 +477,43 @@ export class VillageRegistry {
         record.progress -= seconds;
         record.stock += 1;
       }
+    }
+  }
+
+  /** Cuts the crop in the town's own fields, and carries it in from the depot.
+   *
+   *  Two takers, in the order a cart leaving the depot would visit them: the works that
+   *  bakes with it — it stands beside the square, and a bakery with no flour is the one
+   *  thing in a town that stops outright — and then the shops that sell it. It keeps only
+   *  a larder's worth back for the works, so a town with a mill does not eat its whole
+   *  harvest before a shop has seen any of it.
+   *
+   *  A hamlet has no fields. It has no grid either, and four houses on a track do not farm
+   *  a hundred acres. */
+  private harvest(record: VillageRecord, dt: number): void {
+    if (record.outpost) return;
+    const area = fieldArea(record.stage);
+    if (area <= 0) return;
+    const seconds = FIELD_SECONDS / area;
+    record.harvestProgress += dt;
+    while (record.harvestProgress >= seconds && record.harvest < MAX_HARVEST) {
+      record.harvestProgress -= seconds;
+      record.harvest += 1;
+    }
+    // A full barn stops the reaping rather than banking it, exactly as a full works does.
+    if (record.harvest >= MAX_HARVEST) record.harvestProgress = 0;
+    for (const good of FARMED) {
+      if (record.harvest <= 0) return;
+      if (record.inputs.includes(good)) {
+        const held = record.inputStock.get(good) ?? 0;
+        const room = Math.min(record.harvest, HARVEST_LARDER - held);
+        if (room > 0) {
+          record.inputStock.set(good, held + room);
+          record.harvest -= room;
+        }
+      }
+      if (record.harvest <= 0) return;
+      record.harvest -= this.town?.deliver(record.id, good, record.harvest) ?? 0;
     }
   }
 
