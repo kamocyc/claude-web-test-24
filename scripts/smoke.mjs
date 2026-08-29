@@ -737,11 +737,26 @@ console.log('what the towns ask for:', JSON.stringify([...new Set(asking)]));
 if (asking.includes('wheat')) throw new Error('a town is still asking the player for wheat');
 // And the crop goes somewhere: out of the depot and into the shops that sell it. The depot
 // itself usually reads zero, because it is a doorway rather than a barn.
+// And a look at them: a town from above its own belt of wheat, which is the point of
+// their being 23 blocks across and outside the last street.
+await evaluate(() => {
+  const g = window.voxelcraft.game;
+  // The town whose fields are actually on the ground — the hamlet nearby has none, and it
+  // is often the nearest thing to the player.
+  const town = window.voxelcraft.fields().sort((a, b) => b.standing.soil - a.standing.soil)[0];
+  g.player.flying = true;
+  g.player.teleportTo(town.x, g.world.heightAt(town.x, town.z) + 30, town.z + 72);
+  g.player.yaw = 0;
+  g.player.pitch = -0.5;
+});
+await settled();
+await frame();
+await shot('07y-fields');
+
 await advance(() => window.voxelcraft.fields().some((entry) => entry.food.shops > 0));
 const carried = await evaluate(() => window.voxelcraft.fields());
 console.log('where the crop went:', JSON.stringify(carried));
 if (!carried.some((entry) => entry.food.shops > 0)) throw new Error('the harvest reached no shop');
-await shot('07y-fields');
 
 console.log('deposit found:', JSON.stringify(site));
 if (!site) throw new Error('nowhere within reach of the town supports an industry');

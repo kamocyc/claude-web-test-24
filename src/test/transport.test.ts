@@ -833,21 +833,23 @@ describe('what a detour is worth', () => {
 describe('a line out to an industry', () => {
   it('runs the raw material in, and the town starts working', () => {
     // The whole chain in one leg: something the player dug, a stop beside it, a line into
-    // a town whose works has been waiting for exactly that.
-    const { transport, registry, industries, network, link, stopA } = build({ stocked: false });
+    // a town whose works has been waiting for exactly that. The glassworks rather than the
+    // bakery, deliberately — a bakery's wheat comes off its own fields now, so a bakery
+    // would have made bread whether or not anything ever arrived.
+    const { transport, registry, industries, network, link, stopB } = build({ stocked: false });
     const beside = network.addStop({ x: 120, y: GROUND, z: 0 }, null);
     if (!beside.ok) throw new Error('the fixture could not put its stop down');
     const built = industries.place({ x: 122, y: GROUND, z: 4 }, {
-      kind: 'forestry', label: '農場', good: 'wheat', count: 400, density: 0.9, richness: 1,
+      kind: 'quarry', label: '砂採取場', good: 'sand', count: 400, density: 0.9, richness: 1,
     });
     if (!built.ok) throw new Error('the fixture could not site its industry');
 
-    link(stopA, beside.stop);
+    link(stopB, beside.stop);
     run(transport, 3);
     expect(transport.routes[0].connected).toBe(true);
     // A stop out in the country has no town's streets, so it is joined by the road
     // actually reaching it — which this one does, because it stands on it.
-    expect(registry.get(ID_A)?.stock).toBe(0);
+    expect(registry.get(ID_B)?.stock).toBe(0);
 
     for (let t = 0; t < 900; t += 0.5) {
       industries.produce(0.5);
@@ -855,9 +857,9 @@ describe('a line out to an industry', () => {
       transport.update(0.5, 10_000, 10_000);
     }
     expect(industries.get(built.industry.id)?.shipped).toBeGreaterThan(0);
-    // Wheat went in, and the bakery that could make nothing without it has bread to ship.
-    expect(registry.get(ID_A)?.received).toBeGreaterThan(0);
-    expect(registry.get(ID_A)?.stock).toBeGreaterThan(0);
+    // Sand went in, and the glassworks that had none of it has some.
+    expect(registry.get(ID_B)?.received).toBeGreaterThan(0);
+    expect(registry.get(ID_B)?.inputStock.get('sand') ?? 0).toBeGreaterThan(0);
   });
 
   it('brings nothing back, because an industry has nowhere to put it', () => {
@@ -865,7 +867,7 @@ describe('a line out to an industry', () => {
     const beside = network.addStop({ x: 120, y: GROUND, z: 0 }, null);
     if (!beside.ok) throw new Error('the fixture could not put its stop down');
     industries.place({ x: 122, y: GROUND, z: 4 }, {
-      kind: 'forestry', label: '農場', good: 'wheat', count: 400, density: 0.9, richness: 1,
+      kind: 'forestry', label: '林業所', good: 'oak_log', count: 400, density: 0.9, richness: 1,
     });
     link(stopA, beside.stop);
     run(transport, 3);

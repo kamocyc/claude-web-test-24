@@ -5014,6 +5014,8 @@ export class Game {
           .filter((village) => !village.outpost)
           .map((village) => ({
             town: displayName(village),
+            x: village.x,
+            z: village.z,
             stage: village.stage,
             parcels: fieldsAt(this.options.seed, village, village.stage).length,
             area: fieldArea(village.stage),
