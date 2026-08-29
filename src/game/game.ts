@@ -155,7 +155,7 @@ import {
   type VillageRecord,
 } from './villages';
 import { CELL_STOCK, TownEconomy, type Commute } from './townEconomy';
-import { LineNetwork, MAX_LINE_STOPS, STOP_TOWN_REACH, type Stop } from './lines';
+import { LineNetwork, MAX_LINE_STOPS, STOP_SPACING, STOP_TOWN_REACH, type Stop } from './lines';
 import { networkSites, STOP_SITE_REACH } from './sites';
 import {
   INDUSTRY_SPACING,
@@ -228,6 +228,32 @@ const COMMUTE_VISIBLE = 48;
 const GUIDE_STATION = 0xff9adf;
 /** The doorway a route loads and unloads at. */
 const GUIDE_DEPOT = 0xffd479;
+/** The tether between a stop or a station and the town or industry it is judged to serve.
+ *  Cyan, because it is the only thing on the guide that is not about a road at all. */
+const GUIDE_LINK = 0x35c8ff;
+/** And one that is judged to serve nothing: a stop the player put down that no town and no
+ *  works can be loaded through. Grey rather than red — it is a legitimate thing to be
+ *  halfway through building, not a fault. */
+const GUIDE_NOLINK = 0x9aa4b0;
+/** How far a tether is worth drawing. About a screen: this answers a question about the
+ *  place the player is standing in. */
+const LINK_VISIBLE = 110;
+
+/** A rail end's floating-point position, on the block grid the guide draws on. */
+function roundPoint(point: TrackPoint): { x: number; y: number; z: number } {
+  return { x: Math.round(point.x), y: Math.round(point.y), z: Math.round(point.z) };
+}
+
+/** What a stop at a point is attached to, or would be.
+ *
+ *  Both nearest are kept whether or not they are in reach, so "this reaches nothing" can
+ *  say how far off it is instead of only that it is. */
+interface StopLink {
+  town: VillageRecord | null;
+  works: Industry | null;
+  nearTown: { village: VillageRecord; distance: number } | null;
+  nearWorks: { works: Industry; distance: number } | null;
+}
 /** A railway held at a signal that is never going to clear. Amber, matching the lamp on
  *  the signal itself, because they are one thing seen from two distances. */
 const GUIDE_STALL = 0xf5c02a;
@@ -444,6 +470,10 @@ export class Game {
   /** The industry under the crosshair. Kept apart from `lookedAt` because an industry is
    *  not in a village and is found by distance rather than by plot. */
   private lookedAtWorks: Industry | null = null;
+  /** The block the crosshair is on, within the player's reach. */
+  private aimHit: RaycastHit | null = null;
+  /** The rail end the crosshair is on, while a station is in hand. */
+  private aimNode: TrackNode | null = null;
   private focusCache: { at: number; route: Route | undefined } = { at: -1e9, route: undefined };
   private readonly effects: Effects;
   private readonly sky: Sky;
@@ -1297,6 +1327,11 @@ export class Game {
   /** What the HUD says about the building under the crosshair. */
   private buildingPrompt(): { title: string; hint: string } | null {
     if (this.uiOpen) return null;
+    // Something about to be put down comes first: the player is mid-decision, and the
+    // question they are asking is about the thing in their hand rather than the wall
+    // behind it.
+    const placing = this.placementPrompt();
+    if (placing) return placing;
     if (this.lookedAtWorks) return this.industryPrompt(this.lookedAtWorks);
     if (!this.lookedAt) return null;
     const { building, village } = this.lookedAt;
@@ -1306,6 +1341,53 @@ export class Game {
       title: describeBuilding(building, village, isDepot, this.buildingNote(village, building)),
       hint: isDepot ? 'ここから荷が出入りする' : '[F] この村の集荷所にする',
     };
+  }
+
+  /** What a stop or a station in the player's hand would attach to, in words, beside the
+   *  light that says the same thing in the world.
+   *
+   *  The light answers "where"; this answers "how far off am I" — the number that decides
+   *  whether the answer is to move two blocks or to give up on this hillside. */
+  private placementPrompt(): { title: string; hint: string } | null {
+    const held = this.player.inventory.held?.id;
+    if (held === 'stop' && this.aimHit) {
+      const at = { x: this.aimHit.x, z: this.aimHit.z };
+      const link = this.linkAt(at.x, at.z);
+      const crowding = this.lines.stopNear(at.x, at.z, STOP_SPACING);
+      const hint = crowding
+        ? `置けない — ${crowding.name}に近すぎる（停留所どうしは ${STOP_SPACING}マス以上）`
+        : '右クリックで設置';
+      const serves: string[] = [];
+      if (link.works) serves.push(`${link.works.name}（産業）`);
+      if (link.town) serves.push(`${displayName(link.town)}（町）`);
+      if (serves.length > 0) return { title: `ここに置くと ${serves.join(' と ')} につながる`, hint };
+      return { title: `ここに置いても何にもつながらない（${this.outOfReach(link, STOP_TOWN_REACH)}）`, hint };
+    }
+    if (held === 'station') {
+      const node = this.aimNode;
+      if (!node) return null;
+      const served = this.villageServedBy(node);
+      const title = served
+        ? `この端に駅を建てると ${displayName(served.village)} に届く（${Math.round(served.distance)}m）`
+        : `この端に駅を建ててもどの村にも届かない（${this.outOfReach(this.stationLink(node), STATION_REACH)}）`;
+      return { title, hint: node.station ? '右クリックで撤去' : '右クリックで建てる' };
+    }
+    return null;
+  }
+
+  /** How far off the nearest of each is, when neither is near enough. The one number worth
+   *  saying at the moment the answer is no. */
+  private outOfReach(link: StopLink, townReach: number): string {
+    const parts: string[] = [];
+    parts.push(
+      link.nearTown
+        ? `一番近い町まで ${Math.round(link.nearTown.distance)}m / ${townReach}m`
+        : '町が見つかっていない',
+    );
+    if (link.nearWorks) {
+      parts.push(`産業まで ${Math.round(link.nearWorks.distance)}m / ${STOP_SITE_REACH}m`);
+    }
+    return parts.join('、');
   }
 
   /** What the works under the crosshair is: which kind it is, what it digs, how fast, and
@@ -1388,6 +1470,12 @@ export class Game {
     const look = this.player.lookVector();
     const hit = raycastVoxels(this.world, eye, look, { maxDistance: REACH });
     this.effects.setSelection(hit);
+    // Kept for the guide, which runs in the render loop and has to know where a stop in
+    // the player's hand would land.
+    this.aimHit = hit;
+    // The rail end under the crosshair, for the station's preview. Only while a station is
+    // in hand: the pick is a raycast against the curves, and nothing else needs it.
+    this.aimNode = this.player.inventory.held?.id === 'station' ? this.trackAim().node : null;
     this.updateLookedAtBuilding(eye, look);
 
     const input = this.options.input;
@@ -2948,6 +3036,121 @@ export class Game {
     return works ? works.name : stop.name;
   }
 
+  /** What a stop at a point is — or would be — attached to.
+   *
+   *  Exactly the two rules `useStop` and `sites.ts` apply, asked one gesture early. A town
+   *  is *recorded* when the stop goes down: inside its plateau, or within `STOP_TOWN_REACH`
+   *  of its middle. An industry is found by *proximity* within `STOP_SITE_REACH`, every
+   *  time it is asked, for as long as the stop stands. */
+  private linkAt(x: number, z: number): StopLink {
+    let nearTown: { village: VillageRecord; distance: number } | null = null;
+    for (const village of this.villages.byId.values()) {
+      const distance = Math.hypot(village.x - x, village.z - z);
+      if (nearTown && nearTown.distance <= distance) continue;
+      nearTown = { village, distance };
+    }
+    const inside = this.villages.at(x, z);
+    const town = inside ?? (nearTown && nearTown.distance <= STOP_TOWN_REACH ? nearTown.village : null);
+    let nearWorks: { works: Industry; distance: number } | null = null;
+    for (const works of this.industries.all()) {
+      const distance = Math.hypot(works.x - x, works.z - z);
+      if (nearWorks && nearWorks.distance <= distance) continue;
+      nearWorks = { works, distance };
+    }
+    const works = nearWorks && nearWorks.distance <= STOP_SITE_REACH ? nearWorks.works : null;
+    return { town, works, nearTown, nearWorks };
+  }
+
+  /** What a stop that is already down serves.
+   *
+   *  Its town is whatever was recorded the moment it was put there, not what a fresh look
+   *  at the ground says now — a town growing outwards later does not adopt somebody's
+   *  junction, and a stop put down before its town was ever found never gets one. That
+   *  difference is invisible from the ground and is exactly what this light is for. */
+  private stopLink(stop: Stop): StopLink {
+    return { ...this.linkAt(stop.x, stop.z), town: this.townOf(stop) ?? null };
+  }
+
+  /** Where a tether's far end hangs: the doorway goods actually pass through when the town
+   *  has one, the middle of the place when it does not. */
+  private townAnchor(village: VillageRecord): RoadPoint {
+    return (
+      this.depotDoor(village.id)
+      ?? { x: village.x, y: this.groundHeightAt(village.x, village.z), z: village.z }
+    );
+  }
+
+  /** Every stop and station near the player, tied by light to what it is judged to serve —
+   *  and, when one is in the player's hand, where the next one would be tied.
+   *
+   *  This is the question the player asks most often and could least easily answer. Which
+   *  town a stop serves is decided the instant it is put down and never revisited, and an
+   *  industry is picked up by being near enough: two invisible rules that between them
+   *  decide whether anything ever moves. They were readable in a toast that had already
+   *  scrolled away and in a panel that has to be trusted. A stop is a decision about a
+   *  place, so the answer belongs in the place. */
+  private linkLight(lines: GuideLine[], beams: GuideBeam[]): void {
+    for (const stop of this.lines.stops.values()) {
+      if (!this.nearPlayer(stop, LINK_VISIBLE)) continue;
+      this.drawLink(lines, beams, `stop:${stop.id}`, stop, this.stopLink(stop), false);
+    }
+    // A station is the same question with one answer fewer: rails load through a town and
+    // never through an industry, so `STATION_REACH` is the whole of its rule.
+    for (const node of this.trackNet.stations()) {
+      if (!this.nearPlayer(node, LINK_VISIBLE)) continue;
+      this.drawLink(lines, beams, `station:${node.id}`, roundPoint(node), this.stationLink(node), false);
+    }
+    // Nothing is about to be placed while a screen is open, and a dashed line left over
+    // the last thing the player aimed at would say otherwise.
+    if (this.uiOpen) return;
+    const held = this.player.inventory.held?.id;
+    if (held === 'stop' && this.aimHit) {
+      const at = { x: this.aimHit.x, y: this.aimHit.y + 1, z: this.aimHit.z };
+      this.drawLink(lines, beams, 'preview', at, this.linkAt(at.x, at.z), true);
+    }
+    if (held === 'station' && this.aimNode && !this.aimNode.station) {
+      this.drawLink(lines, beams, 'preview', roundPoint(this.aimNode), this.stationLink(this.aimNode), true);
+    }
+  }
+
+  /** What a station on a rail end serves: a village within `STATION_REACH`, or nothing. */
+  private stationLink(node: TrackPoint): StopLink {
+    const served = this.villageServedBy(node);
+    return { town: served?.village ?? null, works: null, nearTown: served, nearWorks: null };
+  }
+
+  /** One tether. Solid for something that is there, dashed for something in the hand. */
+  private drawLink(
+    lines: GuideLine[],
+    beams: GuideBeam[],
+    id: string,
+    at: { x: number; y: number; z: number },
+    link: StopLink,
+    preview: boolean,
+  ): void {
+    const ends: RoadPoint[] = [];
+    if (link.works) ends.push({ x: link.works.x, y: link.works.y, z: link.works.z });
+    if (link.town) ends.push(this.townAnchor(link.town));
+    if (ends.length === 0) {
+      // Grey and alone: a legitimate thing to be halfway through building, and a thing no
+      // goods will ever pass through until it is finished.
+      beams.push({ x: at.x, y: at.y, z: at.z, colour: GUIDE_NOLINK, height: preview ? 10 : 5 });
+      return;
+    }
+    beams.push({ x: at.x, y: at.y, z: at.z, colour: GUIDE_LINK, height: preview ? 12 : 6 });
+    for (let i = 0; i < ends.length; i++) {
+      const end = ends[i];
+      const key = `${id}|${i}|${at.x},${at.z}|${end.x},${end.z}|${this.roads.revision}`;
+      lines.push({
+        key,
+        points: this.guideLine(`link:${id}:${i}`, key, [at, end]),
+        colour: GUIDE_LINK,
+        dashed: preview,
+      });
+      beams.push({ ...end, colour: GUIDE_LINK, height: 4 });
+    }
+  }
+
   /** The road network as light on the ground: what carries goods, what is still missing,
    *  and where the goods have got to. Rebuilt every frame and cheap to compare — the
    *  renderer only touches geometry when one of these three has actually changed. */
@@ -3026,6 +3229,7 @@ export class Game {
       if (route !== questRoute && !this.nearPlayer(route.stall, FAULT_REACH * 2)) continue;
       beams.push({ ...route.stall, colour: GUIDE_STALL, height: 14 });
     }
+    this.linkLight(lines, beams);
     const tiles = this.roads.columnsIn(
       this.player.x - GUIDE_TILE_REACH,
       this.player.z - GUIDE_TILE_REACH,
@@ -4714,6 +4918,40 @@ export class Game {
         this.selectedLine = line.id;
         this.syncLines();
         return { id: line.id, name: line.name, calls: line.stops.length };
+      },
+      /** What every stop and station is judged to serve — the same two rules the light in
+       *  the world draws, in a form a test can read. */
+      links: () => ({
+        stops: [...this.lines.stops.values()].map((stop) => {
+          const link = this.stopLink(stop);
+          return {
+            id: stop.id, name: stop.name, x: stop.x, z: stop.z,
+            town: link.town ? displayName(link.town) : null,
+            works: link.works?.name ?? null,
+            townAway: link.nearTown ? Math.round(link.nearTown.distance) : null,
+            worksAway: link.nearWorks ? Math.round(link.nearWorks.distance) : null,
+          };
+        }),
+        stations: this.trackNet.stations().map((node) => {
+          const served = this.villageServedBy(node);
+          return {
+            id: node.id, x: Math.round(node.x), z: Math.round(node.z),
+            town: served ? displayName(served.village) : null,
+            away: served ? Math.round(served.distance) : null,
+          };
+        }),
+      }),
+      /** What a stop put down at a point would serve, before putting one down. */
+      linkAt: (x = this.player.x, z = this.player.z) => {
+        const link = this.linkAt(Math.round(x), Math.round(z));
+        return {
+          town: link.town ? displayName(link.town) : null,
+          works: link.works?.name ?? null,
+          townAway: link.nearTown ? Math.round(link.nearTown.distance) : null,
+          worksAway: link.nearWorks ? Math.round(link.nearWorks.distance) : null,
+          townReach: STOP_TOWN_REACH,
+          worksReach: STOP_SITE_REACH,
+        };
       },
       /** Every industry the player has sited. */
       industries: () =>
