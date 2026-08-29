@@ -6,6 +6,8 @@ export interface Settings {
   difficulty: Difficulty;
   /** Chunks loaded around the player in each direction. */
   renderDistance: number;
+  /** Use bevelled geometry for nearby terrain blocks. */
+  roundedBlocks: boolean;
   /** Radians of camera rotation per pixel of mouse movement. */
   sensitivity: number;
   /** Heading strip with markers for spawn, the last death and the nearest village. */
@@ -50,7 +52,8 @@ export const SETTINGS_KEY = 'voxelcraft.settings.v1';
 
 export const DEFAULT_SETTINGS: Settings = {
   difficulty: DEFAULT_DIFFICULTY,
-  renderDistance: 8,
+  renderDistance: 4,
+  roundedBlocks: true,
   sensitivity: 0.0022,
   compass: true,
   minimap: true,
@@ -81,6 +84,7 @@ export function loadSettings(): Settings {
         RENDER_DISTANCE_RANGE.min,
         RENDER_DISTANCE_RANGE.max,
       ),
+      roundedBlocks: parsed.roundedBlocks ?? DEFAULT_SETTINGS.roundedBlocks,
       sensitivity: clamp(
         parsed.sensitivity ?? DEFAULT_SETTINGS.sensitivity,
         SENSITIVITY_RANGE.min,

@@ -18,6 +18,11 @@ import type { BlockId } from '../world/blocks';
 import { CHUNK_AREA, CHUNK_SIZE, type Chunk, chunkKey, toChunkCoord, toLocalCoord } from '../world/chunk';
 import { base64ToBytes, bytesToBase64, decodeRuns, encodeRuns } from './save';
 import type { World } from '../world/world';
+import type { TreeMapSample } from '../world/trees';
+
+export interface TreeMapSurface {
+  canopyAt(x: number, z: number): TreeMapSample | null;
+}
 
 /** What a map needs to know about a column, from wherever it is still known. Whole block
  *  coordinates, as with every other accessor that reaches into the block grid.
@@ -64,7 +69,7 @@ export class MapMemory implements MapSurface {
 
   /** Writes down the top face of every column of a chunk, replacing whatever was there
    *  before: the ground the player has just changed is the ground the map should show. */
-  record(chunk: Chunk): void {
+  record(chunk: Chunk, trees?: TreeMapSurface): void {
     let tile = this.tiles.get(chunk.key);
     if (!tile) {
       tile = {
@@ -78,10 +83,12 @@ export class MapMemory implements MapSurface {
     for (let z = 0; z < CHUNK_SIZE; z++) {
       for (let x = 0; x < CHUNK_SIZE; x++) {
         const i = z * CHUNK_SIZE + x;
-        const top = chunk.heightAt(x, z);
+        const ground = chunk.heightAt(x, z);
+        const canopy = trees?.canopyAt(chunk.originX + x, chunk.originZ + z) ?? null;
+        const top = canopy && canopy.height > ground ? canopy.height : ground;
         tile.height[i] = top < 0 ? 0 : Math.min(255, top + 1);
-        tile.block[i] = top < 0 ? 0 : chunk.get(x, top, z);
-        tile.water[i] = top < 0 ? 0 : chunk.getWater(x, top, z);
+        tile.block[i] = top < 0 ? 0 : canopy && canopy.height === top ? canopy.block : chunk.get(x, ground, z);
+        tile.water[i] = top < 0 || (canopy && canopy.height === top) ? 0 : chunk.getWater(x, ground, z);
       }
     }
     tile.encoded = null;
@@ -132,7 +139,11 @@ export class MapMemory implements MapSurface {
  *  that has just been laid across it included — and the survey is only as new as the last
  *  time the player was there. */
 export class SurveyedTerrain implements MapSurface {
-  constructor(private readonly world: World, private readonly memory: MapMemory) {}
+  constructor(
+    private readonly world: World,
+    private readonly memory: MapMemory,
+    private readonly trees?: TreeMapSurface,
+  ) {}
 
   /** The chunk itself rather than `world.isLoadedAt` and then a world accessor: both of
    *  those look the chunk up by a key they build a string for, and the big map asks these
@@ -143,21 +154,26 @@ export class SurveyedTerrain implements MapSurface {
 
   heightAt(x: number, z: number): number {
     const chunk = this.chunkAt(x, z);
-    return chunk ? chunk.heightAt(toLocalCoord(x), toLocalCoord(z)) : this.memory.heightAt(x, z);
+    if (!chunk) return this.memory.heightAt(x, z);
+    const ground = chunk.heightAt(toLocalCoord(x), toLocalCoord(z));
+    const canopy = this.trees?.canopyAt(x, z);
+    return canopy && canopy.height > ground ? canopy.height : ground;
   }
 
   blockAt(x: number, top: number, z: number): BlockId {
     const chunk = this.chunkAt(x, z);
-    return chunk
-      ? chunk.get(toLocalCoord(x), top, toLocalCoord(z))
-      : this.memory.blockAt(x, top, z);
+    if (!chunk) return this.memory.blockAt(x, top, z);
+    const canopy = this.trees?.canopyAt(x, z);
+    return canopy && canopy.height === top
+      ? canopy.block
+      : chunk.get(toLocalCoord(x), top, toLocalCoord(z));
   }
 
   waterAt(x: number, top: number, z: number): number {
     const chunk = this.chunkAt(x, z);
-    return chunk
-      ? chunk.getWater(toLocalCoord(x), top, toLocalCoord(z))
-      : this.memory.waterAt(x, top, z);
+    if (!chunk) return this.memory.waterAt(x, top, z);
+    const canopy = this.trees?.canopyAt(x, z);
+    return canopy && canopy.height === top ? 0 : chunk.getWater(toLocalCoord(x), top, toLocalCoord(z));
   }
 }
 

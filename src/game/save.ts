@@ -10,7 +10,7 @@ export const SAVE_KEY = 'voxelcraft.save.v1';
  *  goods would be somewhere no line calls, in towns that no longer make what they made.
  *  So a version 2 save is refused rather than half converted, and the player starts a new
  *  world. That is the cost of the change and it is paid once. */
-export const SAVE_VERSION = 4;
+export const SAVE_VERSION = 5;
 
 /** The id the old block railway used, and what a world that still has some in it opens
  *  with instead.
@@ -171,6 +171,8 @@ export interface SaveData {
    *  same way as the rest — a save written before the survey existed opens with a blank
    *  map that fills in again as the player walks, which costs nothing but a walk. */
   explored?: Record<string, string>;
+  /** Stable ids of natural object trees that have been felled or cleared. */
+  removedTrees: string[];
 }
 
 export function bytesToBase64(bytes: Uint8Array): string {
@@ -275,7 +277,7 @@ export function parseSave(text: string): SaveData | null {
     const data = JSON.parse(text) as SaveData;
     if (!data || typeof data !== 'object') return null;
     if (data.version !== SAVE_VERSION) return null;
-    if (typeof data.seed !== 'number' || !data.player || !data.edits) return null;
+    if (typeof data.seed !== 'number' || !data.player || !data.edits || !Array.isArray(data.removedTrees)) return null;
     return data;
   } catch {
     return null;

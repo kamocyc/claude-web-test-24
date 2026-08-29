@@ -4,6 +4,8 @@ import { mulberry32 } from '../core/rng';
 import { ChunkRenderer } from '../render/chunkRenderer';
 import { Effects } from '../render/effects';
 import { EntityRenderer } from '../render/entityRenderer';
+import { TreeRenderer } from '../render/treeRenderer';
+import { buildTreeModels, type TreeModel, type TreeSpecies } from '../render/treeModels';
 import { RouteGuide, type GuideBeam, type GuideLine, type GuidePoint, type GuideView } from '../render/routeGuide';
 import {
   SAMPLE_STEP,
@@ -52,6 +54,7 @@ import { WaterSimulator } from '../world/waterSim';
 import { raycastVoxels, type RaycastHit } from '../world/raycast';
 import { TICK_INTERVAL, randomTickChunk } from '../world/ticks';
 import { World } from '../world/world';
+import { TreeStore, type TreeId, type TreeRayHit } from '../world/trees';
 import { ChunkWorkerPool } from '../workers/pool';
 import type { ChunkReadyMessage } from '../workers/chunkMessages';
 import { Hud, type NavigationInfo } from '../ui/hud';
@@ -273,6 +276,9 @@ export class Game {
   private readonly materials: ChunkMaterials;
   private readonly chunkRenderer: ChunkRenderer;
   private readonly entityRenderer: EntityRenderer;
+  private readonly treeModels: Record<TreeSpecies, TreeModel[]>;
+  readonly trees: TreeStore;
+  private readonly treeRenderer: TreeRenderer;
   private readonly routeGuide = new RouteGuide();
   private readonly trackRenderer = new TrackRenderer();
   /** The free-form railway. Not readonly: a save replaces it wholesale. */
@@ -358,6 +364,7 @@ export class Game {
   private fps = 60;
   /** Block being mined and how far along it is. */
   private miningTarget: { x: number; y: number; z: number } | null = null;
+  private treeMiningTarget: TreeId | null = null;
   private miningProgress = 0;
   /** Where the shovel last trod, so a sweep can fill in the blocks the crosshair skipped
    *  over rather than leaving a dotted line behind. */
@@ -414,8 +421,12 @@ export class Game {
 
   constructor(private readonly options: GameOptions) {
     this.world = new World(options.seed);
-    this.surveyed = new SurveyedTerrain(this.world, this.mapMemory);
     this.generator = new TerrainGenerator(options.seed);
+    this.treeModels = buildTreeModels(options.seed);
+    this.trees = new TreeStore(this.generator, this.treeModels, options.save?.removedTrees ?? []);
+    this.world.objectCollider = this.trees;
+    this.world.treeSurveyor = (x, z, radius) => this.trees.survey(x, z, radius);
+    this.surveyed = new SurveyedTerrain(this.world, this.mapMemory, this.trees);
     this.light = new LightEngine(this.world);
     this.water = new WaterSimulator(this.world);
     // The town is built first and handed to the registry, so a delivery reaches the
@@ -439,17 +450,29 @@ export class Game {
 
     this.renderer = new THREE.WebGLRenderer({ canvas: options.canvas, antialias: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = 1.08;
+    // Terrain uses a custom baked-light shader and cannot receive three.js shadow maps;
+    // rendering a shadow pass here costs a frame without changing a pixel.
+    this.renderer.shadowMap.enabled = false;
     this.renderDistance = options.settings.renderDistance;
     this.camera = new THREE.PerspectiveCamera(75, 1, 0.1, this.renderDistance * CHUNK_SIZE * 1.4);
 
     this.atlas = buildAtlas();
     this.materials = createChunkMaterials(this.atlas.texture);
-    this.chunkRenderer = new ChunkRenderer(this.world, this.atlas, this.materials);
+    this.chunkRenderer = new ChunkRenderer(
+      this.world,
+      this.atlas,
+      this.materials,
+      options.settings.roundedBlocks,
+    );
     this.entityRenderer = new EntityRenderer(this.atlas);
+    this.treeRenderer = new TreeRenderer(this.trees, this.treeModels);
     this.effects = new Effects(this.atlas);
     this.sky = new Sky(this.scene, this.renderDistance * CHUNK_SIZE);
     this.scene.add(
-      this.chunkRenderer.group, this.entityRenderer.group, this.effects.group,
+      this.chunkRenderer.group, this.treeRenderer.group, this.entityRenderer.group, this.effects.group,
       this.routeGuide.group, this.trackRenderer.group,
     );
 
@@ -551,6 +574,7 @@ export class Game {
     if (this.lockHandler) document.removeEventListener('pointerlockchange', this.lockHandler);
     this.pool.dispose();
     this.chunkRenderer.dispose();
+    this.treeRenderer.dispose();
     this.trackRenderer.dispose();
     this.hud.root.remove();
     this.worldMap.dispose();
@@ -589,6 +613,7 @@ export class Game {
     this.light.update(20000);
     this.chunkRenderer.processDirty(MESH_BUDGET, this.player.x, this.player.z);
     this.chunkRenderer.processWaterDirty(WATER_MESH_BUDGET);
+    this.treeRenderer.update();
 
     if (!this.ready) {
       // Wait until the ground under the player exists before handing over control.
@@ -643,6 +668,7 @@ export class Game {
     // is worked out from where they now are.
     this.carryRider();
     this.materials.setSun(Math.max(0.06, this.day.sunLight));
+    this.materials.setTime(this.day.time * 1200);
 
     // Only mouse look needs pointer lock; keyboard and clicks keep working without it
     // so the game stays playable if the browser refuses to lock the cursor.
@@ -735,6 +761,10 @@ export class Game {
     // from where they started it. At more than single speed the world takes several steps
     // a frame, and a trail that only saw the last of them would be a train that jumped.
     this.updateTrains();
+    for (const tree of this.trees.update(dt)) {
+      this.drops.spawn(tree.x, tree.y + 0.5, tree.z, { id: 'oak_log', count: tree.logs });
+      this.drops.spawn(tree.x + 0.2, tree.y + 0.45, tree.z + 0.2, { id: 'stick', count: 2 });
+    }
   }
 
   /** Runs the world's clock forward without waiting for the frames it would take.
@@ -957,8 +987,9 @@ export class Game {
       const distance = (chunk.cx - pcx) ** 2 + (chunk.cz - pcz) ** 2;
       if (distance <= limit) continue;
       // Last look at it: whatever the player did here is what the map should remember.
-      this.mapMemory.record(chunk);
+      this.mapMemory.record(chunk, this.trees);
       this.chunkRenderer.remove(chunk.key);
+      this.trees.unloadChunk(chunk.cx, chunk.cz);
       this.world.removeChunk(chunk.cx, chunk.cz);
     }
   }
@@ -967,6 +998,7 @@ export class Game {
     const chunk = new Chunk(message.cx, message.cz, message.blocks, message.water);
     chunk.generated = true;
     this.world.addChunk(chunk);
+    this.trees.ensureChunk(message.cx, message.cz);
     // Before lighting is seeded, so a village that grew while this chunk was away has its
     // new walls in place when the light is baked against them.
     for (const village of this.villages.byId.values()) {
@@ -981,7 +1013,7 @@ export class Game {
     this.water.registerChunk(chunk, message.springs ?? []);
     // Surveyed as it arrives as well as as it leaves, so a chunk that is loaded now is
     // already on the map of a world saved before the player walks away from it.
-    this.mapMemory.record(chunk);
+    this.mapMemory.record(chunk, this.trees);
 
     const key = chunkKey(message.cx, message.cz);
     if (!this.populatedChunks.has(key)) {
@@ -1311,7 +1343,9 @@ export class Game {
   private updateInteraction(dt: number): void {
     const eye = { x: this.player.x, y: this.player.eyeY, z: this.player.z };
     const look = this.player.lookVector();
-    const hit = raycastVoxels(this.world, eye, look, { maxDistance: REACH });
+    const voxelHit = raycastVoxels(this.world, eye, look, { maxDistance: REACH });
+    const treeHit = this.trees.raycast(eye, look, REACH);
+    const hit = treeHit && (!voxelHit || treeHit.distance < voxelHit.distance) ? null : voxelHit;
     this.effects.setSelection(hit);
     // Kept for the guide, which runs in the render loop and has to know where a stop in
     // the player's hand would land.
@@ -1358,7 +1392,9 @@ export class Game {
 
     this.updatePaving(dt, hit);
 
-    if (input.buttons[0] && hit) {
+    if (input.buttons[0] && treeHit && !hit) {
+      this.updateTreeMining(dt, treeHit);
+    } else if (input.buttons[0] && hit) {
       this.updateMining(dt, hit);
     } else {
       this.resetMining();
@@ -1471,6 +1507,7 @@ export class Game {
       this.miningTarget.z !== hit.z
     ) {
       this.miningTarget = { x: hit.x, y: hit.y, z: hit.z };
+      this.treeMiningTarget = null;
       this.miningProgress = 0;
       this.selectBestTool(hit.block);
     }
@@ -1488,6 +1525,24 @@ export class Game {
     }
   }
 
+  /** Natural trees are mined as one target rather than as a column of log blocks. */
+  private updateTreeMining(dt: number, hit: TreeRayHit): void {
+    if (this.treeMiningTarget !== hit.tree.id) {
+      this.treeMiningTarget = hit.tree.id;
+      this.miningTarget = null;
+      this.miningProgress = 0;
+      this.selectBestTool(Block.OAK_LOG);
+    }
+    const seconds = miningTime(Block.OAK_LOG, heldTool(this.player.inventory.held)) * 2;
+    if (!Number.isFinite(seconds)) return;
+    this.miningProgress += dt / seconds;
+    this.effects.setBreakProgress(null, this.miningProgress);
+    if (this.miningProgress < 1) return;
+    const fallYaw = Math.atan2(hit.tree.x - this.player.x, hit.tree.z - this.player.z);
+    this.trees.fell(hit.tree, fallYaw);
+    this.resetMining();
+  }
+
   /** Puts the right tool in hand for whatever the crosshair just landed on. */
   private selectBestTool(block: BlockId): void {
     if (!this.options.settings.autoTool) return;
@@ -1500,6 +1555,7 @@ export class Game {
 
   private resetMining(): void {
     this.miningTarget = null;
+    this.treeMiningTarget = null;
     this.miningProgress = 0;
     this.effects.setBreakProgress(null, 0);
   }
@@ -4256,6 +4312,12 @@ export class Game {
     this.sky.setRenderDistance(chunks * CHUNK_SIZE);
   }
 
+  /** Applies the terrain shape preference without restarting the world. */
+  setRoundedBlocks(enabled: boolean): void {
+    this.options.settings.roundedBlocks = enabled;
+    this.chunkRenderer.setRoundedBlocks(enabled);
+  }
+
   togglePause(): void {
     this.paused = !this.paused;
     this.options.menus.showPause(this.paused);
@@ -4575,6 +4637,8 @@ export class Game {
       quest: this.questline.toJSON(),
       pendingVillagers: this.pendingVillagers,
       tracks: this.trackNet.toJSON(),
+      removedTrees: this.trees.removedIds,
+      trees: this.trees,
     });
   }
 

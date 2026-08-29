@@ -1,4 +1,5 @@
 import { Block, type BlockId, blockDef } from './blocks';
+import type { EntityBox, ObjectCollider } from '../core/aabb';
 import { WATER_FULL, WATER_MAX } from './water';
 import {
   CHUNK_HEIGHT,
@@ -32,6 +33,9 @@ export interface SetBlockOptions {
 /** Holds every loaded chunk and provides coordinate-space-agnostic accessors.
  *  Deliberately free of any three.js dependency. */
 export class World {
+  /** Independent solid objects layered over the voxel grid. */
+  objectCollider: ObjectCollider | null = null;
+  treeSurveyor: ((x: number, z: number, radius: number) => { wood: number; density: number }) | null = null;
   readonly chunks = new Map<string, Chunk>();
   /** Player edits, per chunk: block index -> block id. This is all that gets saved. */
   readonly edits = new Map<string, Map<number, BlockId>>();
@@ -103,6 +107,14 @@ export class World {
     const chunk = this.getChunk(toChunkCoord(x), toChunkCoord(z));
     if (!chunk) return true;
     return blockDef(chunk.get(toLocalCoord(x), y, toLocalCoord(z))).solid;
+  }
+
+  intersectsBox(box: EntityBox): boolean {
+    return this.objectCollider?.intersectsBox(box) ?? false;
+  }
+
+  surveyTrees(x: number, z: number, radius: number): { wood: number; density: number } {
+    return this.treeSurveyor?.(x, z, radius) ?? { wood: 0, density: 0 };
   }
 
   setBlock(x: number, y: number, z: number, id: BlockId, options: SetBlockOptions = {}): boolean {

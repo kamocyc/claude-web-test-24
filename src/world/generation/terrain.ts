@@ -4,7 +4,7 @@ import { Block, type BlockId } from '../blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey } from '../chunk';
 import { WATER_FULL } from '../water';
 import { Biome, type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
-import { ORES, outcropDepth, outcropIn, placeCactus, placeSugarCane, placeTree, treeCandidates } from './features';
+import { ORES, outcropDepth, outcropIn, placeCactus, placeSugarCane } from './features';
 import {
   type ChestMarker,
   type HouseRecord,
@@ -578,32 +578,8 @@ export class TerrainGenerator {
     biomes: Uint8Array,
     put: (x: number, y: number, z: number, id: BlockId) => void,
   ): void {
-    // Trees are generated for this chunk and all eight neighbours, then clipped, so a
-    // canopy that crosses a chunk border still appears whichever chunk loads first.
-    for (let dz = -1; dz <= 1; dz++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const ncx = cx + dx;
-        const ncz = cz + dz;
-        const sampleX = ncx * CHUNK_SIZE + 8;
-        const sampleZ = ncz * CHUNK_SIZE + 8;
-        const biome = this.biomeAt(sampleX, sampleZ);
-        const def = biomeDef(biome);
-        if (def.treeDensity <= 0) continue;
-        for (const candidate of treeCandidates(this.seed, ncx, ncz, def.treeDensity)) {
-          const groundY = this.height(candidate.x, candidate.z);
-          if (groundY <= SEA_LEVEL + 1) continue;
-          const localBiome = this.biomeAt(candidate.x, candidate.z);
-          const localDef = biomeDef(localBiome);
-          if (localDef.treeDensity <= 0) continue;
-          if (this.insideVillage(candidate.x, candidate.z)) continue;
-          placeTree(put, candidate.rng, candidate.x, groundY, candidate.z, {
-            log: localDef.treeLog,
-            leaves: localDef.treeLeaves,
-            conifer: localDef.treeLog === Block.SPRUCE_LOG,
-          });
-        }
-      }
-    }
+    // Natural trees are independent objects owned by TreeStore. Keeping them out of the
+    // voxel payload means one tree can be selected, collided with and felled as a whole.
 
     // Ground cover only ever affects its own column, so no neighbour scan is needed.
     const originX = cx * CHUNK_SIZE;
@@ -661,6 +637,11 @@ export class TerrainGenerator {
       if (plateauWeight(info.site, x, z) > 0.35) return true;
     }
     return false;
+  }
+
+  /** Public vegetation exclusion used by deterministic object-tree generation. */
+  isInsideVillage(x: number, z: number): boolean {
+    return this.insideVillage(x, z);
   }
 }
 

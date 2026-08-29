@@ -25,6 +25,7 @@ function minimalSave(): SaveData {
     furnaces: [],
     villagers: [],
     populatedChunks: [],
+    removedTrees: [],
   };
 }
 

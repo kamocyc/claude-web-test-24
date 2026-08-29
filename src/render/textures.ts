@@ -50,6 +50,7 @@ function rect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h:
 
 /** Fills the tile with a grainy version of the base colour. */
 function grain(ctx: CanvasRenderingContext2D, rng: Rng, base: Color, spread = 18): void {
+  spread *= 0.58;
   for (let y = 0; y < TILE; y++) {
     for (let x = 0; x < TILE; x++) {
       px(ctx, x, y, shade(base, (rng() - 0.5) * 2 * spread));
@@ -80,17 +81,17 @@ function blob(ctx: CanvasRenderingContext2D, rng: Rng, cx: number, cy: number, r
 
 // --- terrain -----------------------------------------------------------------
 
-const STONE: Color = [128, 128, 128];
-const DIRT: Color = [134, 96, 67];
-const GRASS: Color = [92, 160, 74];
-const SAND: Color = [219, 207, 163];
-const WOOD: Color = [160, 128, 80];
-const BARK: Color = [104, 78, 48];
-const LEAF: Color = [66, 130, 52];
-const SPRUCE_LEAF: Color = [46, 96, 60];
-const BIRCH_LEAF: Color = [110, 160, 70];
-const WATER: Color = [58, 106, 200];
-const SNOW_C: Color = [237, 244, 250];
+const STONE: Color = [195, 201, 216];
+const DIRT: Color = [195, 154, 112];
+const GRASS: Color = [169, 224, 109];
+const SAND: Color = [242, 221, 170];
+const WOOD: Color = [224, 178, 122];
+const BARK: Color = [187, 143, 99];
+const LEAF: Color = [127, 212, 95];
+const SPRUCE_LEAF: Color = [86, 185, 123];
+const BIRCH_LEAF: Color = [165, 232, 126];
+const WATER: Color = [127, 214, 242];
+const SNOW_C: Color = [240, 246, 255];
 
 tile('stone', (ctx, rng) => {
   grain(ctx, rng, STONE, 14);
