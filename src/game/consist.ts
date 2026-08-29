@@ -61,13 +61,18 @@ export interface CarPose extends TrailPoint {
 
 /** The cars a train carrying this many loads runs with.
  *
- *  Always a coach, whatever the freight is doing. It is the one car on the train that is
- *  not there to earn anything: it is there so that a player who built the railway can get
- *  on it, and a train that only sometimes had somewhere to sit would make that a thing to
- *  wait for rather than a thing to do. */
-export function consistOf(cars: number): CarKind[] {
+ *  Always a coach behind the engine, whatever the freight is doing. It is the one car on
+ *  the train that is not there to earn anything: it is there so that a player who built the
+ *  railway can get on it, and a train that only sometimes had somewhere to sit would make
+ *  that a thing to wait for rather than a thing to do.
+ *
+ *  `people` swaps the rest of the train for coaches too. A town's passengers ride a line
+ *  the player built for crates, and the one place that is visible is out of the window: a
+ *  trainload of people that looked like a goods train would say nothing at all. */
+export function consistOf(cars: number, people = false): CarKind[] {
   const kinds: CarKind[] = ['loco', 'coach'];
-  for (let i = 0; i < Math.max(0, Math.floor(cars)); i++) kinds.push('wagon');
+  const rest: CarKind = people ? 'coach' : 'wagon';
+  for (let i = 0; i < Math.max(0, Math.floor(cars)); i++) kinds.push(rest);
   return kinds;
 }
 

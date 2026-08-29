@@ -10,6 +10,19 @@ const url = process.argv[2] ?? 'http://localhost:5173/';
 const outDir = process.argv[3] ?? 'screenshots';
 mkdirSync(outDir, { recursive: true });
 
+/** `--economy` stops the run once the economy has been driven end to end.
+ *
+ *  The whole sweep is eight minutes, and most of it is the parts of the game that have not
+ *  changed in months — water, combat, farming, riding a train, drowning. When the thing
+ *  being worked on is the network, sitting through those to find out whether a stop went
+ *  down is eight minutes to answer a two minute question. This runs the boot, the village,
+ *  the tutorial, the stops and the line, the road, and the industry, reports page errors,
+ *  and stops.
+ *
+ *  It is not a substitute for the full run — it is what to use twenty times an afternoon,
+ *  with the full one before committing. */
+const economyOnly = process.argv.includes('--economy');
+
 const launchOptions = {
   args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--no-sandbox'],
 };
@@ -46,12 +59,13 @@ const closeScreen = async () => {
   }
 };
 const debugText = () => page.locator('.debug').textContent();
-/** The tutorial's own route, looked up by its two villages. `routes()` is ordered by
- *  discovery, so a third village joining the network is enough to shuffle the indices. */
+/** The tutorial's own leg, looked up by the two towns its stops serve. `routes()` is
+ *  ordered by line, so a second service is enough to shuffle the indices. */
 const QUEST_ROUTE = `(() => {
   const q = window.voxelcraft.quest();
   return window.voxelcraft.routes().find((r) =>
-    (r.from === q.origin && r.to === q.target) || (r.from === q.target && r.to === q.origin)) ?? null;
+    (r.fromTown === q.origin && r.toTown === q.target)
+    || (r.fromTown === q.target && r.toTown === q.origin)) ?? null;
 })()`;
 /** Stands the player on flat, open, loaded ground and drops a villager in front of them.
  *  Spawning where a teleport landed risks a roof, a wall, or an unloaded chunk, and a
@@ -112,6 +126,27 @@ const stable = (expression, { tolerance = 0.001, dwell = 900, timeout = 60000 } 
   ).finally(() => page.evaluate(() => { delete window.__smokeStable; }));
 /** Nothing left to generate or re-mesh. */
 const settled = (timeout = 90000) => until(() => window.voxelcraft.backlog() === 0, null, timeout);
+/** Turns the world's clock until something is true, rather than sitting through it.
+ *
+ *  Almost everything this file waits for is the world's own clock: a road being re-walked
+ *  (every two seconds), a porter covering a hundred metres, a works converting, an industry
+ *  digging. Under software rendering the game runs well below real time, so waiting those
+ *  out honestly is most of a ten minute run — for seconds that are simulated identically
+ *  whether or not anybody sat through them.
+ *
+ *  So this runs them by hand. `voxelcraft.fastForward` is `stepWorld` in a loop with no
+ *  frame budget, which is exactly what game speed does; the assertion is the same one
+ *  `until` makes and it throws the same way, saying how much world it spent. What it will
+ *  not do is skip chunk generation, which happens on workers — anything waiting for the
+ *  world to *exist* still wants `settled()`. */
+const advance = async (condition, { seconds = 240, chunk = 4, arg = null } = {}) => {
+  for (let spent = 0; spent <= seconds; spent += chunk) {
+    if (await page.evaluate(condition, arg)) return spent;
+    await page.evaluate((n) => window.voxelcraft.fastForward(n), chunk);
+  }
+  if (await page.evaluate(condition, arg)) return seconds;
+  throw new Error(`nothing came of ${seconds}s of world: ${String(condition).slice(0, 160)}`);
+};
 /** One painted frame, for a screenshot taken straight after a change. */
 const frame = () =>
   page.evaluate(() => new Promise((resolve) => {
@@ -292,14 +327,16 @@ console.log('buildings:', JSON.stringify({
 if (!stock.list.some((b) => b.depot)) throw new Error('no village building takes the goods');
 
 // Stand outside a different building, look at it, and claim it with the key a player has.
+// Two blocks out, not four: a town's streets are three wide, so four steps back from a
+// doorway is across the road and standing on somebody else's roof.
 const claimed = await evaluate(() => {
   const g = window.voxelcraft.game;
   const list = window.voxelcraft.buildings().list;
   const target = list.find((b) => !b.depot) ?? list[0];
   const dx = target.outside.x - target.door.x;
   const dz = target.outside.z - target.door.z;
-  const x = target.door.x + dx * 4 + 0.5;
-  const z = target.door.z + dz * 4 + 0.5;
+  const x = target.door.x + dx * 2 + 0.5;
+  const z = target.door.z + dz * 2 + 0.5;
   g.player.teleportTo(x, g.world.heightAt(Math.floor(x), Math.floor(z)) + 1, z);
   g.player.yaw = Math.atan2(-(target.door.x + 0.5 - x), -(target.door.z + 0.5 - z));
   g.player.pitch = 0.05;
@@ -455,8 +492,43 @@ console.log('accepted:', JSON.stringify({
   )),
 }));
 await closeScreen();
+
+// --- the service ------------------------------------------------------------
+// The change this whole build is about: a finished road carries nothing until the player
+// has put stops down and named them on a line. So before anything else, check that a
+// perfectly good pair of towns with no service between them runs nothing at all.
+console.log('legs before any line:', JSON.stringify(await evaluate(() => window.voxelcraft.routes())));
+const stopsPlaced = await evaluate(() => {
+  const q = window.voxelcraft.quest();
+  const g = window.voxelcraft.game;
+  const origin = g.villages.get(q.origin);
+  const target = g.villages.get(q.target);
+  return [
+    window.voxelcraft.placeStop(origin.x, origin.z),
+    window.voxelcraft.placeStop(target.x, target.z),
+  ];
+});
+console.log('stops placed:', JSON.stringify(stopsPlaced));
+if (!stopsPlaced.every((stop) => stop.ok)) throw new Error('the stops would not go down');
+// Two stops and still no service: a stop is a place, not a line.
+const beforeLine = await evaluate(() => window.voxelcraft.routes());
+console.log('legs with stops and no line:', JSON.stringify(beforeLine));
+if (beforeLine.length !== 0) throw new Error('something ran without a line saying it should');
+console.log('line drawn:', JSON.stringify(await evaluate(() => {
+  const stops = window.voxelcraft.stops();
+  return window.voxelcraft.makeLine(stops.map((stop) => stop.id), '本線');
+})));
+console.log('lines:', JSON.stringify(await evaluate(() => window.voxelcraft.lines())));
+
+// The panel the player actually designs in.
+await page.keyboard.press('KeyN');
+await until(() => window.voxelcraft.game.screens.kind === 'lines');
+console.log('line panel:', JSON.stringify(await page.locator('.lines').innerText()));
+await shot('07w0-line-panel');
+await closeScreen();
+
 // The pair is watched from the village timer, and surveyed once it is.
-await until(`${QUEST_ROUTE}?.missing > 0`, null, 30000);
+await advance(`${QUEST_ROUTE}?.missing > 0`);
 const unpaved = await evaluate(() => window.voxelcraft.routes());
 console.log('route before any road:', JSON.stringify(unpaved));
 // The whole point of allowing a dashed road is that the player is told where the gap is.
@@ -488,7 +560,7 @@ const overlook = async () => {
 };
 await overlook();
 console.log('guide with a gap:', JSON.stringify(await evaluate(() => window.voxelcraft.guide())));
-await until(() => window.voxelcraft.guide().dashed > 0 && window.voxelcraft.guide().beams >= 2);
+await advance(() => window.voxelcraft.guide().dashed > 0 && window.voxelcraft.guide().beams >= 2);
 await shot('07w2-guide-gap');
 
 // The hand-over and the road talk happen at the far village, through the same row. The
@@ -546,9 +618,15 @@ console.log('delivered and learned:', JSON.stringify(await evaluate(() => ({
       : null,
 }))));
 
+// The stops and the line are already down, so the two steps that watch for them fall
+// straight through — but they still have to be *seen* to fall through, because neither is
+// an event anybody fires.
+await advance(() => window.voxelcraft.quest().step === 'build_road');
+console.log('tutorial reached:', await evaluate(() => window.voxelcraft.quest().step));
+
 // Lay the road. By hand this is a few hundred blocks, which is a walk, not a smoke test.
 console.log('road blocks laid:', await evaluate(() => window.voxelcraft.buildRoad()));
-await page.waitForFunction(`${QUEST_ROUTE}?.connected === true`, null, { timeout: 30000 });
+await advance(`${QUEST_ROUTE}?.connected === true`);
 console.log('route once paved:', JSON.stringify(await evaluate(() => window.voxelcraft.routes())));
 console.log('linked panel:', JSON.stringify(await page.locator('.route-row').innerText()));
 await shot('07x-route-linked');
@@ -560,7 +638,7 @@ await shot('07x-route-linked');
 const throughWalls = await evaluate(() => {
   const g = window.voxelcraft.game;
   const here = window.voxelcraft.village();
-  const route = g.transport.routes.find((r) => r.from === here.id || r.to === here.id);
+  const route = g.transport.routes.find((r) => r.from.town === here.id || r.to.town === here.id);
   if (!route || route.waypoints.length === 0) return null;
   const solid = (x, y, z) => g.world.getBlock(x, y, z) !== 0 && g.world.getBlock(x, y, z) !== 9;
   /** Somewhere near `y` to stand, with two clear cells over it. The line's height is
@@ -594,21 +672,243 @@ if (throughWalls && throughWalls.blocked > 0) {
   throw new Error(`the shipment's line runs through ${throughWalls.blocked} cells nobody can stand in`);
 }
 
-// Every village wants particular goods, and a workshop cannot work without its input.
-// Which pair of villages is worth joining follows from that, so it is worth showing.
+// Every town wants particular goods, and its works cannot work without every one of its
+// raw materials. Which places are worth joining follows from that, so it is worth showing.
 console.log('demand:', JSON.stringify(await evaluate(() =>
   window.voxelcraft.villages().filter((v) => v.discovered).map((v) => ({
-    name: v.name, rank: v.rank, kind: v.kind, makes: v.produces, from: v.input, needs: v.needs,
+    name: v.name, rank: v.rank, makes: v.produces, from: v.inputs,
+    held: v.inputStock, needs: v.needs,
   })))));
+
+// --- a primary industry ------------------------------------------------------
+// The other half of the change. A town makes nothing out of nothing, so every raw material
+// on the map comes from somewhere the player chose to dig — and the tool that chooses is
+// the survey, which counts what is actually in the ground rather than taking the player's
+// word for it.
+await evaluate(() => {
+  const here = window.voxelcraft.village();
+  window.voxelcraft.teleport(here.x, here.z);
+});
+await settled();
+const site = await evaluate(() => {
+  const g = window.voxelcraft.game;
+  const here = window.voxelcraft.village();
+  // Outside every town — a stop within 72 of one is that town's stop, and what is wanted
+  // here is a stop that serves the works and nothing else — and near enough that a road to
+  // it is a road rather than an expedition.
+  const towns = window.voxelcraft.villages();
+  const clear = (x, z) => towns.every((v) => Math.hypot(v.x - x, v.z - z) > 90);
+  for (let radius = 90; radius <= 150; radius += 10) {
+    for (let step = 0; step < 16; step++) {
+      const angle = (step * Math.PI) / 8;
+      const x = Math.round(here.x + Math.cos(angle) * radius);
+      const z = Math.round(here.z + Math.sin(angle) * radius);
+      if (g.world.heightAt(x, z) <= 0 || !clear(x, z)) continue;
+      const ground = window.voxelcraft.survey(x, z);
+      if (ground.found.length > 0) return { x, z, found: ground.found, why: ground.why };
+    }
+  }
+  return null;
+});
+// --- the town's own fields ---------------------------------------------------
+// The half of the first stage the player never touches. A town ploughs the belt outside
+// its own streets, and what grows there is carried inward from its own depot.
+const fields = await evaluate(() => {
+  window.voxelcraft.plough();
+  return window.voxelcraft.fields();
+});
+console.log('the fields of the town:', JSON.stringify(fields));
+// The one the player is standing at: the only town whose chunks are all in memory, and so
+// the only one whose fields are on the ground rather than only in the plan.
+const farmed = fields.slice().sort((a, b) => a.distance - b.distance)[0];
+if (!farmed) throw new Error('the town underfoot reported no fields');
+if (farmed.parcels < 3) throw new Error(`a town with ${farmed.parcels} parcels is not farming`);
+// About twice the ground its blocks stand on, which is the whole claim the layout makes.
+if (Math.abs(farmed.area - farmed.target) > 300) {
+  throw new Error(`the fields are nowhere near the target: ${JSON.stringify(farmed)}`);
+}
+// And it is on the ground, not only in the plan: soil, wheat and water.
+if (farmed.standing.soil < 500) throw new Error(`only ${farmed.standing.soil} columns were ploughed`);
+if (farmed.standing.crops < 400) throw new Error(`only ${farmed.standing.crops} columns were sown`);
+if (farmed.standing.water < 20) throw new Error(`only ${farmed.standing.water} columns were watered`);
+// Nobody delivers wheat and nobody is asked for it: the crop is the town's own business.
+const asking = await evaluate(() => window.voxelcraft.villages().flatMap((v) => v.needs));
+console.log('what the towns ask for:', JSON.stringify([...new Set(asking)]));
+if (asking.includes('wheat')) throw new Error('a town is still asking the player for wheat');
+// And the crop goes somewhere: out of the depot and into the shops that sell it. The depot
+// itself usually reads zero, because it is a doorway rather than a barn.
+// And a look at them: a town from above its own belt of wheat, which is the point of
+// their being 23 blocks across and outside the last street.
+await evaluate(() => {
+  const g = window.voxelcraft.game;
+  // The town whose fields are actually on the ground — the hamlet nearby has none, and it
+  // is often the nearest thing to the player.
+  const town = window.voxelcraft.fields().sort((a, b) => b.standing.soil - a.standing.soil)[0];
+  g.player.flying = true;
+  g.player.teleportTo(town.x, g.world.heightAt(town.x, town.z) + 30, town.z + 72);
+  g.player.yaw = 0;
+  g.player.pitch = -0.5;
+});
+await settled();
+await frame();
+await shot('07y-fields');
+
+await advance(() => window.voxelcraft.fields().some((entry) => entry.food.shops > 0));
+const carried = await evaluate(() => window.voxelcraft.fields());
+console.log('where the crop went:', JSON.stringify(carried));
+if (!carried.some((entry) => entry.food.shops > 0)) throw new Error('the harvest reached no shop');
+
+console.log('deposit found:', JSON.stringify(site));
+if (!site) throw new Error('nowhere within reach of the town supports an industry');
+// The survey is a real judgement, not a formality: a place has to hold enough of the
+// resource *and* hold it densely enough.
+if (site.found.some((d) => d.count <= 0 || d.density <= 0)) {
+  throw new Error(`a deposit reported nothing in it: ${JSON.stringify(site.found)}`);
+}
+// And a refusal names what came nearest and which of the two bars it missed, which is the
+// difference between "walk further" and "walk to the middle of what you are standing on".
+const barren = await evaluate(([x, z]) => {
+  const g = window.voxelcraft.game;
+  for (let radius = 30; radius <= 200; radius += 10) {
+    for (let step = 0; step < 12; step++) {
+      const angle = (step * Math.PI) / 6;
+      const bx = Math.round(x + Math.cos(angle) * radius);
+      const bz = Math.round(z + Math.sin(angle) * radius);
+      if (g.world.heightAt(bx, bz) <= 0) continue;
+      const ground = window.voxelcraft.survey(bx, bz);
+      if (ground.found.length === 0) return { x: bx, z: bz, why: ground.why, all: ground.all };
+    }
+  }
+  return null;
+}, [site.x, site.z]);
+console.log('a refusal with a reason:', JSON.stringify(barren && { x: barren.x, z: barren.z, why: barren.why }));
+if (!barren) throw new Error('every place around the deposit supported an industry');
+if (!barren.why) throw new Error('ground that supports nothing gave no reason');
+// Every kind is reported on, qualifying or not: that is what makes the reason a number
+// rather than an apology.
+if (barren.all.length === 0 || barren.all.every((r) => r.short.length === 0)) {
+  throw new Error(`the refusal reported no shortfalls: ${JSON.stringify(barren.all)}`);
+}
+
+const works = await evaluate(([x, z]) => window.voxelcraft.placeIndustry(x, z), [site.x, site.z]);
+console.log('industry built:', JSON.stringify(works));
+if (!works.ok) throw new Error(`the industry would not go up: ${JSON.stringify(works)}`);
+// And no second one on the same deposit: one seam pays once.
+const twice = await evaluate(([x, z]) => window.voxelcraft.placeIndustry(x + 6, z), [site.x, site.z]);
+console.log('a second one on the same deposit:', JSON.stringify(twice));
+if (twice.ok || twice.why !== 'too-close') {
+  throw new Error('two industries were allowed to share one deposit');
+}
+// Taking one back down and putting it up again: the ground is free the moment it goes, and
+// the shed goes with it.
+const undone = await evaluate(() => {
+  const works = window.voxelcraft.industries()[0];
+  // Halfway up the chimney, which is the tallest thing the site built and the one that
+  // makes a works findable from a ridge.
+  const at = { x: works.x - 1, y: works.y + 5, z: works.z - 1 };
+  const before = window.voxelcraft.game.world.getBlock(at.x, at.y, at.z);
+  const gone = window.voxelcraft.removeIndustry(works.id);
+  return {
+    gone,
+    left: window.voxelcraft.industries().length,
+    before,
+    after: window.voxelcraft.game.world.getBlock(at.x, at.y, at.z),
+  };
+});
+console.log('taken back down:', JSON.stringify(undone));
+if (!undone.gone.ok || undone.left !== 0) throw new Error('the industry would not come back down');
+if (undone.before === 0) throw new Error('the site never built a chimney to take down');
+if (undone.after !== 0) throw new Error(`the chimney outlived the industry: ${JSON.stringify(undone)}`);
+const rebuilt = await evaluate(([x, z]) => window.voxelcraft.placeIndustry(x, z), [site.x, site.z]);
+console.log('and put back up:', JSON.stringify(rebuilt));
+if (!rebuilt.ok) throw new Error(`the ground did not come free: ${JSON.stringify(rebuilt)}`);
+
+await evaluate(([x, z]) => window.voxelcraft.teleport(x, z + 12), [site.x, site.z]);
+await settled();
+await evaluate(() => {
+  window.voxelcraft.game.player.pitch = -0.1;
+});
+await frame();
+await shot('07z-industry');
+
+// It digs whether or not anybody has come to collect, and says so by filling up.
+await advance(() => window.voxelcraft.industries()[0].stock > 0);
+console.log('digging:', JSON.stringify(await evaluate(() => window.voxelcraft.industries())));
+// Nothing can leave it until a stop stands there — the ledger says exactly that.
+const unserved = await evaluate(() => window.voxelcraft.ledger().industries);
+console.log('industry before a stop:', JSON.stringify(unserved));
+if (unserved[0].served) throw new Error('an industry with no stop near it claims to be served');
+
+// A stop at the works, a road to the town, and the works on the town's line.
+const spur = await evaluate(([x, z]) => {
+  const q = window.voxelcraft.quest();
+  const g = window.voxelcraft.game;
+  const town = g.villages.get(q.origin);
+  const stop = window.voxelcraft.placeStop(x, z);
+  if (!stop.ok) return { stop };
+  const blocks = window.voxelcraft.pave(x, z, town.x, town.z, 'gravel', 1);
+  const line = window.voxelcraft.makeLine(
+    [stop.id, window.voxelcraft.stops().find((s) => s.town === q.origin).id],
+    '原料線',
+  );
+  return { stop, blocks, line };
+}, [site.x, site.z]);
+console.log('the raw material line:', JSON.stringify(spur));
+if (!spur.stop.ok) throw new Error(`no stop would go down at the works: ${JSON.stringify(spur)}`);
+// The stop out at the works serves the works and no town: that is the whole point of a
+// stop being a place rather than a village.
+if (spur.stop.town !== null) {
+  throw new Error(`the works' stop was adopted by a town: ${JSON.stringify(spur.stop)}`);
+}
+try {
+  await advance(`window.voxelcraft.lines().find((l) => l.name === '原料線')?.legs[0]?.connected === true`);
+} catch (error) {
+  console.log('the spur that would not join:', JSON.stringify(await evaluate(() => ({
+    routes: window.voxelcraft.routes(),
+    faults: window.voxelcraft.guide(),
+    gaps: window.voxelcraft.game.transport.routes.map((r) => ({
+      id: r.id, from: r.gapFrom, to: r.gapTo,
+      near: window.voxelcraft.game.roads.columnsIn(
+        (r.gapFrom?.x ?? 0) - 3, (r.gapFrom?.z ?? 0) - 3,
+        (r.gapFrom?.x ?? 0) + 3, (r.gapFrom?.z ?? 0) + 3,
+      ).length,
+    })),
+  }))));
+  throw error;
+}
+console.log('lines now:', JSON.stringify(await evaluate(() => window.voxelcraft.lines())));
+// And the whole point of all of it: the raw material actually reaches the town.
+await advance(`window.voxelcraft.industries()[0].shipped > 0`);
+// What the light in the world draws: the works' stop tied to the works and to no town, the
+// town's stop tied to its town.
+const links = await evaluate(() => window.voxelcraft.links());
+console.log('what each stop is tied to:', JSON.stringify(links));
+const spurLink = links.stops.find((s) => s.id === spur.stop.id);
+if (!spurLink || spurLink.works === null || spurLink.town !== null) {
+  throw new Error(`the works' stop is not tied to the works alone: ${JSON.stringify(spurLink)}`);
+}
+if (!links.stops.some((s) => s.town !== null)) throw new Error('no stop is tied to a town');
+// And the same question asked of a point nobody has built on yet.
+const ahead = await evaluate(([x, z]) => window.voxelcraft.linkAt(x, z), [site.x, site.z]);
+console.log('what a stop here would be tied to:', JSON.stringify(ahead));
+if (ahead.works === null) throw new Error('a point beside the works would be tied to nothing');
+console.log('the chain running:', JSON.stringify(await evaluate(() => ({
+  industry: window.voxelcraft.industries()[0],
+  town: window.voxelcraft.villages().find((v) => v.id === window.voxelcraft.quest().origin),
+}))));
+await shot('07z2-industry-line');
+
+if (economyOnly) {
+  console.log(errors.length === 0 ? 'NO PAGE ERRORS' : `ERRORS:\n${errors.join('\n')}`);
+  console.log('--economy: stopped after the economy. Run without it for the whole sweep.');
+  await browser.close();
+  process.exit(errors.length === 0 ? 0 : 1);
+}
 
 // Repaving the same road: the route must actually get faster and carry more.
 const dirtRoute = await evaluate(QUEST_ROUTE);
 await evaluate(() => window.voxelcraft.buildRoad(undefined, undefined, 'stone_bricks'));
-await page.waitForFunction(
-  `(${QUEST_ROUTE}?.quality ?? 0) > ${dirtRoute.quality}`,
-  null,
-  { timeout: 30000 },
-);
+await advance(`(${QUEST_ROUTE}?.quality ?? 0) > ${dirtRoute.quality}`);
 const pavedRoute = await evaluate(QUEST_ROUTE);
 console.log('road upgraded:', JSON.stringify({
   before: { grade: dirtRoute.grade, quality: dirtRoute.quality, load: dirtRoute.load },
@@ -620,7 +920,7 @@ await shot('07x2-route-paved');
 // The line the player just paved, drawn on the ground they paved it over.
 await overlook();
 console.log('guide once joined:', JSON.stringify(await evaluate(() => window.voxelcraft.guide())));
-await until(() => {
+await advance(() => {
   const guide = window.voxelcraft.guide();
   return guide.lines > 0 && guide.dashed === 0;
 });
@@ -648,13 +948,13 @@ const bite = await evaluate(() => {
   return { x: best.x, y: best.y, z: best.z, was };
 });
 if (!bite) throw new Error('no road column to take a bite out of');
-await page.waitForFunction(`${QUEST_ROUTE}?.connected === false`, null, { timeout: 30000 });
+await advance(`${QUEST_ROUTE}?.connected === false`);
 console.log('one block dug out:', JSON.stringify({
   at: bite,
   route: await evaluate(QUEST_ROUTE),
 }));
 await evaluate((c) => window.voxelcraft.game.world.setBlock(c.x, c.y, c.z, c.was), bite);
-await page.waitForFunction(`${QUEST_ROUTE}?.connected === true`, null, { timeout: 30000 });
+await advance(`${QUEST_ROUTE}?.connected === true`);
 console.log('and put back:', JSON.stringify(await evaluate(QUEST_ROUTE)));
 
 // --- the road has to be walkable, not merely continuous ----------------------
@@ -666,7 +966,7 @@ console.log('and put back:', JSON.stringify(await evaluate(QUEST_ROUTE)));
  *  what the game says about it. */
 const breakAt = async (place) => {
   const at = await evaluate(place, bite);
-  await page.waitForFunction(`${QUEST_ROUTE}?.connected === false`, null, { timeout: 30000 });
+  await advance(`${QUEST_ROUTE}?.connected === false`);
   return {
     at,
     faults: await evaluate((c) => window.voxelcraft.roadFaults(24)
@@ -691,7 +991,7 @@ await evaluate((c) => {
   g.world.setBlock(c.x, c.y + 2, c.z, 0);
   g.world.setBlock(c.x, c.y, c.z, c.was);
 }, bite);
-await page.waitForFunction(`${QUEST_ROUTE}?.connected === true`, null, { timeout: 30000 });
+await advance(`${QUEST_ROUTE}?.connected === true`);
 
 const overhead = await breakAt((c) => {
   const g = window.voxelcraft.game;
@@ -706,7 +1006,7 @@ if (!overhead.faults.some((f) => f.kind === 'headroom')) {
 }
 await shot('07x5-road-fault');
 await evaluate((c) => window.voxelcraft.game.world.setBlock(c.x, c.y + 2, c.z, 0), bite);
-await page.waitForFunction(`${QUEST_ROUTE}?.connected === true`, null, { timeout: 30000 });
+await advance(`${QUEST_ROUTE}?.connected === true`);
 console.log('cleared again:', JSON.stringify(await evaluate(QUEST_ROUTE)));
 
 // --- laying road by hand -----------------------------------------------------
@@ -770,7 +1070,11 @@ const strips = await evaluate(() => {
   found.sort((a, b) => a.spread - b.spread);
   const picked = [];
   for (const spot of found) {
-    if (picked.every((p) => Math.hypot(p.x - spot.x, p.z - spot.z) > 50)) picked.push(spot);
+    if (!picked.every((p) => Math.hypot(p.x - spot.x, p.z - spot.z) > 50)) continue;
+    // Virgin ground, too. What the sweep is checked on is that it leaves *one* run, and a
+    // strip with somebody's road already at the edge of it starts with two.
+    if (window.voxelcraft.roadColumnsNear(spot.x, spot.z, 44).length > 0) continue;
+    picked.push(spot);
     if (picked.length === 2) break;
   }
   return picked;
@@ -852,7 +1156,7 @@ console.log('before widening:', JSON.stringify({
 }));
 if (onFoot.vehicle !== 'porter') throw new Error('a single track road already runs a cart');
 console.log('widened:', await evaluate(() => window.voxelcraft.widenRoad()));
-await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'cart'`, null, { timeout: 60000 });
+await advance(`${QUEST_ROUTE}?.vehicle === 'cart'`);
 const byCart = await evaluate(QUEST_ROUTE);
 console.log('after widening:', JSON.stringify({
   vehicle: byCart.vehicle, load: byCart.load, climb: byCart.climb, detour: byCart.detour,
@@ -897,7 +1201,7 @@ const pinched = await evaluate(() => {
 });
 if (!pinched) console.log('one waist in the road: NO THREE WIDE SPOT FOUND');
 if (pinched) {
-  await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'porter'`, null, { timeout: 60000 });
+  await advance(`${QUEST_ROUTE}?.vehicle === 'porter'`);
   const narrowed = await evaluate(QUEST_ROUTE);
   console.log('one block out of one side:', JSON.stringify({
     took: pinched.taken.length,
@@ -910,7 +1214,7 @@ if (pinched) {
   await evaluate((list) => {
     for (const c of list) window.voxelcraft.game.world.setBlock(c.x, c.y, c.z, c.was);
   }, pinched.taken);
-  await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'cart'`, null, { timeout: 60000 });
+  await advance(`${QUEST_ROUTE}?.vehicle === 'cart'`);
   console.log('widened back:', await evaluate(() => window.voxelcraft.routes()[0].vehicle));
 }
 
@@ -929,7 +1233,7 @@ console.log('railway laid:', await evaluate(() => window.voxelcraft.buildRailway
 // Rails alone are a line that runs past the villages. Nothing should move until there is
 // somewhere at each end to put freight on and take it off, and the panel should say where
 // to build it — a finished railway that carries nothing is otherwise a silence.
-await until(`${QUEST_ROUTE}?.stationGap !== null`, null, 60000);
+await advance(`${QUEST_ROUTE}?.stationGap !== null`);
 const unmanned = await evaluate(QUEST_ROUTE);
 console.log('rails with no stations:', JSON.stringify({
   vehicle: unmanned.vehicle,
@@ -951,7 +1255,7 @@ console.log('stations built:', JSON.stringify(await evaluate(() => {
     return window.voxelcraft.buildStation(village.x, village.z);
   });
 })));
-await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'train'`, null, { timeout: 60000 });
+await advance(`${QUEST_ROUTE}?.vehicle === 'train'`);
 const manned = await evaluate(QUEST_ROUTE);
 if (manned.stationGap) throw new Error('a line with both stations is still asking for one');
 console.log('stations on the line:', JSON.stringify(
@@ -992,7 +1296,7 @@ const pulled = await evaluate(() => {
 });
 if (!pulled) console.log('one curve out of the line: NO EDGE FOUND');
 if (pulled) {
-  await page.waitForFunction(`${QUEST_ROUTE}?.vehicle !== 'train'`, null, { timeout: 60000 });
+  await advance(`${QUEST_ROUTE}?.vehicle !== 'train'`);
   const broken = await evaluate(QUEST_ROUTE);
   console.log('one curve pulled out of the line:', JSON.stringify({
     edge: pulled.id,
@@ -1022,9 +1326,20 @@ if (pulled) {
       window.voxelcraft.buildStation(village.x, village.z);
     }
   });
-  await page.waitForFunction(`${QUEST_ROUTE}?.vehicle === 'train'`, null, { timeout: 60000 });
+  await advance(`${QUEST_ROUTE}?.vehicle === 'train'`);
   console.log('running again:', await evaluate(QUEST_ROUTE).then((r) => r.vehicle));
 }
+
+// Both of the next two are drawn from where the player is standing — the platforms and the
+// freight on them are only built within drawing distance — so stand at one first. The
+// railway now runs the length of the walk to the hamlet, which is further than the view
+// reaches from wherever the road work left the player.
+await evaluate(() => {
+  const station = window.voxelcraft.stations()[0];
+  if (station) window.voxelcraft.teleport(station.x, station.z + 6);
+});
+await settled();
+await frame();
 
 // And the freight really is out on the rails rather than walking along under them: the
 // mob is a picture of the shipment, and the shipment is where the deck is.
@@ -1146,6 +1461,58 @@ await frame();
 const closest = await evaluate(() => document.querySelector('.worldmap-readout')?.textContent ?? '');
 if (!/1 ドット 1 マス/.test(closest)) throw new Error(`the map would not zoom in: ${closest}`);
 console.log('zoomed in:', closest);
+
+// --- dragging it, and picking a place on it ----------------------------------
+// The map used to be pinned to the player. What has to be true now is that it moves, that
+// it moves the right way, and above all that there is a way back — the reason panning was
+// refused for so long is that a map which can lose you is worse than a small one.
+const mapCentre = async () => {
+  const text = await evaluate(() => document.querySelector('.worldmap-readout')?.textContent ?? '');
+  const [x, z] = text.split('·')[0].split(',').map((n) => parseInt(n.trim(), 10));
+  return { x, z };
+};
+const mapBox = () => evaluate(() => {
+  const r = document.querySelector('.worldmap-canvas-wrap').getBoundingClientRect();
+  return { left: r.left, top: r.top, width: r.width, height: r.height };
+});
+const wasAt = await mapCentre();
+const box = await mapBox();
+await page.mouse.move(box.left + box.width / 2, box.top + box.height / 2);
+await page.mouse.down();
+await page.mouse.move(box.left + box.width / 2 - 180, box.top + box.height / 2 - 110, { steps: 12 });
+await page.mouse.up();
+await frame();
+const dragged = await mapCentre();
+console.log('map dragged:', JSON.stringify({ wasAt, dragged }));
+// Dragged left and up, so the paper follows the hand and the view goes right and down.
+if (!(dragged.x > wasAt.x && dragged.z > wasAt.z)) {
+  throw new Error(`the map moved the wrong way: ${JSON.stringify({ wasAt, dragged })}`);
+}
+const wayBack = await evaluate(() => {
+  const b = document.querySelector('.worldmap-home');
+  return { lit: b.classList.contains('away'), disabled: b.disabled };
+});
+if (!wayBack.lit || wayBack.disabled) throw new Error('the map moved and offered no way back');
+await shot('07y8b-map-dragged');
+
+// A click pins a place and names it; the pin is what a warp would go to.
+await page.mouse.click(box.left + box.width * 0.32, box.top + box.height * 0.68);
+await frame();
+const picked = await evaluate(() => document.querySelector('.worldmap-cursor')?.textContent ?? '');
+console.log('map picked:', picked);
+if (!/^選択 -?\d+, -?\d+$/.test(picked)) throw new Error(`clicking the map picked nothing: ${picked}`);
+if (await evaluate(() => document.querySelector('.worldmap-warp').disabled)) {
+  throw new Error('the warp button is still disabled with a place picked');
+}
+
+// Home puts the player back in the middle.
+await page.keyboard.press('Home');
+await frame();
+const recentred = await mapCentre();
+console.log('map home:', JSON.stringify(recentred));
+if (Math.abs(recentred.x - wasAt.x) > 2 || Math.abs(recentred.z - wasAt.z) > 2) {
+  throw new Error(`Home did not come back: ${JSON.stringify({ wasAt, recentred })}`);
+}
 await page.keyboard.press('KeyM');
 await until(() => document.querySelector('.worldmap')?.style.display === 'none');
 console.log('map closed');
@@ -1807,7 +2174,11 @@ if (back.left !== 2 || back.unlimited !== false || back.badge !== 'none') {
 const ends = await evaluate(() => {
   const g = window.voxelcraft.game;
   const q = window.voxelcraft.quest();
-  const route = g.transport.find(q.origin, q.target);
+  const route = g.transport.routes.find(
+    (r) => (r.from.town === q.origin && r.to.town === q.target)
+      || (r.from.town === q.target && r.to.town === q.origin),
+  );
+  if (!route) return null;
   return {
     fromDoor: route.fromDoor,
     toDoor: route.toDoor,
@@ -1817,7 +2188,8 @@ const ends = await evaluate(() => {
   };
 });
 console.log('route ends:', JSON.stringify(ends));
-if (!ends.startsAtDoor || !ends.endsAtDoor) throw new Error('a route does not run door to door');
+if (!ends) throw new Error('the tutorial leg has gone');
+if (!ends.startsAtDoor || !ends.endsAtDoor) throw new Error('a leg does not run door to door');
 
 // Standing on the road while a shipment runs is the case that used to hang: a visible
 // porter drove the clock, so a mob caught on the ground stopped the line for exactly as
@@ -1832,11 +2204,7 @@ await evaluate(() => {
   window.voxelcraft.teleport(Math.round((a.x + b.x) / 2), Math.round((a.z + b.z) / 2));
 });
 await settled();
-await page.waitForFunction(
-  `(${QUEST_ROUTE}?.delivered ?? 0) > ${beforeWatching}`,
-  null,
-  { timeout: 180000 },
-);
+await advance(`(${QUEST_ROUTE}?.delivered ?? 0) > ${beforeWatching}`);
 console.log('delivered with the player watching:', JSON.stringify({
   before: beforeWatching,
   after: (await evaluate(QUEST_ROUTE)).delivered,
@@ -1904,7 +2272,7 @@ console.log('freight pay: emeralds', purseBefore, '->', purseAfter,
   '/ earned', await evaluate(() => window.voxelcraft.earnings()));
 // The milestone list only opens once the tutorial closes, which the arrival above does.
 // The list itself is the report: nothing in this run earns one.
-await until(() => window.voxelcraft.quest().step === 'done', null, 30000);
+await advance(() => window.voxelcraft.quest().step === 'done');
 console.log('milestones:', JSON.stringify(await evaluate(() => window.voxelcraft.milestones())));
 // The goal after the tutorial has to say what to do about it. Before, it said only
 // "connected routes 1 / 2" and pointed at nothing at all.
@@ -1933,7 +2301,8 @@ if (!survived?.connected) {
     const g = window.voxelcraft.game;
     const q = window.voxelcraft.quest();
     const route = g.transport.routes.find((r) =>
-      (r.from === q.origin && r.to === q.target) || (r.from === q.target && r.to === q.origin));
+      (r.fromTown === q.origin && r.toTown === q.target)
+      || (r.fromTown === q.target && r.toTown === q.origin));
     if (!route) return null;
     const at = route.gapFrom ?? route.gapTo;
     if (!at) return { gapFrom: route.gapFrom, gapTo: route.gapTo, missing: route.missing };
@@ -1981,7 +2350,7 @@ if (spot) {
   await settled();
   // Standing on a shipment is what makes its porter appear. If none does, the log below
   // says so — that is the report, not a reason to stop the run.
-  await until(() => window.voxelcraft.mobs().some((m) => m.kind === 'porter'), null, 20000)
+  await advance(() => window.voxelcraft.mobs().some((m) => m.kind === 'porter'), { seconds: 120 })
     .catch(() => {});
   const porter = await evaluate(() => {
     const mob = window.voxelcraft.mobs().find((m) => m.kind === 'porter');
@@ -2346,7 +2715,7 @@ if (pool) {
     // sure: the depth that gets logged is the settled one either way, and the run stops
     // waiting the moment the water is done.
     const farLevel = `window.voxelcraft.waterAt(${works.far[0]}, ${works.floorY + 1}, ${works.far[1]})`;
-    await until(`${farLevel} > 0`, null, 60000);
+    await advance(`${farLevel} > 0`);
     console.log('water reached the far end:', await farWater());
     await evaluate((w) => {
       const g = window.voxelcraft.game;
@@ -2367,7 +2736,7 @@ if (pool) {
         for (let y = w.floorY + 1; y <= w.surface; y++) g.world.setBlock(x, y, z, 0);
       }
     }, works);
-    await until(`${farLevel} === 0`, null, 60000);
+    await advance(`${farLevel} === 0`);
     console.log('with the gate shut:', await farWater());
     await shot('17-gate-closed');
 
@@ -2375,7 +2744,7 @@ if (pool) {
       const g = window.voxelcraft.game;
       for (let y = w.floorY; y <= w.surface; y++) g.world.setBlock(w.gate[0], y, w.gate[1], 58);
     }, works);
-    await until(`${farLevel} > 0`, null, 60000);
+    await advance(`${farLevel} > 0`);
     console.log('with the gate open:', await farWater());
     await shot('18-gate-open');
 
@@ -2392,7 +2761,7 @@ if (pool) {
     }, works);
     // Water reaching the top of the stack is the claim: it cannot have got there without
     // coming through the stage below it.
-    await until(`window.voxelcraft.waterAt(${pumped.x}, ${pumped.base + 4}, ${pumped.z}) > 0`, null, 60000);
+    await advance(`window.voxelcraft.waterAt(${pumped.x}, ${pumped.base + 4}, ${pumped.z}) > 0`);
     console.log('pump lifted water to:', JSON.stringify(await evaluate((p) => ({
       firstStage: window.voxelcraft.waterAt(p.x, p.base + 2, p.z),
       secondStage: window.voxelcraft.waterAt(p.x, p.base + 4, p.z),
@@ -2791,6 +3160,55 @@ if (developed.raised < 50) throw new Error(`the village put up almost nothing: $
 if (developed.noFloor > 0) throw new Error(`${developed.noFloor} cells of a developed house have no floor`);
 if (developed.floating > 0) throw new Error(`${developed.floating} cells of a developed house stand over a hole`);
 await shot('15-developed');
+
+// --- the town inside the village ---------------------------------------------
+// The village above is now a 都市, which is the only rank that has one of each use. What
+// a Vitest run cannot check is the half of this that is a view: whether a villager is
+// actually put on the street to walk the commute the town is simulating.
+const town = await evaluate(() => window.voxelcraft.town());
+console.log('town:', JSON.stringify({
+  village: town?.village, people: town?.people, buildings: town?.buildings.length,
+  uses: [...new Set((town?.buildings ?? []).map((b) => b.use))],
+}));
+if (!town) throw new Error('a grown village with no town in it');
+const uses = new Set(town.buildings.map((b) => b.use));
+for (const use of ['residential', 'commercial', 'industrial']) {
+  if (!uses.has(use)) throw new Error(`a 都市 with no ${use} building`);
+}
+if (town.people <= 0) throw new Error('a town with nobody in it');
+if (town.short.length === 0) throw new Error('a town that wants nothing');
+
+// A town starts hungry and therefore slow, so the world clock is wound on rather than
+// waited out. Speed multiplies steps, not dt, so this is the same simulation.
+await evaluate(() => window.voxelcraft.setSpeed(16));
+await advance(() => window.voxelcraft.commutes().length > 0);
+// Moving, and drawn: the number advancing is the simulation, the villager is the view,
+// and this is the one place both can be seen to be true at once.
+await advance(() => window.voxelcraft.commutes().some((c) => c.t > 0.05 && c.t < 0.95), { chunk: 1 });
+await advance(() => window.voxelcraft.commutes().some((c) => c.drawn), { chunk: 1 });
+// Somebody arrives, and arriving is what makes a building want something. A shop nobody
+// walks into is the failure this is here to catch: it looks exactly like a working one.
+await advance(() => window.voxelcraft.town().buildings.some((b) => b.staff > 0));
+const commuting = await evaluate(() => ({
+  commutes: window.voxelcraft.commutes(),
+  staffed: window.voxelcraft.town().buildings.filter((b) => b.staff > 0)
+    .map((b) => ({ label: b.label, use: b.use, staff: b.staff })),
+}));
+console.log('commuting:', JSON.stringify(commuting));
+await evaluate(() => window.voxelcraft.setSpeed(1));
+await frame();
+await shot('15b-town');
+
+// And the town is legible: the ledger grows a section for the place underfoot.
+await page.keyboard.press('KeyL');
+await until(() => document.querySelector('.ledger') !== null, null, 10000);
+await frame();
+await shot('15c-town-ledger');
+const ledgerText = await page.locator('.ledger').textContent();
+for (const word of ['の建物', '人口', '働いている人']) {
+  if (!ledgerText.includes(word)) throw new Error(`the ledger has no ${word} in it`);
+}
+await closeScreen();
 
 console.log(errors.length === 0 ? 'NO PAGE ERRORS' : `ERRORS:\n${errors.join('\n')}`);
 await browser.close();

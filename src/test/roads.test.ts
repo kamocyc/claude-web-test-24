@@ -4,6 +4,8 @@ import {
   MAX_STEP,
   RoadNetwork,
   ROAD_BLOCKS,
+  STREET_REACH,
+  townPlace,
   ROAD_SPEED,
   faultSummary,
   roadGrade,
@@ -14,6 +16,13 @@ import { runRoad } from '../game/paving';
 import { Block, type BlockId } from '../world/blocks';
 import { blockIndex, chunkKey, toChunkCoord, toLocalCoord } from '../world/chunk';
 import type { VillageRecord } from '../game/villages';
+
+/** The two ends every road in this file runs between: one column past each town's
+ *  outermost street, so a finished road touches the grid at both ends. Derived rather than
+ *  written down, because the town that decides it is generated geometry. */
+const FROM = STREET_REACH + 1;
+const TO = 240 - STREET_REACH - 1;
+
 
 const GROUND = 60;
 
@@ -60,10 +69,12 @@ class FakeWorld implements RoadWorld {
 
 function village(id: string, x: number, z: number): VillageRecord {
   return {
-    id, x, z, baseY: GROUND, variant: 'plains', name: id, kind: 'farm',
-    produces: 'wheat', input: null, inputStock: 0, needs: [],
+    id, x, z, baseY: GROUND, variant: 'plains', name: id,
+    produces: 'bread', inputs: ['wheat'], inputStock: new Map(), needs: [],
     stage: 0, points: 0, stock: 0, received: 0, discovered: true, spawnedStage: 0,
     progress: 0,
+    harvest: 0,
+    harvestProgress: 0,
   };
 }
 
@@ -75,8 +86,8 @@ const B = village('b', 240, 0);
  *  out from each. */
 function pave(
   world: FakeWorld,
-  from = 31,
-  to = 209,
+  from = FROM,
+  to = TO,
   y = GROUND,
   surface: BlockId = Block.DIRT_PATH,
 ): void {
@@ -107,7 +118,7 @@ describe('road index', () => {
 
   it('rebuilds the same index from the same edits', () => {
     const world = new FakeWorld();
-    pave(world, 31, 60);
+    pave(world, FROM, 60);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     const first = [...roads.columns.entries()].sort();
@@ -197,10 +208,10 @@ describe('road index', () => {
 describe('road quality', () => {
   function qualityOf(surface: BlockId): number {
     const world = new FakeWorld();
-    for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 0, surface);
+    for (let x = FROM; x <= TO; x++) world.lay(x, GROUND, 0, surface);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    const result = roads.survey(A, B);
+    const result = roads.survey(townPlace(A), townPlace(B));
     if (!result.connected) throw new Error('fixture is not connected');
     return result.quality;
   }
@@ -229,7 +240,7 @@ describe('road quality', () => {
     pave(world);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    const result = roads.survey(A, B);
+    const result = roads.survey(townPlace(A), townPlace(B));
     if (!result.connected) throw new Error('fixture is not connected');
     // Two village stubs plus one straight run, once the straight parts are folded away.
     expect(toWaypoints(result.waypoints).length).toBeLessThanOrEqual(4);
@@ -245,49 +256,50 @@ describe('road survey', () => {
     pave(world);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    const result = roads.survey(A, B);
+    const result = roads.survey(townPlace(A), townPlace(B));
     expect(result.connected).toBe(true);
     if (!result.connected) return;
-    // Street end to street end: 30 -> 210.
-    expect(result.length).toBeCloseTo(180);
-    expect(result.waypoints[0].x).toBeLessThanOrEqual(A.x + 30);
-    expect(result.waypoints[result.waypoints.length - 1].x).toBeGreaterThanOrEqual(B.x - 30);
+    // Street end to street end, which is the gap between the two towns' street grids.
+    expect(result.length).toBeCloseTo(B.x - A.x - STREET_REACH * 2);
+    expect(result.waypoints[0].x).toBeLessThanOrEqual(A.x + STREET_REACH + 1);
+    expect(result.waypoints[result.waypoints.length - 1].x)
+      .toBeGreaterThanOrEqual(B.x - STREET_REACH - 1);
   });
 
   it('refuses a road with a single block missing', () => {
     const world = new FakeWorld();
-    pave(world, 31, 119);
-    pave(world, 121, 209);
+    pave(world, FROM, 119);
+    pave(world, 121, TO);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    expect(roads.survey(A, B).connected).toBe(false);
+    expect(roads.survey(townPlace(A), townPlace(B)).connected).toBe(false);
   });
 
   it('follows a road round a corner', () => {
     const world = new FakeWorld();
-    for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 40, Block.DIRT_PATH);
-    for (let z = 0; z <= 40; z++) world.lay(31, GROUND, z, Block.DIRT_PATH);
-    for (let z = 0; z <= 40; z++) world.lay(209, GROUND, z, Block.DIRT_PATH);
+    for (let x = FROM; x <= TO; x++) world.lay(x, GROUND, 40, Block.DIRT_PATH);
+    for (let z = 0; z <= 40; z++) world.lay(FROM, GROUND, z, Block.DIRT_PATH);
+    for (let z = 0; z <= 40; z++) world.lay(TO, GROUND, z, Block.DIRT_PATH);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    expect(roads.survey(A, B).connected).toBe(true);
+    expect(roads.survey(townPlace(A), townPlace(B)).connected).toBe(true);
   });
 
   it('takes a road up a slope but not up a wall', () => {
     // A hill in the middle: two blocks up per step for twenty steps, then back down.
     const gentle = new FakeWorld();
     const height = (x: number): number => GROUND + MAX_STEP * Math.max(0, 20 - Math.abs(120 - x));
-    for (let x = 31; x <= 209; x++) gentle.lay(x, height(x), 0, Block.DIRT_PATH);
+    for (let x = FROM; x <= TO; x++) gentle.lay(x, height(x), 0, Block.DIRT_PATH);
     const up = new RoadNetwork(gentle);
     up.seedFromEdits();
-    expect(up.survey(A, B).connected).toBe(true);
+    expect(up.survey(townPlace(A), townPlace(B)).connected).toBe(true);
 
     const steep = new FakeWorld();
-    pave(steep, 31, 119);
-    pave(steep, 120, 209, GROUND + MAX_STEP + 1);
+    pave(steep, FROM, 119);
+    pave(steep, 120, TO, GROUND + MAX_STEP + 1);
     const wall = new RoadNetwork(steep);
     wall.seedFromEdits();
-    expect(wall.survey(A, B).connected).toBe(false);
+    expect(wall.survey(townPlace(A), townPlace(B)).connected).toBe(false);
   });
 
   it('crosses water on a bridge, because a bridge is blocks somebody laid', () => {
@@ -297,16 +309,16 @@ describe('road survey', () => {
     for (let x = 100; x <= 140; x++) world.setGround(x, 0, 40);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    expect(roads.survey(A, B).connected).toBe(true);
+    expect(roads.survey(townPlace(A), townPlace(B)).connected).toBe(true);
   });
 
   it('reports where each side runs out when the road is unfinished', () => {
     const world = new FakeWorld();
-    pave(world, 31, 110);
-    pave(world, 170, 209);
+    pave(world, FROM, 110);
+    pave(world, 170, TO);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    const result = roads.survey(A, B);
+    const result = roads.survey(townPlace(A), townPlace(B));
     expect(result.connected).toBe(false);
     if (result.connected) return;
     expect(result.frontierFrom.x).toBe(110);
@@ -318,11 +330,12 @@ describe('road survey', () => {
     const world = new FakeWorld();
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    const result = roads.survey(A, B);
+    const result = roads.survey(townPlace(A), townPlace(B));
     expect(result.connected).toBe(false);
     if (result.connected) return;
-    expect(result.frontierFrom.x).toBe(30);
-    expect(result.frontierTo.x).toBe(210);
+    // Nothing is laid, so each end is still standing on its own outermost street.
+    expect(result.frontierFrom.x).toBe(A.x + STREET_REACH);
+    expect(result.frontierTo.x).toBe(B.x - STREET_REACH);
   });
 
   it('gives the same answer whether or not the chunks are loaded', () => {
@@ -330,10 +343,10 @@ describe('road survey', () => {
     pave(world);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    const away = roads.survey(A, B);
+    const away = roads.survey(townPlace(A), townPlace(B));
     for (let x = 0; x <= 240; x += 16) world.load(x, 0);
     roads.seedFromEdits();
-    const nearby = roads.survey(A, B);
+    const nearby = roads.survey(townPlace(A), townPlace(B));
     expect(nearby.connected).toBe(away.connected);
   });
 });
@@ -368,28 +381,29 @@ describe('a road goes up, down, left and right', () => {
     // as a road at a glance and is not one — and allowing it was where every awkward
     // corner of the width rule came from.
     const world = new FakeWorld();
-    for (let i = 0; i <= 178; i++) world.lay(31 + i, GROUND, i, Block.DIRT_PATH);
+    for (let i = 0; i <= 178; i++) world.lay(FROM + i, GROUND, i, Block.DIRT_PATH);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     expect(roads.columns.size).toBe(179);
     // Every column is indexed, and no two of them are one road.
     const a = village('a', 0, 0);
     const b = village('b', 240, 178);
-    expect(roads.survey(a, b).connected).toBe(false);
+    expect(roads.survey(townPlace(a), townPlace(b)).connected).toBe(false);
   });
 
   it('joins them once the corner is filled in', () => {
     const world = new FakeWorld();
-    for (let i = 0; i <= 178; i++) {
-      world.lay(31 + i, GROUND, i, Block.DIRT_PATH);
+    const rise = TO - FROM;
+    for (let i = 0; i <= rise; i++) {
+      world.lay(FROM + i, GROUND, i, Block.DIRT_PATH);
       // The step that turns a staircase from a diagonal into a road.
-      if (i > 0) world.lay(31 + i, GROUND, i - 1, Block.DIRT_PATH);
+      if (i > 0) world.lay(FROM + i, GROUND, i - 1, Block.DIRT_PATH);
     }
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     const a = village('a', 0, 0);
-    const b = village('b', 240, 178);
-    expect(roads.survey(a, b).connected).toBe(true);
+    const b = village('b', 240, rise);
+    expect(roads.survey(townPlace(a), townPlace(b)).connected).toBe(true);
   });
 });
 
@@ -399,9 +413,9 @@ describe('the step and the headroom', () => {
    *  is ever in question. */
   function withStep(rise: number): RoadNetwork {
     const world = new FakeWorld();
-    for (let x = 31; x <= 120; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
-    for (let x = 121; x <= 209; x++) {
-      world.lay(x, GROUND + Math.min(rise, 209 - x), 0, Block.DIRT_PATH);
+    for (let x = FROM; x <= 120; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    for (let x = 121; x <= TO; x++) {
+      world.lay(x, GROUND + Math.min(rise, TO - x), 0, Block.DIRT_PATH);
     }
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
@@ -409,13 +423,13 @@ describe('the step and the headroom', () => {
   }
 
   it('walks up a step a porter can climb', () => {
-    expect(withStep(MAX_STEP).survey(A, B).connected).toBe(true);
+    expect(withStep(MAX_STEP).survey(townPlace(A), townPlace(B)).connected).toBe(true);
   });
 
   it('refuses one it cannot', () => {
     // The rule is the walker's, not the index's: a two block riser is a road that reads
     // as connected and walks as a dead end, which is what used to strand a porter.
-    const result = withStep(MAX_STEP + 1).survey(A, B);
+    const result = withStep(MAX_STEP + 1).survey(townPlace(A), townPlace(B));
     expect(result.connected).toBe(false);
     if (result.connected) return;
     expect(result.nearMiss).not.toBeNull();
@@ -438,7 +452,7 @@ describe('the step and the headroom', () => {
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     expect(roads.columns.has('120,0')).toBe(false);
-    expect(roads.survey(A, B).connected).toBe(false);
+    expect(roads.survey(townPlace(A), townPlace(B)).connected).toBe(false);
     expect(roads.faults(120, 0, 4)).toEqual([
       { x: 120, z: 0, y: GROUND, kind: 'headroom' },
     ]);
@@ -453,7 +467,7 @@ describe('the step and the headroom', () => {
     world.lay(120, GROUND + HEADROOM, 0, Block.AIR);
     roads.onBlockChanged(120, GROUND + HEADROOM, 0, Block.OAK_LEAVES, Block.AIR);
     expect(roads.columns.get('120,0')).toBe(GROUND);
-    expect(roads.survey(A, B).connected).toBe(true);
+    expect(roads.survey(townPlace(A), townPlace(B)).connected).toBe(true);
     expect(roads.faults(120, 0, 4)).toEqual([]);
   });
 });
@@ -464,17 +478,17 @@ describe('climbing costs time', () => {
     // that has to be climbed and dropped again, one a little longer and level all the
     // way. The longer one is the one a walker gets there first on.
     const world = new FakeWorld();
-    for (let x = 31; x <= 209; x++) {
+    for (let x = FROM; x <= TO; x++) {
       const rise = Math.max(0, 20 - Math.abs(120 - x));
       world.lay(x, GROUND + rise, 0, Block.DIRT_PATH);
     }
     // The detour: out to z=12, along, and back. Level throughout.
-    for (let z = 0; z <= 12; z++) world.lay(31, GROUND, z, Block.DIRT_PATH);
-    for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 12, Block.DIRT_PATH);
-    for (let z = 0; z <= 12; z++) world.lay(209, GROUND, z, Block.DIRT_PATH);
+    for (let z = 0; z <= 12; z++) world.lay(FROM, GROUND, z, Block.DIRT_PATH);
+    for (let x = FROM; x <= TO; x++) world.lay(x, GROUND, 12, Block.DIRT_PATH);
+    for (let z = 0; z <= 12; z++) world.lay(TO, GROUND, z, Block.DIRT_PATH);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    const result = roads.survey(A, B);
+    const result = roads.survey(townPlace(A), townPlace(B));
     if (!result.connected) throw new Error('fixture is not connected');
     expect(result.climb).toBe(0);
     expect(result.waypoints.some((p) => p.z === 12)).toBe(true);
@@ -482,12 +496,12 @@ describe('climbing costs time', () => {
 
   it('drags a staircase road down to a track', () => {
     const world = new FakeWorld();
-    for (let x = 31; x <= 209; x++) {
+    for (let x = FROM; x <= TO; x++) {
       world.lay(x, GROUND + (x % 2), 0, Block.STONE_BRICKS);
     }
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    const result = roads.survey(A, B);
+    const result = roads.survey(townPlace(A), townPlace(B));
     if (!result.connected) throw new Error('fixture is not connected');
     expect(result.climb).toBeGreaterThan(100);
     // Stone brick is the best surface there is, and up-and-down all the way still makes
@@ -500,7 +514,7 @@ describe('climbing costs time', () => {
     pave(world);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    const result = roads.survey(A, B);
+    const result = roads.survey(townPlace(A), townPlace(B));
     if (!result.connected) throw new Error('fixture is not connected');
     expect(result.direct).toBeCloseTo(result.length, 5);
   });
@@ -511,7 +525,7 @@ describe('a road wide enough for a cart', () => {
   function band(width: number, gapAt: number | null = null): RoadNetwork {
     const world = new FakeWorld();
     const span = Math.floor((width - 1) / 2);
-    for (let x = 31; x <= 209; x++) {
+    for (let x = FROM; x <= TO; x++) {
       for (let z = -span; z <= span; z++) {
         if (gapAt !== null && x === gapAt && z !== 0) continue;
         world.lay(x, GROUND, z, Block.DIRT_PATH);
@@ -523,20 +537,20 @@ describe('a road wide enough for a cart', () => {
   }
 
   it('runs a cart down three columns', () => {
-    const result = band(3).survey(A, B);
+    const result = band(3).survey(townPlace(A), townPlace(B));
     if (!result.connected) throw new Error('fixture is not connected');
     expect(result.cart.ok).toBe(true);
   });
 
   it('will not run one down a single track', () => {
-    const result = band(1).survey(A, B);
+    const result = band(1).survey(townPlace(A), townPlace(B));
     if (!result.connected) throw new Error('fixture is not connected');
     expect(result.cart.ok).toBe(false);
   });
 
   it('points at the pinch when one block of the width is missing', () => {
     const roads = band(3, 120);
-    const result = roads.survey(A, B);
+    const result = roads.survey(townPlace(A), townPlace(B));
     if (!result.connected) throw new Error('a narrow road still carries a porter');
     if (result.cart.ok) throw new Error('one narrow column should stop a cart');
     // The wide network stops just short of the waist, which is where to go and widen.
@@ -558,7 +572,7 @@ describe('a road wide enough for a cart', () => {
     // the cart stops. A road only joins up left, right, up and down, so there is no way
     // round it any more.
     const world = new FakeWorld();
-    for (let x = 31; x <= 209; x++) {
+    for (let x = FROM; x <= TO; x++) {
       for (let z = -1; z <= 1; z++) {
         if (x === 120 && z === 1) continue;
         world.lay(x, GROUND, z, Block.DIRT_PATH);
@@ -566,7 +580,7 @@ describe('a road wide enough for a cart', () => {
     }
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    const result = roads.survey(A, B);
+    const result = roads.survey(townPlace(A), townPlace(B));
     if (!result.connected) throw new Error('a road with a dent still carries a porter');
     expect(result.cart.ok).toBe(false);
     if (result.cart.ok) return;
@@ -576,12 +590,12 @@ describe('a road wide enough for a cart', () => {
 
   it('and fills the hole back in', () => {
     const world = new FakeWorld();
-    for (let x = 31; x <= 209; x++) {
+    for (let x = FROM; x <= TO; x++) {
       for (let z = -1; z <= 1; z++) world.lay(x, GROUND, z, Block.DIRT_PATH);
     }
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
-    const result = roads.survey(A, B);
+    const result = roads.survey(townPlace(A), townPlace(B));
     if (!result.connected) throw new Error('fixture is not connected');
     expect(result.cart.ok).toBe(true);
   });
@@ -609,7 +623,7 @@ describe('walking from a doorway onto the road', () => {
     const world = new FakeWorld();
     // A spur out of a doorway, then the road proper.
     for (let z = 1; z <= 6; z++) world.lay(40, GROUND, z, Block.DIRT_PATH);
-    for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    for (let x = FROM; x <= TO; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
     world.lay(40, GROUND, 0, Block.DIRT_PATH);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
@@ -621,7 +635,7 @@ describe('walking from a doorway onto the road', () => {
 
   it('says so when there is no way at all', () => {
     const world = new FakeWorld();
-    for (let x = 31; x <= 209; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    for (let x = FROM; x <= TO; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
     const roads = new RoadNetwork(world);
     roads.seedFromEdits();
     expect(roads.pathBetween({ x: 40, z: 20, y: GROUND }, { x: 40, z: 0, y: GROUND }, 32)).toBeNull();
@@ -638,8 +652,8 @@ describe('the road builder and the width rule agree', () => {
     const a = village('a', 0, 0);
     const b = village('b', 200, 160);
     const roads = new RoadNetwork(world);
-    const start = roads.streetPoint(a, b.x, b.z);
-    const end = roads.streetPoint(b, a.x, a.z);
+    const start = roads.streetPoint(townPlace(a), b.x, b.z);
+    const end = roads.streetPoint(townPlace(b), a.x, a.z);
     runRoad(
       { ground: () => GROUND, lay: (x, y, z) => world.lay(x, y, z, Block.DIRT_PATH) },
       start, end, GROUND, MAX_STEP, 0, GROUND, width,
@@ -650,7 +664,7 @@ describe('the road builder and the width rule agree', () => {
 
   it('runs a cart the whole length of a road it laid three wide', () => {
     const { roads, a, b } = built(3);
-    const result = roads.survey(a, b);
+    const result = roads.survey(townPlace(a), townPlace(b));
     if (!result.connected) throw new Error('fixture is not connected');
     expect(result.cart.ok).toBe(true);
   });
@@ -664,8 +678,8 @@ describe('the road builder and the width rule agree', () => {
     const a = village('a', 0, 0);
     const b = village('b', 200, 160);
     const roads = new RoadNetwork(world);
-    const start = roads.streetPoint(a, b.x, b.z);
-    const end = roads.streetPoint(b, a.x, a.z);
+    const start = roads.streetPoint(townPlace(a), b.x, b.z);
+    const end = roads.streetPoint(townPlace(b), a.x, a.z);
     runRoad(
       {
         ground: (x) => GROUND + Math.floor((x - start.x) / 2),
@@ -674,15 +688,61 @@ describe('the road builder and the width rule agree', () => {
       start, end, GROUND, MAX_STEP / 2, 0, GROUND, 3,
     );
     roads.seedFromEdits();
-    const result = roads.survey(a, b);
+    const result = roads.survey(townPlace(a), townPlace(b));
     if (!result.connected) throw new Error('fixture is not connected');
     expect(result.cart.ok).toBe(true);
   });
 
   it('and none down the same road laid single track', () => {
     const { roads, a, b } = built(1);
-    const result = roads.survey(a, b);
+    const result = roads.survey(townPlace(a), townPlace(b));
     if (!result.connected) throw new Error('fixture is not connected');
     expect(result.cart.ok).toBe(false);
+  });
+});
+
+describe('a survey between stops rather than towns', () => {
+  /** A stop standing on open ground: no town's streets around it, just the road it was
+   *  put down beside. */
+  function stopAt(id: string, x: number, z: number) {
+    return { id, x, z, baseY: GROUND, town: null };
+  }
+
+  it('joins two stops down a road that touches neither town', () => {
+    const world = new FakeWorld();
+    // Well away from either town, so nothing about this can be a town's own streets.
+    for (let x = 400; x <= 500; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world);
+    roads.seedFromEdits();
+    const result = roads.survey(stopAt('a', 401, 0), stopAt('b', 499, 0));
+    expect(result.connected).toBe(true);
+  });
+
+  it('will not join one that the road stops short of', () => {
+    const world = new FakeWorld();
+    for (let x = 400; x <= 500; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world);
+    roads.seedFromEdits();
+    // A stop out in the field owns the columns beside it and no more, so one put down
+    // well off the end of the road is not on it.
+    expect(roads.survey(stopAt('a', 401, 0), stopAt('b', 540, 0)).connected).toBe(false);
+  });
+
+  it('reaches a road a few blocks from where the stop was put down', () => {
+    const world = new FakeWorld();
+    for (let x = 400; x <= 500; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world);
+    roads.seedFromEdits();
+    // Beside the road rather than on it, which is where a stop actually goes.
+    expect(roads.survey(stopAt('a', 402, 2), stopAt('b', 498, 2)).connected).toBe(true);
+  });
+
+  it('joins a stop in a town to one out in the country', () => {
+    const world = new FakeWorld();
+    for (let x = FROM; x <= 300; x++) world.lay(x, GROUND, 0, Block.DIRT_PATH);
+    const roads = new RoadNetwork(world);
+    roads.seedFromEdits();
+    // A's streets seed one end; the lone stop's own columns seed the other.
+    expect(roads.survey(townPlace(A), stopAt('far', 299, 0)).connected).toBe(true);
   });
 });

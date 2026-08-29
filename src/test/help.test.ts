@@ -4,7 +4,13 @@ import { MILESTONES, QUEST_STEPS } from '../game/questline';
 import { BLOCKS_PER_PORTER, CART_LOAD, MAX_PORTERS, TRAIN_LOAD } from '../game/transport';
 import { MAX_STOCK, PRODUCE_SECONDS, RANKS, STAGE_POINTS } from '../game/villages';
 import { HEADROOM, MAX_STEP, ROAD_SPEED } from '../game/roads';
+import { CELL_STOCK, COMMUTE_EVERY, HOME_PEOPLE, HOUSEHOLD_GOODS } from '../game/townEconomy';
+import { USE_LABELS } from '../game/buildings';
+import { itemLabel } from '../game/items';
 import { MAX_SWITCH_ANGLE } from '../game/tracks';
+import { MAX_LINE_STOPS, STOP_SPACING } from '../game/lines';
+import { DEPOSIT_RADIUS, INDUSTRY_TYPES } from '../game/industry';
+import { FIELD_SIZE } from '../world/generation/fields';
 
 function view(step: Parameters<typeof helpView>[0]['step'], milestone = 0) {
   return helpView({ step, milestone, objective: null });
@@ -64,12 +70,39 @@ describe('the 遊びかた screen', () => {
   it('says what makes goods actually move', () => {
     const body = text(view('done', 0));
     expect(body).toContain('荷が出る条件');
-    expect(body).toContain('工房の村は原料が届くまで 1 個も作らない');
+    // The one rule that is different from every other game like this, said first and
+    // said plainly: a finished road on its own carries nothing.
+    expect(body).toContain('道があるだけでは荷は 1 個も動かない');
+    expect(body).toContain('原料が **全種類** そろうまで 1 個も作らない');
     expect(body).toContain('在庫が 1 個でもあれば荷は出発する');
-    expect(body).toContain('荷は在庫のあるほうの村から出る');
+    expect(body).toContain('荷は在庫のあるほうの端から出る');
     expect(body).toContain(`${PRODUCE_SECONDS} 秒`);
     expect(body).toContain(`${MAX_STOCK} 個`);
     expect(body).toContain(`${BLOCKS_PER_PORTER} ブロックごとに 1 人、最大 ${MAX_PORTERS} 人`);
+  });
+
+  it('explains the two things the player now builds that no road can replace', () => {
+    const body = text(view('done', 0));
+    expect(body).toContain('停留所と路線');
+    expect(body).toContain('一次産業');
+    // The numbers, out of the systems rather than typed here.
+    expect(body).toContain(`${MAX_LINE_STOPS} か所まで`);
+    expect(body).toContain(`${STOP_SPACING} マス以上離す`);
+    expect(body).toContain(`周囲 ${DEPOSIT_RADIUS} マス`);
+    for (const type of INDUSTRY_TYPES) expect(body).toContain(type.label);
+    // Both halves of a deposit count, and the page has to say so or an outcrop is just
+    // scenery the player walks past.
+    expect(body).toContain('地中の鉱脈も、地表に出ている露頭も');
+  });
+
+  it('explains the one thing the player does not build — the fields', () => {
+    const body = text(view('done', 0));
+    expect(body).toContain('畑と食料');
+    expect(body).toContain(`1 区画 ${FIELD_SIZE}×${FIELD_SIZE} マス`);
+    expect(body).toContain('2 倍の面積');
+    // Where the crop goes, which is the whole of what the player needs to know about it.
+    expect(body).toContain('集荷所の在庫');
+    expect(body).toContain('商店');
   });
 
   it('explains the two halves of a signalled railway', () => {
@@ -100,5 +133,32 @@ describe('the 遊びかた screen', () => {
       objective: { title: 'つなぐ', detail: 'あと 12m' },
     });
     expect(v.objective).toEqual({ title: 'つなぐ', detail: 'あと 12m' });
+  });
+});
+
+describe('the town section', () => {
+  const section = view('done').sections.find((s) => s.heading.startsWith('町の中'));
+
+  it('names all three uses and what is inside them', () => {
+    expect(section).toBeDefined();
+    const rows = section?.table?.rows ?? [];
+    expect(rows.map((r) => r[0])).toEqual([
+      USE_LABELS.residential, USE_LABELS.commercial, USE_LABELS.industrial,
+    ]);
+    // Straight off the implementation, so tuning the town does not leave the manual lying.
+    expect(rows[0][1]).toBe(`${HOME_PEOPLE}`);
+  });
+
+  it('takes its numbers and its shopping lists from the code', () => {
+    const words = [section?.heading, ...(section?.notes ?? [])].join('\n');
+    expect(words).toContain(`${COMMUTE_EVERY} 秒`);
+    expect(words).toContain(`${CELL_STOCK} 個`);
+    for (const good of HOUSEHOLD_GOODS) expect(words).toContain(itemLabel(good));
+  });
+
+  it('says the thing a player cannot see for themselves', () => {
+    // A shop nobody walks into looks exactly like a shop that is doing fine, and that is
+    // the one rule of the town nothing in the world can show.
+    expect(text(view('done'))).toContain('人が来た建物だけが品物を使う');
   });
 });

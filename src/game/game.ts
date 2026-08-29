@@ -99,6 +99,7 @@ import {
   ROAD_SPEED,
   RoadNetwork,
   faultText,
+  townPlace,
   type RoadFault,
   type RoadPoint,
 } from './roads';
@@ -141,25 +142,46 @@ import {
   type Vehicle,
 } from './transport';
 import {
+  FARMED,
+  PASSENGER,
+  PASSENGER_LABEL,
   STAGE_POINTS,
   VillageRegistry,
   displayName,
-  kindLabel,
   radiusOf,
   rankLabel,
   villageId,
+  type GoodId,
   type VillageId,
   type VillageRecord,
 } from './villages';
-import type { LedgerView } from '../ui/ledger';
+import { CELL_STOCK, TownEconomy, type Commute } from './townEconomy';
+import { LineNetwork, MAX_LINE_STOPS, STOP_SPACING, STOP_TOWN_REACH, type Stop } from './lines';
+import { networkSites, STOP_SITE_REACH } from './sites';
+import {
+  INDUSTRY_SPACING,
+  IndustryRegistry,
+  MAX_INDUSTRY_STOCK,
+  depositMissReason,
+  industryType,
+  surveyGround,
+  type Industry,
+} from './industry';
+import type { LedgerTown, LedgerView } from '../ui/ledger';
 import type { RouteIdle } from '../ui/routePanel';
+import type { LineActions, LinePanelView } from '../ui/linePanel';
 import { helpView, type HelpView } from '../ui/help';
+import { applyFields, countFields } from './villageFields';
+import { fieldArea, fieldTarget, fieldsAt } from '../world/generation/fields';
 import { applyGrowth, growthChunks, growthFor, growthVillagers, outpostBuildings, ownPaving, roadCrosses } from './villageGrowth';
 import {
   buildingAt,
   buildingsOf,
   depotOf,
   describeBuilding,
+  pathAroundPlots,
+  pointAlongPath,
+  useLabel,
   type VillageBuilding,
 } from './buildings';
 import { outpostRecord, outpostSite } from './outpost';
@@ -169,12 +191,13 @@ import { biomeDef } from '../world/generation/biome';
 const UNLOAD_MARGIN = 2;
 const REACH = 5;
 
-/** Villages further apart than this are not worth a porter walking between them, so the
- *  network never watches a pair it would never run. */
-const AUTO_ROUTE_RANGE = 900;
-/** A ceiling on watched pairs, so a very well explored world cannot make surveying the
- *  network expensive. */
-const MAX_ROUTES = 24;
+/** How near the player has to be to put a stop down or take one back up. The same reach
+ *  the rest of the world uses for placing things, so it needs no explaining. */
+const STOP_REACH = 6;
+/** How near the player has to be to take an industry back down, and how far from its
+ *  middle a block still counts as part of it. A works is a seven-by-seven yard, so this is
+ *  its far corner and a step: pointing anywhere at one is pointing at it. */
+const INDUSTRY_REACH = 8;
 const ATTACK_REACH = 3.6;
 const AUTOSAVE_SECONDS = 30;
 /** Half the span the minimap covers, so only nearby roads are handed to it. */
@@ -197,11 +220,43 @@ const GUIDE_NARROW = 0xffc457;
 /** Where the railway runs out. Violet, because amber already means "too narrow" and red
  *  already means "does not count" — three different jobs need three different colours. */
 const GUIDE_RAILGAP = 0xb08cff;
+/** How near the player has to be for the people walking across a town to be worth
+ *  drawing. Shorter than a porter's `PORTER_VISIBLE`, because a commute is a walk between
+ *  two doorways rather than a line across the map: somebody outside this is not just far
+ *  away, they are in a town the player is not standing in. */
+const COMMUTE_VISIBLE = 48;
+
 /** The station that is not built yet. A warmer violet than the railhead's, because the
  *  two are next door to each other and the answer to them is not the same. */
 const GUIDE_STATION = 0xff9adf;
 /** The doorway a route loads and unloads at. */
 const GUIDE_DEPOT = 0xffd479;
+/** The tether between a stop or a station and the town or industry it is judged to serve.
+ *  Cyan, because it is the only thing on the guide that is not about a road at all. */
+const GUIDE_LINK = 0x35c8ff;
+/** And one that is judged to serve nothing: a stop the player put down that no town and no
+ *  works can be loaded through. Grey rather than red — it is a legitimate thing to be
+ *  halfway through building, not a fault. */
+const GUIDE_NOLINK = 0x9aa4b0;
+/** How far a tether is worth drawing. About a screen: this answers a question about the
+ *  place the player is standing in. */
+const LINK_VISIBLE = 110;
+
+/** A rail end's floating-point position, on the block grid the guide draws on. */
+function roundPoint(point: TrackPoint): { x: number; y: number; z: number } {
+  return { x: Math.round(point.x), y: Math.round(point.y), z: Math.round(point.z) };
+}
+
+/** What a stop at a point is attached to, or would be.
+ *
+ *  Both nearest are kept whether or not they are in reach, so "this reaches nothing" can
+ *  say how far off it is instead of only that it is. */
+interface StopLink {
+  town: VillageRecord | null;
+  works: Industry | null;
+  nearTown: { village: VillageRecord; distance: number } | null;
+  nearWorks: { works: Industry; distance: number } | null;
+}
 /** A railway held at a signal that is never going to clear. Amber, matching the lamp on
  *  the signal itself, because they are one thing seen from two distances. */
 const GUIDE_STALL = 0xf5c02a;
@@ -278,6 +333,9 @@ const SAMPLE_TRACK_SPARE = 24;
  *  put down in the wrong place is picked back up, but a player who has to work that out
  *  before they can finish the line has been charged for a rule they were still learning. */
 const SAMPLE_STATIONS = 2;
+/** Stops the sample world hands over spare, so the invitation is "extend this", not
+ *  "start again". */
+const SAMPLE_STOPS = 4;
 /** How far to one side of the sample road its railway runs.
  *
  *  Not on top of it. The road and the railway are the two halves of the demonstration and
@@ -315,6 +373,9 @@ const FAULT_REACH = 40;
 /** Milliseconds a frame will spend running the world forward before it gives up on the
  *  rest of the requested speed. Roughly half a 30fps frame. */
 const WORLD_BUDGET_MS = 12;
+/** Stops the town hands over when it explains what a line is. Exactly the two a first
+ *  line needs — the third is the player's to make. */
+const TUTORIAL_STOPS = 2;
 /** What a brand new world hands the player, and how much of each. */
 const STARTING_KIT: readonly string[] = ['oak_planks', 'dirt'];
 const STARTING_COUNT = 32;
@@ -409,6 +470,13 @@ export class Game {
   private readonly villageBuildings = new Map<string, { stage: number; roads: number; list: VillageBuilding[] }>();
   /** The building the player is looking at, refreshed with the rest of the interaction. */
   private lookedAt: { building: VillageBuilding; village: VillageRecord } | null = null;
+  /** The industry under the crosshair. Kept apart from `lookedAt` because an industry is
+   *  not in a village and is found by distance rather than by plot. */
+  private lookedAtWorks: Industry | null = null;
+  /** The block the crosshair is on, within the player's reach. */
+  private aimHit: RaycastHit | null = null;
+  /** The rail end the crosshair is on, while a station is in hand. */
+  private aimNode: TrackNode | null = null;
   private focusCache: { at: number; route: Route | undefined } = { at: -1e9, route: undefined };
   private readonly effects: Effects;
   private readonly sky: Sky;
@@ -463,8 +531,23 @@ export class Game {
   /** The village economy: who makes what, which roads link them, and what the tutorial
    *  is currently asking for. */
   private readonly villages: VillageRegistry;
+  /** What is going on inside those villages: who lives where, what each building wants,
+   *  and who is walking across town to work. */
+  private readonly towns: TownEconomy;
+  /** Commuter mobs by the commute they are drawing, keyed the way porters are. */
+  private readonly commuterMobs = new Map<number, Mob>();
+  /** The walk each commute is following. Weak, so it goes when the commute does. */
+  private readonly commutePaths = new WeakMap<Commute, { x: number; y: number; z: number }[]>();
   private readonly roads: RoadNetwork;
   private readonly transport: TransportNetwork;
+  /** The service the player has designed, and the places it calls at. */
+  private readonly lines = new LineNetwork();
+  /** Which revision of that the legs were last rebuilt from. */
+  private linesAt = -1;
+  /** Which line the line table's 「加える」 buttons add to. */
+  private selectedLine: string | null = null;
+  /** The primary industries they have sited. */
+  private readonly industries = new IndustryRegistry();
   private readonly questline = new Questline();
   /** Villagers a village earned by growing whose chunk was not loaded at the time. */
   private readonly pendingVillagers: { x: number; y: number; z: number; profession: string }[] = [];
@@ -481,7 +564,17 @@ export class Game {
     this.generator = new TerrainGenerator(options.seed);
     this.light = new LightEngine(this.world);
     this.water = new WaterSimulator(this.world);
-    this.villages = new VillageRegistry(options.seed, this.generator);
+    // The town is built first and handed to the registry, so a delivery reaches the
+    // buildings that asked for it without the registry ever learning what a building is.
+    // `buildingsOf` is read through a closure rather than captured because the building
+    // list is rebuilt whenever a road block moves.
+    this.towns = new TownEconomy(options.seed, {
+      buildingsOf: (id) => {
+        const village = this.villages.get(id);
+        return village ? this.buildingsFor(village) : [];
+      },
+    });
+    this.villages = new VillageRegistry(options.seed, this.generator, this.towns);
     this.roads = new RoadNetwork(this.world);
     this.world.onBlockChange((x, y, z, previous, next) => {
       this.light.onBlockChanged(x, y, z, previous, next);
@@ -510,23 +603,9 @@ export class Game {
     this.drops = new DropManager(this.world);
     this.transport = new TransportNetwork(
       this.roads,
-      this.villages,
-      {
-        onConnected: (route) => this.onRouteConnected(route),
-        onDisconnected: (route) => this.announceRoute(route, 'とぎれた'),
-        onArrival: (arrival) => this.onShipmentArrived(arrival),
-        onStageUp: (id, stage) => this.onVillageGrew(id, stage),
-      },
-      {
-        spawnPorter: (point, vehicle, cargo) => this.spawnPorter(point, vehicle, cargo),
-        porterPosition: (id) => {
-          const mob = this.livePorter(id);
-          return mob ? { x: mob.x, z: mob.z } : null;
-        },
-        movePorter: (id, point, speed) => this.movePorter(id, point, speed),
-        removePorter: (id) => this.removePorter(id),
-      },
-      {
+      // What a stop is attached to. `sites.ts` is the one place that knows about towns
+      // and industries at the same time; transport itself has never heard of either.
+      networkSites(this.villages, this.industries, {
         doorOf: (id) => this.depotDoor(id),
         plotsOf: (id) => {
           const village = this.villages.get(id);
@@ -541,6 +620,23 @@ export class Game {
             { x0: village.x - 1, z0: village.z - 1, w: 3, d: 3 },
           ];
         },
+      }),
+      {
+        onConnected: (route) => this.onRouteConnected(route),
+        onDisconnected: (route) => this.announceRoute(route, 'とぎれた'),
+        onArrival: (arrival) => this.onShipmentArrived(arrival),
+        onStageUp: (at, stage) => {
+          if (at.town) this.onVillageGrew(at.town, stage);
+        },
+      },
+      {
+        spawnPorter: (point, vehicle, cargo, good) => this.spawnPorter(point, vehicle, cargo, good),
+        porterPosition: (id) => {
+          const mob = this.livePorter(id);
+          return mob ? { x: mob.x, z: mob.z } : null;
+        },
+        movePorter: (id, point, speed) => this.movePorter(id, point, speed),
+        removePorter: (id) => this.removePorter(id),
       },
       // The railway, as the two questions freight has of it. `this.trackNet` is read
       // through the closures rather than captured, because loading a save replaces the
@@ -555,6 +651,7 @@ export class Game {
     );
     this.hud = new Hud(this.atlas);
     this.worldMap = new WorldMap(this.atlas, () => this.toggleWorldMap());
+    this.worldMap.bindWarp((x, z) => this.warpFromMap(x, z));
     this.screens = new ScreenManager(
       this.player,
       this.atlas,
@@ -602,6 +699,7 @@ export class Game {
     this.chunkRenderer.dispose();
     this.trackRenderer.dispose();
     this.hud.root.remove();
+    this.worldMap.dispose();
     this.worldMap.root.remove();
     this.screens.close();
     this.screens.layer.remove();
@@ -722,7 +820,7 @@ export class Game {
     this.screens.refresh();
     const navigation = this.navigationInfo();
     this.hud.update(dt, this.player, this.debugInfo(), navigation);
-    this.worldMap.update(this.surveyed, this.player.x, this.player.z, this.player.yaw, navigation.overlay);
+    this.worldMap.update(this.surveyed, this.player, navigation.overlay);
 
     this.villageSearchTimer -= dt;
     if (this.villageSearchTimer <= 0) {
@@ -731,7 +829,6 @@ export class Game {
       // discovered. Both ride the same timer because both walk the same village grid.
       this.villages.ensureNear(this.player.x, this.player.z, 2);
       this.nearestVillage = this.generator.findNearestVillage(this.player.x, this.player.z, 2);
-      this.linkNeighbours();
       this.claimMilestones();
     }
 
@@ -765,6 +862,10 @@ export class Game {
       if (steps < wanted && performance.now() > deadline) break;
     }
     this.effectiveSpeed = steps;
+    // Out here rather than inside the step, because this draws rather than simulates: at
+    // ×16 the town is stepped sixteen times and the people walking across it are put
+    // where they have got to once, which is all a frame can show anyway.
+    this.updateCommuters();
   }
 
   /** One step of everything that is not the player. */
@@ -780,6 +881,39 @@ export class Game {
     // from where they started it. At more than single speed the world takes several steps
     // a frame, and a trail that only saw the last of them would be a train that jumped.
     this.updateTrains();
+  }
+
+  /** Runs the world's clock forward without waiting for the frames it would take.
+   *
+   *  Exactly what game speed does — `stepWorld` over and over — with two differences that
+   *  only make sense from a console. There is no frame budget, so it runs the whole span
+   *  asked for rather than as much of it as fits; and the once-every-two-seconds village
+   *  sweep runs along with it, because that sweep is on the *frame* clock rather than the
+   *  world's, and a hundred seconds of world with no sweep in it is a hundred seconds in
+   *  which nothing is discovered and no goal is claimed.
+   *
+   *  This is what makes the browser test runnable in a coffee break. A porter that takes
+   *  forty seconds to walk a road is forty seconds of waiting or forty milliseconds of
+   *  this, and as far as anything under test is concerned they are the same forty seconds:
+   *  the clock is the truth, and this only turns the handle faster.
+   *
+   *  What it cannot skip is chunk generation, which happens on workers and in its own
+   *  time. Anything waiting on the world to *exist* still has to wait. */
+  fastForward(seconds: number, step = 0.5): number {
+    const dt = Math.max(0.05, Math.min(1, step));
+    const steps = Math.max(0, Math.round(Math.max(0, seconds) / dt));
+    for (let i = 0; i < steps; i++) {
+      this.stepWorld(dt);
+      this.villageSearchTimer -= dt;
+      if (this.villageSearchTimer > 0) continue;
+      this.villageSearchTimer = 2;
+      this.villages.ensureNear(this.player.x, this.player.z, 2);
+      this.claimMilestones();
+    }
+    // The commuters are drawn once a frame rather than once a step, so they are caught up
+    // here rather than sixteen times over.
+    if (steps > 0) this.updateCommuters();
+    return steps;
   }
 
   /** Sets the world's clock speed, and says so. */
@@ -828,6 +962,10 @@ export class Game {
     const mapReach = this.worldMap.isOpen
       ? Math.max(MINIMAP_REACH, this.worldMap.reach)
       : MINIMAP_REACH;
+    // Where the overlays have to be gathered *around*, which is not the player once the
+    // big map has been dragged: a map slid two villages over needs the roads from over
+    // there, and gathering them around the player would leave it drawing bare ground.
+    const mapAt = this.worldMap.isOpen ? this.worldMap.centreFrom(this.player) : this.player;
     const markers: CompassMarker[] = [{ kind: 'spawn', x: this.spawnPoint.x, z: this.spawnPoint.z }];
     if (this.deathPoint) markers.push({ kind: 'death', x: this.deathPoint.x, z: this.deathPoint.z });
     const found = this.villages.discovered();
@@ -865,17 +1003,17 @@ export class Game {
         // Only the roads that could be on screen: the index holds every column the
         // player ever laid, and even the big map at its widest is a fraction of that.
         roads: this.roads.columnsIn(
-          this.player.x - mapReach,
-          this.player.z - mapReach,
-          this.player.x + mapReach,
-          this.player.z + mapReach,
+          mapAt.x - mapReach,
+          mapAt.z - mapReach,
+          mapAt.x + mapReach,
+          mapAt.z + mapReach,
         ),
-        rails: this.railOverlay(),
+        rails: this.railOverlay(mapAt, mapReach),
         gap:
           questRoute?.gapFrom && questRoute.gapTo
             ? { from: questRoute.gapFrom, to: questRoute.gapTo }
             : null,
-        faults: this.roadFaults(MINIMAP_REACH),
+        faults: this.roadFaults(MINIMAP_REACH, mapAt),
       },
       routes: {
         quest: objective,
@@ -893,21 +1031,23 @@ export class Game {
         routes: this.transport.routes
           .filter((route) => route.connected || route.everConnected || route === questRoute)
           .map((route) => ({
-            from: this.villages.get(route.from)?.name ?? '?',
-            to: this.villages.get(route.to)?.name ?? '?',
+            line: this.lines.lines.get(route.lineId)?.name ?? '路線',
+            from: route.from.name,
+            to: route.to.name,
             surveyed: route.surveyed,
             connected: route.connected,
             length: route.length,
             missing: route.missing,
             porters: route.porters.length,
-            fromDepot: this.depotLabel(route.from),
-            toDepot: this.depotLabel(route.to),
+            fromDepot: this.stopLabel(route.from),
+            toDepot: this.stopLabel(route.to),
             nearest: this.nearestPorter(shipments, route),
             stock: this.stockOn(route),
             idle: this.idleReason(route),
             grade: route.grade,
             load: this.transport.loadOf(route),
-            wanted: this.villages.get(route.to)?.needs.includes(route.good) ?? false,
+            wanted: this.townOf(route.to)?.needs.includes(route.good) ?? false,
+            carrying: this.carryingOn(route),
             vehicle: route.vehicle,
             cartPinch: route.cartPinch ? this.bearingTo(route.cartPinch) : null,
             railPinch: route.railPinch ? this.bearingTo(route.railPinch) : null,
@@ -981,10 +1121,12 @@ export class Game {
     // Before lighting is seeded, so a village that grew while this chunk was away has its
     // new walls in place when the light is baked against them.
     for (const village of this.villages.byId.values()) {
-      if (village.stage <= 0 && !village.outpost) continue;
       if (Math.abs(village.x - chunk.originX) > VILLAGE_RADIUS + CHUNK_SIZE) continue;
       if (Math.abs(village.z - chunk.originZ) > VILLAGE_RADIUS + CHUNK_SIZE) continue;
-      this.buildGrowth(village, chunk);
+      if (village.stage > 0 || village.outpost) this.buildGrowth(village, chunk);
+      // A town ploughs from the day it is generated, so this one is not behind the stage
+      // check: stage 0 has fields, it simply has fewer of them.
+      this.buildFields(village);
     }
     this.light.seedChunk(chunk);
     this.water.registerChunk(chunk, message.springs ?? []);
@@ -1061,6 +1203,11 @@ export class Game {
           if (this.screens.kind === 'ledger') this.closeScreen();
           else this.openScreen(() => this.screens.openLedger(() => this.ledgerView()));
           break;
+        case 'KeyN':
+          if (this.paused || this.player.isDead) break;
+          if (this.screens.kind === 'lines') this.closeScreen();
+          else this.openScreen(() => this.screens.openLines(() => this.linePanelView(), this.lineActions()));
+          break;
         case 'KeyF':
           if (this.paused || this.player.isDead || this.uiOpen) break;
           this.chooseDepot();
@@ -1068,6 +1215,13 @@ export class Game {
         case 'KeyR':
           if (this.paused || this.player.isDead || this.uiOpen) break;
           this.paveToHere();
+          break;
+        case 'Home':
+          // Only while the map is up: everywhere else Home is the browser's.
+          if (this.worldMap.isOpen) {
+            event.preventDefault();
+            this.worldMap.recentre();
+          }
           break;
         case 'KeyG':
           if (this.paused || this.player.isDead) break;
@@ -1158,8 +1312,17 @@ export class Game {
     look: { x: number; y: number; z: number },
   ): void {
     this.lookedAt = null;
+    this.lookedAtWorks = null;
     const hit = raycastVoxels(this.world, eye, look, { maxDistance: BUILDING_REACH });
     if (!hit) return;
+    // An industry is looked for first and by distance: it stands on its own out in the
+    // country, so there is no village to ask about it, and every one of them is the same
+    // shed — which makes this the one place its kind can be read.
+    const works = this.industries.near(hit.x, hit.z, INDUSTRY_REACH);
+    if (works) {
+      this.lookedAtWorks = works;
+      return;
+    }
     const village = this.villages.at(hit.x, hit.z);
     if (!village || !village.discovered) return;
     const building = buildingAt(this.buildingsFor(village), hit.x, hit.z);
@@ -1168,14 +1331,118 @@ export class Game {
 
   /** What the HUD says about the building under the crosshair. */
   private buildingPrompt(): { title: string; hint: string } | null {
-    if (!this.lookedAt || this.uiOpen) return null;
+    if (this.uiOpen) return null;
+    // Something about to be put down comes first: the player is mid-decision, and the
+    // question they are asking is about the thing in their hand rather than the wall
+    // behind it.
+    const placing = this.placementPrompt();
+    if (placing) return placing;
+    if (this.lookedAtWorks) return this.industryPrompt(this.lookedAtWorks);
+    if (!this.lookedAt) return null;
     const { building, village } = this.lookedAt;
     const depot = this.depotFor(village);
     const isDepot = depot?.id === building.id;
     return {
-      title: describeBuilding(building, village, isDepot),
+      title: describeBuilding(building, village, isDepot, this.buildingNote(village, building)),
       hint: isDepot ? 'ここから荷が出入りする' : '[F] この村の集荷所にする',
     };
+  }
+
+  /** What a stop or a station in the player's hand would attach to, in words, beside the
+   *  light that says the same thing in the world.
+   *
+   *  The light answers "where"; this answers "how far off am I" — the number that decides
+   *  whether the answer is to move two blocks or to give up on this hillside. */
+  private placementPrompt(): { title: string; hint: string } | null {
+    const held = this.player.inventory.held?.id;
+    if (held === 'stop' && this.aimHit) {
+      const at = { x: this.aimHit.x, z: this.aimHit.z };
+      const link = this.linkAt(at.x, at.z);
+      const crowding = this.lines.stopNear(at.x, at.z, STOP_SPACING);
+      const hint = crowding
+        ? `置けない — ${crowding.name}に近すぎる（停留所どうしは ${STOP_SPACING}マス以上）`
+        : '右クリックで設置';
+      const serves: string[] = [];
+      if (link.works) serves.push(`${link.works.name}（産業）`);
+      if (link.town) serves.push(`${displayName(link.town)}（町）`);
+      if (serves.length > 0) return { title: `ここに置くと ${serves.join(' と ')} につながる`, hint };
+      return { title: `ここに置いても何にもつながらない（${this.outOfReach(link, STOP_TOWN_REACH)}）`, hint };
+    }
+    if (held === 'station') {
+      const node = this.aimNode;
+      if (!node) return null;
+      const served = this.villageServedBy(node);
+      const title = served
+        ? `この端に駅を建てると ${displayName(served.village)} に届く（${Math.round(served.distance)}m）`
+        : `この端に駅を建ててもどの村にも届かない（${this.outOfReach(this.stationLink(node), STATION_REACH)}）`;
+      return { title, hint: node.station ? '右クリックで撤去' : '右クリックで建てる' };
+    }
+    return null;
+  }
+
+  /** How far off the nearest of each is, when neither is near enough. The one number worth
+   *  saying at the moment the answer is no. */
+  private outOfReach(link: StopLink, townReach: number): string {
+    const parts: string[] = [];
+    parts.push(
+      link.nearTown
+        ? `一番近い町まで ${Math.round(link.nearTown.distance)}m / ${townReach}m`
+        : '町が見つかっていない',
+    );
+    if (link.nearWorks) {
+      parts.push(`産業まで ${Math.round(link.nearWorks.distance)}m / ${STOP_SITE_REACH}m`);
+    }
+    return parts.join('、');
+  }
+
+  /** What the works under the crosshair is: which kind it is, what it digs, how fast, and
+   *  how much has piled up waiting for somebody to come and take it.
+   *
+   *  Every industry is built out of the same shed, so this is where its kind lives. The
+   *  hint is whichever sentence is true of it: no stop yet, a stop that is not collecting,
+   *  or a working one — and on that last one, how to take the thing back down. */
+  private industryPrompt(works: Industry): { title: string; hint: string } {
+    const kind = industryType(works.kind)?.label ?? '産業';
+    const title =
+      `${works.name}［${kind}］— ${this.goodName(works.good)} ` +
+      `在庫 ${works.stock} / ${MAX_INDUSTRY_STOCK}・産出 ×${works.richness.toFixed(1)}・` +
+      `出荷 ${works.shipped}`;
+    const stop = this.lines.stopNear(works.x, works.z, STOP_SITE_REACH);
+    if (!stop) {
+      return { title, hint: `停留所が無い — ${STOP_SITE_REACH}マス以内に置いて路線につなごう` };
+    }
+    if (works.stock >= MAX_INDUSTRY_STOCK) {
+      return { title, hint: `満杯 — ${stop.name}を路線（N）に並べたか確かめよう` };
+    }
+    return { title, hint: `${stop.name}が集める。[産業設置具] 右クリックで撤去` };
+  }
+
+  /** What the building under the crosshair is waiting for, in one clause.
+   *
+   *  This is where the town economy is legible without opening anything: a works with no
+   *  raw material and a shop with no customers look identical from the street, and they
+   *  are two entirely different jobs for the player. */
+  private buildingNote(village: VillageRecord, building: VillageBuilding): string | undefined {
+    const cell = this.towns.get(village.id)?.cells.get(building.id);
+    if (!cell) return undefined;
+    if (cell.use === 'residential') {
+      const empty = [...cell.wants].filter(([, held]) => held <= 0).map(([good]) => good);
+      // 「要る」 rather than 「切れている」: a town the player has only just walked into never
+      // had any, and telling them it ran out would be describing a delivery that never was.
+      if (empty.length > 0) return `${empty.map((g) => this.goodName(g)).join('・')}が要る`;
+      return `${cell.people} 人が住んでいる`;
+    }
+    // A works in a village that converts nothing is the village's own shed: it has no
+    // appetite because there is nothing to feed it, and saying so beats saying nothing at
+    // all in the one place the player is looking straight at it.
+    if (cell.wants.size === 0) {
+      if (cell.use !== 'industrial') return undefined;
+      return `${this.goodName(village.produces)}を採っている`;
+    }
+    if (cell.staff <= 0) return 'まだ誰も通ってきていない';
+    const empty = [...cell.wants].filter(([, held]) => held <= 0).map(([good]) => good);
+    if (empty.length > 0) return `${empty.map((g) => this.goodName(g)).join('・')}を待っている`;
+    return `${cell.staff} 人が働いている`;
   }
 
   /** Moves a village's loading and unloading to the building being looked at. */
@@ -1208,6 +1475,12 @@ export class Game {
     const look = this.player.lookVector();
     const hit = raycastVoxels(this.world, eye, look, { maxDistance: REACH });
     this.effects.setSelection(hit);
+    // Kept for the guide, which runs in the render loop and has to know where a stop in
+    // the player's hand would land.
+    this.aimHit = hit;
+    // The rail end under the crosshair, for the station's preview. Only while a station is
+    // in hand: the pick is a raycast against the curves, and nothing else needs it.
+    this.aimNode = this.player.inventory.held?.id === 'station' ? this.trackAim().node : null;
     this.updateLookedAtBuilding(eye, look);
 
     const input = this.options.input;
@@ -1470,6 +1743,20 @@ export class Game {
     // on an end, so it may have to cut the run it is put on first.
     if (held.id === 'signal') {
       this.useSignal();
+      return;
+    }
+
+    // A stop goes on the ground, but what it puts there is not a block: it is a place on
+    // the network, and the little platform under it is only how the player finds it again.
+    if (held.id === 'stop') {
+      this.useStop(hit);
+      return;
+    }
+
+    // The industry kit reads the ground rather than building on it, so it is aimed at
+    // whatever the player is standing on and not at a face.
+    if (held.id === 'industry_kit') {
+      this.useIndustryKit(hit);
       return;
     }
 
@@ -2088,6 +2375,224 @@ export class Game {
     this.hud.toast(`駅を建てた — どの村にも届いていない（一番近い村まで ${away}m）`);
   }
 
+  /** Puts a stop down, or takes one back up.
+   *
+   *  Pointing at one that is already there removes it — the same one-gesture rule the
+   *  station follows, and for the same reason: a separate "remove" key for a thing the
+   *  player put down half a minute ago is a key nobody finds. */
+  private useStop(hit: RaycastHit | null): void {
+    const at = hit ? { x: hit.x, y: hit.y + 1, z: hit.z } : null;
+    const standing = this.lines.stopNear(this.player.x, this.player.z, STOP_REACH);
+    if (standing && (!at || Math.hypot(standing.x - at.x, standing.z - at.z) <= STOP_REACH)) {
+      const lines = this.lines.linesAt(standing.id).length;
+      this.lines.removeStop(standing.id);
+      this.syncLines();
+      this.removeStopMarker(standing);
+      if (!this.player.inventory.unlimited && this.player.inventory.add({ id: 'stop', count: 1 }) > 0) {
+        this.dropAtPlayer({ id: 'stop', count: 1 });
+      }
+      this.hud.toast(
+        lines > 0 ? `${standing.name}を撤去した — ${lines} 本の路線から外れた` : `${standing.name}を撤去した`,
+      );
+      return;
+    }
+    if (!at) {
+      this.warn('地面に向けて右クリックすると停留所を置く');
+      return;
+    }
+    if (!this.player.inventory.has('stop', 1)) {
+      this.warn('停留所が無い（作業台で 木材 4 ＋ 丸石 2）');
+      return;
+    }
+    // Which town this serves is decided now and never revisited: the player chose to build
+    // it here, and a town growing outwards later should not adopt somebody's junction.
+    const town = this.villages.at(at.x, at.z)
+      ?? this.nearestTownWithin(at.x, at.z, STOP_TOWN_REACH);
+    const placed = this.lines.addStop(at, town?.id ?? null, town?.name);
+    if (!placed.ok) {
+      this.warn('近すぎる — 停留所どうしは離して置く');
+      return;
+    }
+    this.player.inventory.remove('stop', 1);
+    this.buildStopMarker(placed.stop);
+    this.syncLines();
+    const works = this.industries.near(at.x, at.z, STOP_SITE_REACH);
+    if (town) this.hud.toast(`${placed.stop.name}を置いた（${displayName(town)}）`);
+    else if (works) this.hud.toast(`${placed.stop.name}を置いた（${works.name}）`);
+    else this.hud.toast(`${placed.stop.name}を置いた — まだ町も産業も無い場所`);
+  }
+
+  /** The nearest town within a radius, whether or not the point is inside its plateau. */
+  private nearestTownWithin(x: number, z: number, radius: number): VillageRecord | undefined {
+    let best: VillageRecord | undefined;
+    let bestDistance = radius;
+    for (const village of this.villages.byId.values()) {
+      const distance = Math.hypot(village.x - x, village.z - z);
+      if (distance > bestDistance) continue;
+      best = village;
+      bestDistance = distance;
+    }
+    return best;
+  }
+
+  /** Surveys what the player is standing on and builds whatever it supports.
+   *
+   *  The refusal is the interesting half. "Nothing here" is not an error message — it is
+   *  the tool doing its job, and it says what the ground actually held so the player knows
+   *  whether they are close or nowhere near. */
+  private useIndustryKit(hit: RaycastHit | null): void {
+    const at = hit
+      ? { x: hit.x, y: hit.y + 1, z: hit.z }
+      : { x: Math.floor(this.player.x), y: Math.floor(this.player.y), z: Math.floor(this.player.z) };
+    const standing =
+      this.industries.near(at.x, at.z, INDUSTRY_REACH)
+      ?? this.industries.near(this.player.x, this.player.z, INDUSTRY_REACH);
+    if (standing) {
+      this.takeDownIndustry(standing);
+      return;
+    }
+    if (!this.player.inventory.has('industry_kit', 1)) {
+      this.warn('産業設置具が無い（作業台で 鉄インゴット 2 ＋ 木材 4）');
+      return;
+    }
+    const ground = surveyGround(this.world, at.x, at.y, at.z);
+    const best = ground.find((report) => report.short.length === 0) ?? null;
+    const result = this.industries.place(at, best);
+    if (!result.ok) {
+      if (result.why === 'too-close') {
+        this.warn(
+          `${result.near.name}まで ${Math.round(result.distance)}m しかない` +
+            `（産業どうしは ${INDUSTRY_SPACING}m 以上）— 同じ資源で二重取りはできない`,
+        );
+        return;
+      }
+      // The refusal is the interesting half, and it is built from the same scan that would
+      // have said yes: how much was there, how thin it was spread, and which of the two is
+      // the thing to go and fix.
+      this.warn(depositMissReason(ground));
+      return;
+    }
+    this.player.inventory.remove('industry_kit', 1);
+    this.buildIndustrySite(result.industry);
+    this.transport.invalidate();
+    this.hud.toast(
+      `${result.industry.name}を建てた — ${itemLabel(result.industry.good)}を掘る` +
+        `（産出 ×${result.industry.richness.toFixed(1)}）。停留所を置いて路線につなごう`,
+    );
+  }
+
+  /** Takes an industry back down.
+   *
+   *  The same one gesture the stop and the station follow: point the thing you built it
+   *  with at what you built, and it comes back up. The graded yard stays — the ground was
+   *  flattened and un-flattening it would be a lie about what the player did to the hill —
+   *  and the shed, the chimney and the crates go, because those are the whole of how a
+   *  works is told apart from a hillside. */
+  private takeDownIndustry(works: Industry): void {
+    this.industries.remove(works.id);
+    this.removeIndustrySite(works);
+    this.transport.invalidate();
+    if (!this.player.inventory.unlimited && this.player.inventory.add({ id: 'industry_kit', count: 1 }) > 0) {
+      this.dropAtPlayer({ id: 'industry_kit', count: 1 });
+    }
+    const stop = this.lines.stopNear(works.x, works.z, STOP_SITE_REACH);
+    this.hud.toast(
+      stop
+        ? `${works.name}を撤去した — ${stop.name}に集める先が無くなった`
+        : `${works.name}を撤去した`,
+    );
+  }
+
+  /** Unbuilds the shed. Only blocks that are still what the site put there are taken, so
+   *  anything the player built on top of theirs survives them changing their mind. */
+  private removeIndustrySite(works: Industry): void {
+    const clear = (x: number, y: number, z: number, placed: BlockId): void => {
+      if (this.world.getBlock(x, y, z) !== placed) return;
+      this.world.setBlock(x, y, z, Block.AIR);
+    };
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = 0; dy <= 2; dy++) clear(works.x + dx, works.y + dy, works.z + dz, Block.COBBLESTONE);
+        clear(works.x + dx, works.y + 3, works.z + dz, Block.OAK_PLANKS);
+      }
+    }
+    for (let dy = 0; dy <= 6; dy++) clear(works.x - 1, works.y + dy, works.z - 1, Block.STONE_BRICKS);
+    clear(works.x + 2, works.y, works.z + 2, Block.OAK_LOG);
+    clear(works.x + 2, works.y, works.z - 2, Block.OAK_LOG);
+    clear(works.x - 2, works.y, works.z + 2, Block.OAK_LOG);
+  }
+
+  /** The little platform that says where a stop is.
+   *
+   *  Nothing about it is load-bearing — the stop is a fact about the network, and these
+   *  blocks are only how the player finds it again from across a field. Written as ordinary
+   *  recorded edits, so it saves and loads like anything else the player built. */
+  private buildStopMarker(stop: Stop): void {
+    const floor = stop.y - 1;
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        this.world.setBlock(stop.x + dx, floor, stop.z + dz, Block.COBBLESTONE);
+        // Anything standing in the paved square goes: a stop under a bush is a stop
+        // nobody can see.
+        if (dx !== 0 || dz !== 0) this.world.setBlock(stop.x + dx, stop.y, stop.z + dz, Block.AIR);
+      }
+    }
+    this.world.setBlock(stop.x, stop.y, stop.z, Block.OAK_LOG);
+    this.world.setBlock(stop.x, stop.y + 1, stop.z, Block.OAK_LOG);
+    this.world.setBlock(stop.x, stop.y + 2, stop.z, Block.WOOL);
+  }
+
+  /** Takes the post down again. The paving stays: it is road, the player may well have
+   *  built a road up to it, and pulling it up under them would be a hole where their line
+   *  used to be. */
+  private removeStopMarker(stop: Stop): void {
+    for (let dy = 0; dy <= 2; dy++) {
+      const at = this.world.getBlock(stop.x, stop.y + dy, stop.z);
+      if (at !== Block.OAK_LOG && at !== Block.WOOL) continue;
+      this.world.setBlock(stop.x, stop.y + dy, stop.z, Block.AIR);
+    }
+  }
+
+  /** The works itself: a yard, a shed and a chimney.
+   *
+   *  Unmistakable from a distance and unmistakably not a town building — cobble and gravel
+   *  where a town is planks and glass, and a chimney taller than anything a 集落 has. */
+  private buildIndustrySite(works: Industry): void {
+    const floor = works.y - 1;
+    for (let dz = -3; dz <= 3; dz++) {
+      for (let dx = -3; dx <= 3; dx++) {
+        if (Math.abs(dx) === 3 && Math.abs(dz) === 3) continue;
+        this.world.setBlock(works.x + dx, floor, works.z + dz, Block.GRAVEL);
+        for (let dy = 0; dy <= 3; dy++) {
+          this.world.setBlock(works.x + dx, works.y + dy, works.z + dz, Block.AIR);
+        }
+      }
+    }
+    // The shed: three by three, walls of cobble, a plank roof, and a doorway on the south
+    // side so the yard reads as somewhere things come out of.
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const wall = Math.abs(dx) === 1 || Math.abs(dz) === 1;
+        for (let dy = 0; dy <= 2; dy++) {
+          if (!wall) continue;
+          this.world.setBlock(works.x + dx, works.y + dy, works.z + dz, Block.COBBLESTONE);
+        }
+        this.world.setBlock(works.x + dx, works.y + 3, works.z + dz, Block.OAK_PLANKS);
+      }
+    }
+    this.world.setBlock(works.x, works.y, works.z + 1, Block.AIR);
+    this.world.setBlock(works.x, works.y + 1, works.z + 1, Block.AIR);
+    // The chimney. Twice the height of the shed, because that is the whole of what makes
+    // one of these findable from the ridge the player surveyed it from.
+    for (let dy = 0; dy <= 6; dy++) {
+      this.world.setBlock(works.x - 1, works.y + dy, works.z - 1, Block.STONE_BRICKS);
+    }
+    // Crates in the yard, so a works looks like somewhere with something to collect.
+    this.world.setBlock(works.x + 2, works.y, works.z + 2, Block.OAK_LOG);
+    this.world.setBlock(works.x + 2, works.y, works.z - 2, Block.OAK_LOG);
+    this.world.setBlock(works.x - 2, works.y, works.z + 2, Block.OAK_LOG);
+  }
+
   /** Puts a signal on the railway, or takes one back down.
    *
    *  A station goes on an end of the line because that is what a station is. A signal is
@@ -2406,12 +2911,22 @@ export class Game {
     const here = this.villages.at(this.player.x, this.player.z);
     if (here && this.villages.discover(here.id)) {
       this.hud.toast(`${here.name}に着いた`);
+      // Walking in is the moment every chunk of it is loaded, which is the moment the
+      // fields can be ploughed whole.
+      this.buildFields(here);
       // Before the questline picks a target: the hamlet has to exist for it to be chosen.
       if (this.questline.step === 'find_village') this.ensureOutpost(here);
       this.toast(this.questline.onVillageDiscovered(here));
-      this.linkQuestVillages();
     }
+    // The industries first: they are the head of the chain, and a works fed this frame
+    // should have something to work with in the same frame rather than the next one.
+    // Unlike a town, an industry digs whether or not anybody has found it — it is
+    // somewhere the player built, so there is nothing left to discover about it.
+    this.industries.produce(dt);
     this.villages.produce(dt);
+    // The town runs on the same clock as the village it is inside, and before transport:
+    // whoever decided to travel this frame should be on the platform when the line asks.
+    this.towns.update(dt, this.villages.byId.values());
     this.transport.update(dt, this.player.x, this.player.z);
     // The tutorial's road step is finished by the *event* of a route joining up, so a
     // player who lays the road before being told to — the shortest road in the game runs
@@ -2444,17 +2959,26 @@ export class Game {
     }
   }
 
-  /** Once the tutorial knows both ends, transport starts watching that pair so the panel
-   *  can report how much road is still missing. */
-  private linkQuestVillages(): void {
-    const { originId, targetId } = this.questline;
-    if (originId && targetId) this.transport.requestRoute(originId, targetId);
-  }
-
   /** The level of the road indexed at a column, if there is one. A field rather than a
    *  method so it can be handed to village growth as it stands. */
   private readonly roadLevelAt = (x: number, z: number): number | undefined =>
     this.roads.columns.get(`${x},${z}`);
+
+  /** A stop at a town, made if there is not one there already.
+   *
+   *  Refusing to put a second stop on top of the first is the right answer to a player
+   *  clicking twice and the wrong one here: what the sample world wants is "a stop serves
+   *  this town", and one that is already standing serves it perfectly well. */
+  private stopServing(village: VillageRecord): Stop | null {
+    const placed = this.lines.addStop(
+      { x: village.x, y: village.baseY + 1, z: village.z }, village.id, village.name,
+    );
+    if (placed.ok) {
+      this.buildStopMarker(placed.stop);
+      return placed.stop;
+    }
+    return this.lines.stopNear(village.x, village.z, STOP_TOWN_REACH);
+  }
 
   /** Every addressable building of a village, cached until the village grows or the road
    *  network moves — a house on a plot somebody has since paved is never built, so it
@@ -2495,28 +3019,143 @@ export class Game {
     return depot ? { x: depot.door.x, y: depot.door.y - 1, z: depot.door.z } : null;
   }
 
-  /** Names the depot of a village, for the panel and the ledger. */
-  private depotLabel(id: VillageId): string | null {
-    const village = this.villages.get(id);
-    if (!village) return null;
-    return this.depotFor(village)?.label ?? null;
+  /** Rebuilds the legs whenever the player has changed the service.
+   *
+   *  Nothing here decides what to run. A road that joins two towns is a road; until
+   *  somebody has put stops at both and named them on a line, no goods move over it and
+   *  the panel says so. This is the whole of the difference between this game and the one
+   *  where trade started by itself, and it is one method long. */
+  private syncLines(): void {
+    if (this.linesAt === this.lines.revision) return;
+    this.linesAt = this.lines.revision;
+    this.transport.syncLines(this.lines);
   }
 
-  /** Watches every pair of found villages close enough to be worth a road.
+  /** The town a stop serves, when it serves one. */
+  private townOf(stop: Stop): VillageRecord | undefined {
+    return stop.town ? this.villages.get(stop.town) : undefined;
+  }
+
+  /** What to call the place a stop stands at, on the panel and in a toast. */
+  private stopLabel(stop: Stop): string {
+    const town = this.townOf(stop);
+    if (town) return displayName(town);
+    const works = this.industries.near(stop.x, stop.z, STOP_SITE_REACH);
+    return works ? works.name : stop.name;
+  }
+
+  /** What a stop at a point is — or would be — attached to.
    *
-   *  The player never asks for a route: they lay a road, and trade starts. Watching a pair
-   *  costs nothing until its road actually joins up — a survey only runs when the network
-   *  has changed, and each village's search is shared between all its pairs. */
-  private linkNeighbours(): void {
-    const found = this.villages.discovered();
-    for (let i = 0; i < found.length; i++) {
-      for (let j = i + 1; j < found.length; j++) {
-        if (this.transport.routes.length >= MAX_ROUTES) return;
-        const a = found[i];
-        const b = found[j];
-        if (Math.hypot(a.x - b.x, a.z - b.z) > AUTO_ROUTE_RANGE) continue;
-        this.transport.requestRoute(a.id, b.id);
-      }
+   *  Exactly the two rules `useStop` and `sites.ts` apply, asked one gesture early. A town
+   *  is *recorded* when the stop goes down: inside its plateau, or within `STOP_TOWN_REACH`
+   *  of its middle. An industry is found by *proximity* within `STOP_SITE_REACH`, every
+   *  time it is asked, for as long as the stop stands. */
+  private linkAt(x: number, z: number): StopLink {
+    let nearTown: { village: VillageRecord; distance: number } | null = null;
+    for (const village of this.villages.byId.values()) {
+      const distance = Math.hypot(village.x - x, village.z - z);
+      if (nearTown && nearTown.distance <= distance) continue;
+      nearTown = { village, distance };
+    }
+    const inside = this.villages.at(x, z);
+    const town = inside ?? (nearTown && nearTown.distance <= STOP_TOWN_REACH ? nearTown.village : null);
+    let nearWorks: { works: Industry; distance: number } | null = null;
+    for (const works of this.industries.all()) {
+      const distance = Math.hypot(works.x - x, works.z - z);
+      if (nearWorks && nearWorks.distance <= distance) continue;
+      nearWorks = { works, distance };
+    }
+    const works = nearWorks && nearWorks.distance <= STOP_SITE_REACH ? nearWorks.works : null;
+    return { town, works, nearTown, nearWorks };
+  }
+
+  /** What a stop that is already down serves.
+   *
+   *  Its town is whatever was recorded the moment it was put there, not what a fresh look
+   *  at the ground says now — a town growing outwards later does not adopt somebody's
+   *  junction, and a stop put down before its town was ever found never gets one. That
+   *  difference is invisible from the ground and is exactly what this light is for. */
+  private stopLink(stop: Stop): StopLink {
+    return { ...this.linkAt(stop.x, stop.z), town: this.townOf(stop) ?? null };
+  }
+
+  /** Where a tether's far end hangs: the doorway goods actually pass through when the town
+   *  has one, the middle of the place when it does not. */
+  private townAnchor(village: VillageRecord): RoadPoint {
+    return (
+      this.depotDoor(village.id)
+      ?? { x: village.x, y: this.groundHeightAt(village.x, village.z), z: village.z }
+    );
+  }
+
+  /** Every stop and station near the player, tied by light to what it is judged to serve —
+   *  and, when one is in the player's hand, where the next one would be tied.
+   *
+   *  This is the question the player asks most often and could least easily answer. Which
+   *  town a stop serves is decided the instant it is put down and never revisited, and an
+   *  industry is picked up by being near enough: two invisible rules that between them
+   *  decide whether anything ever moves. They were readable in a toast that had already
+   *  scrolled away and in a panel that has to be trusted. A stop is a decision about a
+   *  place, so the answer belongs in the place. */
+  private linkLight(lines: GuideLine[], beams: GuideBeam[]): void {
+    for (const stop of this.lines.stops.values()) {
+      if (!this.nearPlayer(stop, LINK_VISIBLE)) continue;
+      this.drawLink(lines, beams, `stop:${stop.id}`, stop, this.stopLink(stop), false);
+    }
+    // A station is the same question with one answer fewer: rails load through a town and
+    // never through an industry, so `STATION_REACH` is the whole of its rule.
+    for (const node of this.trackNet.stations()) {
+      if (!this.nearPlayer(node, LINK_VISIBLE)) continue;
+      this.drawLink(lines, beams, `station:${node.id}`, roundPoint(node), this.stationLink(node), false);
+    }
+    // Nothing is about to be placed while a screen is open, and a dashed line left over
+    // the last thing the player aimed at would say otherwise.
+    if (this.uiOpen) return;
+    const held = this.player.inventory.held?.id;
+    if (held === 'stop' && this.aimHit) {
+      const at = { x: this.aimHit.x, y: this.aimHit.y + 1, z: this.aimHit.z };
+      this.drawLink(lines, beams, 'preview', at, this.linkAt(at.x, at.z), true);
+    }
+    if (held === 'station' && this.aimNode && !this.aimNode.station) {
+      this.drawLink(lines, beams, 'preview', roundPoint(this.aimNode), this.stationLink(this.aimNode), true);
+    }
+  }
+
+  /** What a station on a rail end serves: a village within `STATION_REACH`, or nothing. */
+  private stationLink(node: TrackPoint): StopLink {
+    const served = this.villageServedBy(node);
+    return { town: served?.village ?? null, works: null, nearTown: served, nearWorks: null };
+  }
+
+  /** One tether. Solid for something that is there, dashed for something in the hand. */
+  private drawLink(
+    lines: GuideLine[],
+    beams: GuideBeam[],
+    id: string,
+    at: { x: number; y: number; z: number },
+    link: StopLink,
+    preview: boolean,
+  ): void {
+    const ends: RoadPoint[] = [];
+    if (link.works) ends.push({ x: link.works.x, y: link.works.y, z: link.works.z });
+    if (link.town) ends.push(this.townAnchor(link.town));
+    if (ends.length === 0) {
+      // Grey and alone: a legitimate thing to be halfway through building, and a thing no
+      // goods will ever pass through until it is finished.
+      beams.push({ x: at.x, y: at.y, z: at.z, colour: GUIDE_NOLINK, height: preview ? 10 : 5 });
+      return;
+    }
+    beams.push({ x: at.x, y: at.y, z: at.z, colour: GUIDE_LINK, height: preview ? 12 : 6 });
+    for (let i = 0; i < ends.length; i++) {
+      const end = ends[i];
+      const key = `${id}|${i}|${at.x},${at.z}|${end.x},${end.z}|${this.roads.revision}`;
+      lines.push({
+        key,
+        points: this.guideLine(`link:${id}:${i}`, key, [at, end]),
+        colour: GUIDE_LINK,
+        dashed: preview,
+      });
+      beams.push({ ...end, colour: GUIDE_LINK, height: 4 });
     }
   }
 
@@ -2598,6 +3237,7 @@ export class Game {
       if (route !== questRoute && !this.nearPlayer(route.stall, FAULT_REACH * 2)) continue;
       beams.push({ ...route.stall, colour: GUIDE_STALL, height: 14 });
     }
+    this.linkLight(lines, beams);
     const tiles = this.roads.columnsIn(
       this.player.x - GUIDE_TILE_REACH,
       this.player.z - GUIDE_TILE_REACH,
@@ -2615,7 +3255,15 @@ export class Game {
   /** What the two ends of a route have between them. A trip can start from either, so
    *  the origin's pile alone was never the number that mattered. */
   private stockOn(route: Route): number {
-    return (this.villages.get(route.from)?.stock ?? 0) + (this.villages.get(route.to)?.stock ?? 0);
+    return this.readyAt(route.from) + this.readyAt(route.to);
+  }
+
+  /** What is standing at one end waiting to be collected — a town's finished goods, or an
+   *  industry's pile of raw material. */
+  private readyAt(stop: Stop): number {
+    const town = this.townOf(stop);
+    if (town) return town.stock;
+    return this.industries.near(stop.x, stop.z, STOP_SITE_REACH)?.stock ?? 0;
   }
 
   /** Why a joined route has nothing moving on it, when it has nothing moving on it.
@@ -2626,13 +3274,22 @@ export class Game {
    *  walk into the village. */
   private idleReason(route: Route): RouteIdle | null {
     if (!route.connected || route.porters.length > 0 || this.stockOn(route) > 0) return null;
-    for (const id of [route.from, route.to]) {
-      const village = this.villages.get(id);
-      if (!village || !village.discovered) {
-        return { kind: 'undiscovered', village: village ? displayName(village) : '村', wants: null };
+    for (const stop of [route.from, route.to]) {
+      const village = this.townOf(stop);
+      if (!village) {
+        // A stop serving nothing at all. Worth saying plainly: it is the one failure a
+        // player can make that looks exactly like a finished line.
+        if (!this.industries.near(stop.x, stop.z, STOP_SITE_REACH)) {
+          return { kind: 'nosite', village: stop.name, wants: null };
+        }
+        continue;
       }
-      if (village.input !== null && village.inputStock <= 0) {
-        return { kind: 'starved', village: displayName(village), wants: itemLabel(village.input) };
+      if (!village.discovered) {
+        return { kind: 'undiscovered', village: displayName(village), wants: null };
+      }
+      const short = this.villages.starvedOf(village);
+      if (short !== null) {
+        return { kind: 'starved', village: displayName(village), wants: itemLabel(short) };
       }
     }
     return { kind: 'stock', village: '', wants: null };
@@ -2646,9 +3303,10 @@ export class Game {
     };
   }
 
-  /** Places near the player where road blocks are laid and the index refuses them. */
-  private roadFaults(radius = FAULT_REACH): RoadFault[] {
-    return this.roads.faults(Math.floor(this.player.x), Math.floor(this.player.z), radius);
+  /** Places where road blocks are laid and the index refuses them. Near the player, or
+   *  near wherever the big map is looking when it is the thing asking. */
+  private roadFaults(radius = FAULT_REACH, at: { x: number; z: number } = this.player): RoadFault[] {
+    return this.roads.faults(Math.floor(at.x), Math.floor(at.z), radius);
   }
 
   private nearPlayer(point: { x: number; z: number }, within: number): boolean {
@@ -2737,6 +3395,9 @@ export class Game {
     return {
       villages: this.villages.discovered(),
       routes: this.transport.routes,
+      industries: this.industries.all(),
+      stops: [...this.lines.stops.values()],
+      lines: [...this.lines.lines.values()],
       player: { x: this.player.x, z: this.player.z },
       // A goal that needs another village has to be able to point at one, and the only
       // thing that knows where the unvisited ones are is the village grid. One the player
@@ -2746,6 +3407,10 @@ export class Game {
   }
 
   private claimMilestones(): void {
+    const state = this.networkState();
+    // The two tutorial steps nobody can announce with an event: putting a stop down and
+    // adding a call to a line are edits to a network, not things that happen at a place.
+    this.toast(this.questline.observe(state));
     for (const milestone of this.questline.claimMilestones(this.networkState())) {
       this.hud.toast(`目標達成 — ${milestone.title}`);
       this.payFreight(milestone.reward);
@@ -2764,10 +3429,15 @@ export class Game {
     return paid;
   }
 
+  /** The leg the tutorial is about: whichever one runs between its two towns. */
   private questRoute(): Route | undefined {
     const { originId, targetId } = this.questline;
     if (!originId || !targetId) return undefined;
-    return this.transport.find(originId, targetId);
+    return this.transport.routes.find(
+      (route) =>
+        (route.from.town === originId && route.to.town === targetId) ||
+        (route.from.town === targetId && route.to.town === originId),
+    );
   }
 
   private toast(message: string | null): void {
@@ -2775,9 +3445,7 @@ export class Game {
   }
 
   private announceRoute(route: Route, what: string): void {
-    const from = this.villages.get(route.from);
-    const to = this.villages.get(route.to);
-    if (from && to) this.hud.toast(`${from.name} と ${to.name} の道が${what}`);
+    this.hud.toast(`${this.stopLabel(route.from)} と ${this.stopLabel(route.to)} の間が${what}`);
   }
 
   private onRouteConnected(route: Route): void {
@@ -2786,7 +3454,7 @@ export class Game {
   }
 
   private onShipmentArrived(arrival: Arrival): void {
-    const to = this.villages.get(arrival.to);
+    const to = this.townOf(arrival.to);
     const paid = this.payFreight(arrival.pay);
     if (to) {
       // One line, not two: what turned up, whether it was wanted, and what it earned.
@@ -2814,7 +3482,18 @@ export class Game {
       const chunk = this.world.getChunk(cx, cz);
       if (chunk) this.buildGrowth(village, chunk);
     }
+    // A bigger town works more land. The parcels this stage earned are ploughed now if the
+    // player is standing in it, and when they next come back if they are not.
+    this.buildFields(village);
     this.refreshVillageTrades(village);
+  }
+
+  /** Ploughs whatever of a town's fields it owes into the chunks that are loaded.
+   *
+   *  Cheap when there is nothing to do, which is almost always: one look at the middle of
+   *  each parcel says whether it has been turned over already. */
+  private buildFields(village: VillageRecord): void {
+    applyFields(this.world, this.options.seed, village, this.roadLevelAt);
   }
 
   /** Builds whatever growth this village owes into one loaded chunk, and moves its new
@@ -2902,8 +3581,9 @@ export class Game {
   private villageNote(village: VillageRecord): string {
     const wants = village.needs.map((good) => itemLabel(good)).join('・');
     const made = `${displayName(village)}は${itemLabel(village.produces)}を作っている`;
-    if (village.input && village.inputStock <= 0) {
-      return `${made}が、${itemLabel(village.input)}が届いていないので手が止まっている。求めている物: ${wants}`;
+    const short = this.villages.starvedOf(village);
+    if (short !== null) {
+      return `${made}が、${itemLabel(short)}が届いていないので手が止まっている。求めている物: ${wants}`;
     }
     return `${made}。求めている物: ${wants}`;
   }
@@ -2931,6 +3611,92 @@ export class Game {
     });
   }
 
+  /** Everything the line table shows. Read afresh on every refresh, so a leg that joins
+   *  up while the page is open says so without the player closing it. */
+  private linePanelView(): LinePanelView {
+    // The first line, when the player has not picked one. Opening the page and finding no
+    // 「加える」 button working would read as the page being broken.
+    if (!this.selectedLine || !this.lines.lines.has(this.selectedLine)) {
+      this.selectedLine = [...this.lines.lines.keys()][0] ?? null;
+    }
+    return {
+      selected: this.selectedLine,
+      lines: [...this.lines.lines.values()].map((line) => ({
+        id: line.id,
+        name: line.name,
+        full: line.stops.length >= MAX_LINE_STOPS,
+        calls: line.stops.map((stopId, index) => {
+          const stop = this.lines.stops.get(stopId);
+          return {
+            index,
+            name: stop?.name ?? '?',
+            place: stop ? this.stopPlace(stop) : '—',
+          };
+        }),
+        legs: this.transport.legsOfLine(line.id).map((route) => ({
+          from: route.from.name,
+          to: route.to.name,
+          connected: route.connected,
+          length: route.length,
+          missing: route.missing,
+          vehicle: route.vehicle === 'train' ? '列車' : route.vehicle === 'cart' ? '荷車' : '徒歩',
+        })),
+      })),
+      stops: [...this.lines.stops.values()]
+        .map((stop) => ({
+          id: stop.id,
+          name: stop.name,
+          place: this.stopPlace(stop),
+          onLines: this.lines.linesAt(stop.id).length,
+          distance: Math.hypot(stop.x - this.player.x, stop.z - this.player.z),
+        }))
+        .sort((a, b) => a.distance - b.distance),
+    };
+  }
+
+  /** What stands at a stop, for the line table. Different from `stopLabel`, which names
+   *  the place: this says what kind of thing it is, which is what tells the player whether
+   *  a leg to it will carry anything. */
+  private stopPlace(stop: Stop): string {
+    const town = this.townOf(stop);
+    if (town) return `${displayName(town)}（${itemLabel(town.produces)}）`;
+    const works = this.industries.near(stop.x, stop.z, STOP_SITE_REACH);
+    if (works) return `${works.name}（${itemLabel(works.good)}）`;
+    return '町も産業も無い';
+  }
+
+  /** What the buttons on the line table do. */
+  private lineActions(): LineActions {
+    return {
+      create: () => {
+        this.selectedLine = this.lines.createLine().id;
+        this.syncLines();
+      },
+      select: (id) => {
+        this.selectedLine = id;
+      },
+      rename: (id, name) => {
+        this.lines.renameLine(id, name);
+        this.syncLines();
+      },
+      remove: (id) => {
+        this.lines.deleteLine(id);
+        this.syncLines();
+      },
+      addCall: (lineId, stopId) => {
+        if (!this.lines.addCall(lineId, stopId)) {
+          this.hud.toast('加えられない — 同じ停留所を続けて 2 回は呼べない');
+          return;
+        }
+        this.syncLines();
+      },
+      removeCall: (lineId, index) => {
+        this.lines.removeCall(lineId, index);
+        this.syncLines();
+      },
+    };
+  }
+
   /** Everything the ledger shows, gathered on demand. */
   private ledgerView(): LedgerView {
     const objective = this.questline.objective(this.villages, this.focusRoute(), this.networkState());
@@ -2943,10 +3709,11 @@ export class Game {
           const next = this.villages.progressToNext(village);
           return {
             name: displayName(village),
-            kind: kindLabel(village.kind),
             produces: itemLabel(village.produces),
-            input: village.input ? itemLabel(village.input) : null,
-            inputStock: village.inputStock,
+            inputs: village.inputs.map((good) => ({
+              label: itemLabel(good),
+              held: this.villages.inputHeld(village, good),
+            })),
             needs: village.needs.map((good) => itemLabel(good)),
             stock: village.stock,
             stage: village.stage,
@@ -2954,16 +3721,32 @@ export class Game {
             toNext: next.needed,
             received: village.received,
             distance: Math.hypot(village.x - this.player.x, village.z - this.player.z),
-            starved: village.input !== null && village.inputStock <= 0,
+            starved: this.villages.starvedOf(village) !== null,
+            people: this.towns.populationOf(village.id),
+            waiting: this.villages.waiting(village.id),
+            wants: this.towns.shortOf(village.id).map((entry) => this.goodName(entry.good)),
           };
         })
         .sort((a, b) => a.distance - b.distance),
+      town: this.townLedger(),
+      industries: this.industries.all().map((works) => ({
+        name: works.name,
+        kind: industryType(works.kind)?.label ?? '産業',
+        richness: works.richness,
+        good: this.goodName(works.good),
+        stock: works.stock,
+        full: works.stock >= MAX_INDUSTRY_STOCK,
+        shipped: works.shipped,
+        served: this.lines.stopNear(works.x, works.z, STOP_SITE_REACH) !== null,
+        distance: Math.hypot(works.x - this.player.x, works.z - this.player.z),
+      })),
       routes: this.transport.routes.map((route) => ({
-        from: this.villages.get(route.from)?.name ?? '?',
-        to: this.villages.get(route.to)?.name ?? '?',
-        fromDepot: this.depotLabel(route.from),
-        toDepot: this.depotLabel(route.to),
-        good: route.good ? itemLabel(route.good) : '—',
+        line: this.lines.lines.get(route.lineId)?.name ?? '路線',
+        from: route.from.name,
+        to: route.to.name,
+        fromDepot: this.stopLabel(route.from),
+        toDepot: this.stopLabel(route.to),
+        good: route.good ? this.goodName(route.good) : '—',
         connected: route.connected,
         length: route.length,
         missing: route.missing,
@@ -2979,6 +3762,68 @@ export class Game {
     };
   }
 
+  /** The town the player is standing in, building by building. Null anywhere else — the
+   *  ledger is about the network everywhere except here, and here it is about the place. */
+  private townLedger(): LedgerTown | null {
+    const here = this.villages.at(this.player.x, this.player.z);
+    if (!here) return null;
+    const town = this.towns.get(here.id);
+    if (!town) return null;
+    const buildings = this.buildingsFor(here);
+    return {
+      name: displayName(here),
+      people: this.towns.populationOf(here.id),
+      waiting: town.waiting,
+      fields: {
+        parcels: fieldsAt(this.options.seed, here, here.stage).length,
+        area: fieldArea(here.stage),
+        harvest: here.harvest,
+      },
+      buildings: [...town.cells.values()]
+        .map((cell) => ({
+          label: buildings.find((b) => b.id === cell.id)?.label ?? cell.id,
+          use: useLabel(cell.use),
+          people: cell.people,
+          staff: cell.staff,
+          wants: [...cell.wants].map(([good, held]) => ({
+            good: this.goodName(good),
+            held,
+            of: CELL_STOCK,
+          })),
+        }))
+        // Homes first, then the places they walk to, which is the order the loop runs in.
+        .sort((a, b) => a.use.localeCompare(b.use) || a.label.localeCompare(b.label)),
+    };
+  }
+
+  /** Where a town's own crop has got to: the shops that sell it, and the works that bakes
+   *  with it. The one number that says the inward carry is working. */
+  private foodHeld(village: VillageRecord): { shops: number; mill: number } {
+    const town = this.towns.get(village.id);
+    let shops = 0;
+    for (const cell of town?.cells.values() ?? []) {
+      if (cell.use !== 'commercial') continue;
+      for (const good of FARMED) shops += cell.wants.get(good) ?? 0;
+    }
+    let mill = 0;
+    for (const good of FARMED) mill += village.inputStock.get(good) ?? 0;
+    return { shops, mill };
+  }
+
+  /** What a line is carrying right now, when it is something other than the route's own
+   *  headline good. Only people qualify today, and only they are worth a row: a line the
+   *  player built for crates that is quietly running passengers should say so. */
+  private carryingOn(route: Route): string | null {
+    if (route.porters.some((porter) => porter.good === PASSENGER)) return PASSENGER_LABEL;
+    return null;
+  }
+
+  /** What to call a cargo. People are the one good that is not an item, so `itemLabel`
+   *  cannot answer for them. */
+  private goodName(good: GoodId): string {
+    return good === PASSENGER ? PASSENGER_LABEL : itemLabel(good);
+  }
+
   /** Where every train's cars are, and what there is to stand on because of them.
    *
    *  The engine is the mob and nothing here moves it; the cars are placed behind it from
@@ -2988,7 +3833,7 @@ export class Game {
     const decks: CarDeck[] = [];
     for (const mob of this.mobs.mobs) {
       if (mob.kind !== 'train') continue;
-      const kinds = consistOf(mob.cars);
+      const kinds = consistOf(mob.cars, mob.carriesPeople);
       const keep = consistLength(kinds) + TRAIL_STEP * 2;
       const head = { x: mob.x, y: mob.y, z: mob.z };
       // A train that has only just been drawn has been nowhere, and there is no honest way
@@ -3084,7 +3929,12 @@ export class Game {
       : null;
   }
 
-  private spawnPorter(point: RoadPoint, vehicle: Vehicle, cargo: number): number | null {
+  private spawnPorter(
+    point: RoadPoint,
+    vehicle: Vehicle,
+    cargo: number,
+    good: GoodId,
+  ): number | null {
     if (!this.world.hasChunk(toChunkCoord(point.x), toChunkCoord(point.z))) return null;
     const middle = centreOf(vehicle);
     const mob = new Mob(vehicle, point.x + middle, point.y + 1, point.z + middle);
@@ -3092,6 +3942,7 @@ export class Game {
     // What the train couples up behind it. A porter carries its load on its back and has
     // nowhere to put a second crate, so the count is only ever read for a train.
     mob.cars = carsFor(cargo);
+    mob.carriesPeople = good === PASSENGER;
     // The one thing on rails is the only thing given the deck to stand on. Everything
     // else that walks has no reason to be up on a viaduct and no way down off one; a
     // train has both, and without this it walks off the first pier and falls.
@@ -3128,6 +3979,108 @@ export class Game {
     mob.speedScale = keepUp * hurry;
     if (lag <= PORTER_LOST) return;
     this.removePorter(id);
+  }
+
+  /** Draws the people walking across whatever town the player is standing in.
+   *
+   *  A commute is a number in `townEconomy.ts` and this is its view, exactly as a porter
+   *  is the view of a shipment: the villager is put where the commute has got to, and
+   *  dropped the moment the player is too far away for it to be worth drawing. Nothing a
+   *  villager does can hold a commute up — the same rule, and for the same reason, as the
+   *  one written out at length at the top of `transport.ts`.
+   *
+   *  Only the town the player is in costs anything: the walk between two doorways is a
+   *  breadth-first search around the plots, and running one for every town in the world
+   *  every frame would be a search nobody could see the result of. */
+  private updateCommuters(): void {
+    const live = new Set<number>();
+    for (const town of this.towns.towns.values()) {
+      const village = this.villages.get(town.id);
+      if (!village) continue;
+      const away = Math.hypot(village.x - this.player.x, village.z - this.player.z);
+      if (away > COMMUTE_VISIBLE + radiusOf(village)) continue;
+      const buildings = this.buildingsFor(village);
+      for (const commute of town.commutes) {
+        const path = this.commutePath(commute, buildings);
+        const here = path ? pointAlongPath(path, commute.t) : null;
+        if (!here) continue;
+        const near = Math.hypot(here.x - this.player.x, here.z - this.player.z) <= COMMUTE_VISIBLE;
+        const mob = commute.mobId === null ? null : this.liveCommuter(commute.mobId);
+        if (mob && near) {
+          mob.follow = { x: here.x + 0.5, z: here.z + 0.5 };
+          live.add(commute.mobId!);
+          continue;
+        }
+        if (mob) {
+          this.removeCommuter(commute.mobId!);
+          commute.mobId = null;
+        } else if (commute.mobId !== null) {
+          // Killed, or never drawn. Either way nothing is showing this commute now.
+          commute.mobId = null;
+        }
+        if (!near) continue;
+        commute.mobId = this.spawnCommuter(village, here);
+        if (commute.mobId !== null) live.add(commute.mobId);
+      }
+    }
+    // A commute that ended — or a town that stopped existing — leaves its villager behind,
+    // and a villager is the one mob the spawner never clears up by distance.
+    for (const id of [...this.commuterMobs.keys()]) {
+      if (!live.has(id)) this.removeCommuter(id);
+    }
+  }
+
+  /** The walk between the two doorways of a commute, going round the houses rather than
+   *  through them. Kept per commute because a breadth-first search across a village is not
+   *  something to run sixty times a second, and thrown away with the commute itself. */
+  private commutePath(
+    commute: Commute,
+    buildings: readonly VillageBuilding[],
+  ): { x: number; y: number; z: number }[] | null {
+    const cached = this.commutePaths.get(commute);
+    if (cached) return cached;
+    const from = buildings.find((b) => b.id === commute.from);
+    const to = buildings.find((b) => b.id === commute.to);
+    if (!from || !to) return null;
+    const plots = buildings.filter((b) => b.id !== from.id && b.id !== to.id);
+    const walk = pathAroundPlots(from.outside, to.outside, plots)
+      // No way round at all — a doorway somebody has walled in. The straight line is at
+      // least somewhere to go, and the villager's own step and hop deal with the rest.
+      ?? [{ ...from.outside }, { ...to.outside }];
+    this.commutePaths.set(commute, walk);
+    return walk;
+  }
+
+  private spawnCommuter(village: VillageRecord, at: { x: number; y: number; z: number }): number | null {
+    if (!this.world.hasChunk(toChunkCoord(at.x), toChunkCoord(at.z))) return null;
+    const mob = new Mob('villager', at.x + 0.5, at.y + 1, at.z + 0.5);
+    // Home is the village rather than the house, which is what `ensureVillageTrades` and
+    // the tutorial's villagers both read: somebody walking to work is still somebody the
+    // player can stop and talk to.
+    mob.homeX = village.x;
+    mob.homeZ = village.z;
+    mob.follow = { x: mob.x, z: mob.z };
+    this.mobs.add(mob);
+    this.commuterMobs.set(mob.id, mob);
+    return mob.id;
+  }
+
+  private liveCommuter(id: number): Mob | null {
+    const mob = this.commuterMobs.get(id);
+    if (!mob) return null;
+    if (mob.isDead || !this.mobs.mobs.includes(mob)) {
+      this.commuterMobs.delete(id);
+      return null;
+    }
+    return mob;
+  }
+
+  private removeCommuter(id: number): void {
+    const mob = this.commuterMobs.get(id);
+    this.commuterMobs.delete(id);
+    if (!mob) return;
+    const index = this.mobs.mobs.indexOf(mob);
+    if (index >= 0) this.mobs.mobs.splice(index, 1);
   }
 
   /** The porter mob behind an id, or nothing when the mob manager has taken it away.
@@ -3190,13 +4143,20 @@ export class Game {
           this.villages.addPoints(village.id, interaction.count);
           this.player.inventory.add({ id: 'emerald', count: 2 });
         }
+        if (interaction.kind === 'learn') {
+          // The town that has just explained stops and lines hands over the first two.
+          // The recipe is a click away and the player would find it — but this is the one
+          // moment the game is teaching the thing everything else hangs off, and sending
+          // them to the crafting screen for two blocks of cobblestone first is sending
+          // them away from the lesson.
+          this.player.inventory.add({ id: 'stop', count: TUTORIAL_STOPS });
+        }
         // Re-supplying does not advance the step, so `complete` says nothing; the player
         // still needs to be told the crate is in their pack.
         this.toast(
           this.questline.complete(interaction.kind, this.villages) ??
             (interaction.kind === 'accept' ? '積み荷を受け取った' : null),
         );
-        this.linkQuestVillages();
       },
     };
   }
@@ -3215,8 +4175,8 @@ export class Game {
     // From one village's street to the other's, not centre to centre: the middle of a
     // village is its well and its houses, and a road ploughed through them is neither
     // what a player would build nor pleasant to arrive in.
-    const start = this.roads.streetPoint(from, to.x, to.z);
-    const end = this.roads.streetPoint(to, from.x, from.z);
+    const start = this.roads.streetPoint(townPlace(from), to.x, to.z);
+    const end = this.roads.streetPoint(townPlace(to), from.x, from.z);
     return this.runRoad(start, end, block, start.y, end.y, width);
   }
 
@@ -3226,8 +4186,8 @@ export class Game {
     const to = this.villages.get(toId ?? this.questline.targetId ?? '');
     if (!from || !to) return 0;
     const built = this.layRailway(
-      this.roads.streetPoint(from, to.x, to.z),
-      this.roads.streetPoint(to, from.x, from.z),
+      this.roads.streetPoint(townPlace(from), to.x, to.z),
+      this.roads.streetPoint(townPlace(to), from.x, from.z),
     );
     this.transport.invalidate();
     return Math.round(built.length);
@@ -3280,7 +4240,7 @@ export class Game {
     const here = `${x},${z}`;
     if (this.roads.columns.get(here) === y && this.roads.surfaces.get(here) === surface) return;
     if (this.world.hasChunk(toChunkCoord(x), toChunkCoord(z))) {
-      this.world.setBlock(x, y, z, surface);
+      const changed = this.world.setBlock(x, y, z, surface);
       // Headroom, and then whatever falls into it. Cutting under a dune drops the entire
       // sand column onto the fresh road one block at a time, and a road with something
       // sitting on it is not a road — the index drops it and the route reads as broken.
@@ -3293,19 +4253,35 @@ export class Game {
         }
         if (!cleared) break;
       }
+      // Paving a column that already held this exact block writes nothing and records
+      // nothing — and the index reads the *record*, not the world, so a road nobody
+      // recorded is not a road. Gravel laid over the natural gravel of a riverbed, or over
+      // a village's own paving, is exactly that: one column of it in the middle of a
+      // finished run reads as 「未接続 あと 1m」 with the road plainly on the ground.
+      if (!changed) {
+        this.recordEdit(x, y, z, surface);
+        this.roads.onBlockChanged(x, y, z, surface, surface);
+      }
       return;
     }
+    this.recordEdit(x, y, z, surface);
+    for (let h = 1; h <= HEADROOM; h++) this.recordEdit(x, y + h, z, Block.AIR);
+    this.roads.onBlockChanged(x, y, z, Block.GRASS, surface);
+  }
+
+  /** Writes one cell into the recorded edits without touching the world.
+   *
+   *  For the two cases where the world cannot or need not be written: a chunk that is not
+   *  in memory, and a cell that already holds exactly this block. The index reads the
+   *  record rather than the world, so both of them still have to be recorded. */
+  private recordEdit(x: number, y: number, z: number, block: BlockId): void {
     const key = chunkKey(toChunkCoord(x), toChunkCoord(z));
     let edits = this.world.edits.get(key);
     if (!edits) {
       edits = new Map();
       this.world.edits.set(key, edits);
     }
-    edits.set(blockIndex(toLocalCoord(x), y, toLocalCoord(z)), surface);
-    for (let h = 1; h <= HEADROOM; h++) {
-      edits.set(blockIndex(toLocalCoord(x), y + h, toLocalCoord(z)), Block.AIR);
-    }
-    this.roads.onBlockChanged(x, y, z, Block.GRASS, surface);
+    edits.set(blockIndex(toLocalCoord(x), y, toLocalCoord(z)), block);
   }
 
   /** What to actually lay at a column: never something worse than what is already there.
@@ -3338,8 +4314,29 @@ export class Game {
       document.body.classList.add('screen-open');
     } else {
       document.body.classList.remove('screen-open');
+      // Zooming the map turns the wheel, and the wheel is also the hotbar. Nothing reads
+      // the accumulator while a screen is up, so without this the whole zoom comes out as
+      // a hotbar scroll the moment the map closes.
+      this.options.input.takeWheel();
     }
     this.hud.setClickPrompt(!open && this.ready && !this.paused && !this.player.isDead);
+  }
+
+  /** Sends the player to a place they picked on the map.
+   *
+   *  Behind the debug mode, exactly as the all-items shelf is: walking to somewhere you
+   *  can see on the map is most of what the map is for, and a game that let you skip it
+   *  from the map itself would be a different game. The `G` box stays where it is — typing
+   *  coordinates you already know is a different thing from pointing at a place. */
+  private warpFromMap(x: number, z: number): void {
+    if (!this.options.settings.creative) {
+      this.hud.toast('デバッグモードが切になっている（Esc のポーズ画面で入れる）');
+      return;
+    }
+    this.toggleWorldMap();
+    this.jumpTo(x, z, null);
+    // The same wording the `G` box uses, because it is the same thing happening.
+    this.hud.toast(`X ${Math.floor(x)} / Y ${Math.round(this.player.y)} / Z ${Math.floor(z)} へ移動した`);
   }
 
   private openScreen(open: () => void): void {
@@ -3500,8 +4497,8 @@ export class Game {
       return null;
     }
 
-    const start = this.roads.streetPoint(from, to.x, to.z);
-    const end = this.roads.streetPoint(to, from.x, from.z);
+    const start = this.roads.streetPoint(townPlace(from), to.x, to.z);
+    const end = this.roads.streetPoint(townPlace(to), from.x, from.z);
     const blocks = this.runRoad(start, end, Block.DIRT_PATH, start.y, end.y, SAMPLE_WIDTH);
     // Then a railway beside it, which is the other half of the demonstration: the same
     // two villages joined by something that does not touch the ground at all. The stretch
@@ -3519,7 +4516,18 @@ export class Game {
     this.player.inventory.add({ id: 'station', count: SAMPLE_STATIONS });
     this.villages.discover(from.id);
     this.villages.discover(to.id);
-    this.transport.requestRoute(from.id, to.id);
+    // A stop at each end and a line calling at both, because the sample world is supposed
+    // to show a working service and nothing works without one.
+    this.player.inventory.add({ id: 'stop', count: SAMPLE_STOPS });
+    this.player.inventory.add({ id: 'industry_kit', count: 1 });
+    const near = this.stopServing(from);
+    const far = this.stopServing(to);
+    if (near && far) {
+      const line = this.lines.createLine('見本線');
+      this.lines.addCall(line.id, near.id);
+      this.lines.addCall(line.id, far.id);
+    }
+    this.syncLines();
     this.transport.invalidate();
     // Standing on the road, looking down it, is the whole point of the sample — so the
     // player starts on the road itself rather than in the middle of the village, and far
@@ -3626,11 +4634,14 @@ export class Game {
   }
 
   /** The curves near the player, as polylines for the map. */
-  private railOverlay(): { x: number; z: number }[][] {
-    const key = `${this.trackNet.revision}:${Math.round(this.player.x / 32)},${Math.round(this.player.z / 32)}`;
+  private railOverlay(
+    at: { x: number; z: number } = this.player,
+    reach = MINIMAP_REACH,
+  ): { x: number; z: number }[][] {
+    const key = `${this.trackNet.revision}:${Math.round(at.x / 32)},${Math.round(at.z / 32)}:${reach}`;
     if (this.railMap?.key === key) return this.railMap.lines;
     const lines = this.trackNet
-      .edgesNear(this.player.x, this.player.z, MINIMAP_REACH)
+      .edgesNear(at.x, at.z, reach)
       .map((edge) => sampleTrack(edge.curve, MINIMAP_RAIL_STEP).map((p) => ({ x: p.x, z: p.z })));
     this.railMap = { key, lines };
     return lines;
@@ -3656,8 +4667,8 @@ export class Game {
    *  street, counted the way `runRoad` walks it, and what fraction of them would be
    *  bridge rather than road. */
   private roadRun(from: VillageRecord, to: VillageRecord): { blocks: number; water: number } {
-    const start = this.roads.streetPoint(from, to.x, to.z);
-    const end = this.roads.streetPoint(to, from.x, from.z);
+    const start = this.roads.streetPoint(townPlace(from), to.x, to.z);
+    const end = this.roads.streetPoint(townPlace(to), from.x, from.z);
     // A road goes up, down, left and right, so its length is the two legs added together
     // rather than the longer of them. Counting the way it used to be walked would pick a
     // pair whose finished road is half again as long as the sample is meant to be.
@@ -3763,7 +4774,10 @@ export class Game {
       chests,
       furnaces,
       villagers: this.mobs.mobs
-        .filter((mob) => mob.kind === 'villager')
+        // A commuter is a view of a walk the town re-derives on its own, exactly as a
+        // porter is a view of a shipment. Saving one would put a second villager in the
+        // street every time the world was opened.
+        .filter((mob) => mob.kind === 'villager' && !this.commuterMobs.has(mob.id))
         .map((mob) => ({
           x: mob.x,
           y: mob.y,
@@ -3775,7 +4789,8 @@ export class Game {
       populatedChunks: [...this.populatedChunks],
       villages: this.villages.toJSON(),
       freight: this.freightEarned,
-      routes: this.transport.toJSON(),
+      network: this.lines.toJSON(),
+      industries: this.industries.toJSON(),
       quest: this.questline.toJSON(),
       pendingVillagers: [...this.pendingVillagers],
       tracks: this.trackNet.toJSON(),
@@ -3857,7 +4872,8 @@ export class Game {
       villages: () =>
         [...this.villages.byId.values()].map((v) => ({
           id: v.id, name: v.name, rank: rankLabel(v.stage), x: v.x, z: v.z,
-          kind: v.kind, produces: v.produces, input: v.input, inputStock: v.inputStock,
+          produces: v.produces, inputs: [...v.inputs],
+          inputStock: Object.fromEntries(v.inputStock),
           needs: [...v.needs], stage: v.stage, points: v.points, stock: v.stock,
           received: v.received, discovered: v.discovered,
           outpost: v.outpost ?? false, parent: v.parent ?? null,
@@ -3893,9 +4909,7 @@ export class Game {
       }),
       /** Skips a tutorial step from the console when there is no villager to hand. */
       questStep: (kind: 'accept' | 'deliver' | 'learn'): string | null => {
-        const message = this.questline.complete(kind, this.villages);
-        this.linkQuestVillages();
-        return message;
+        return this.questline.complete(kind, this.villages);
       },
       gotoQuestTarget: (): { x: number; z: number } | null => {
         const objective = this.questline.objective(this.villages, this.focusRoute(), this.networkState());
@@ -3905,17 +4919,192 @@ export class Game {
       },
       routes: () =>
         this.transport.routes.map((route) => ({
-          from: route.from, to: route.to, good: route.good,
+          id: route.id, line: this.lines.lines.get(route.lineId)?.name ?? '?',
+          from: route.from.name, to: route.to.name,
+          fromTown: route.from.town, toTown: route.to.town, good: route.good,
           connected: route.connected, length: route.length, missing: route.missing,
           porters: route.porters.length, quality: Math.round(route.quality * 100) / 100,
           grade: route.grade, load: this.transport.loadOf(route), delivered: route.delivered,
-          wanted: this.villages.get(route.to)?.needs.includes(route.good) ?? false,
+          wanted: this.townOf(route.to)?.needs.includes(route.good) ?? false,
           vehicle: route.vehicle, climb: route.climb,
           detour: Math.round(route.detour * 100) / 100,
           direct: Math.round(route.direct), doorGap: Math.round(route.doorGap),
           cartPinch: route.cartPinch, railPinch: route.railPinch, nearMiss: route.nearMiss,
           stationGap: route.stationGap,
         })),
+      // --- stops, lines and industries ------------------------------------
+      /** Every stop the player has put down. */
+      stops: () =>
+        [...this.lines.stops.values()].map((stop) => ({
+          id: stop.id, name: stop.name, x: stop.x, y: stop.y, z: stop.z,
+          town: stop.town, place: this.stopPlace(stop),
+          onLines: this.lines.linesAt(stop.id).length,
+        })),
+      /** Every line, and where each one calls. */
+      lines: () =>
+        [...this.lines.lines.values()].map((line) => ({
+          id: line.id, name: line.name,
+          calls: line.stops.map((id) => this.lines.stops.get(id)?.name ?? '?'),
+          legs: this.transport.legsOfLine(line.id).map((route) => ({
+            from: route.from.name, to: route.to.name,
+            connected: route.connected, vehicle: route.vehicle,
+            length: Math.round(route.length), missing: Math.round(route.missing),
+          })),
+        })),
+      /** Puts a stop down from the console, skipping the item and the reach. */
+      placeStop: (x = this.player.x, z = this.player.z, y?: number) => {
+        const at = {
+          x: Math.round(x),
+          y: y ?? this.groundHeightAt(Math.round(x), Math.round(z)),
+          z: Math.round(z),
+        };
+        const town = this.villages.at(at.x, at.z) ?? this.nearestTownWithin(at.x, at.z, STOP_TOWN_REACH);
+        const placed = this.lines.addStop(at, town?.id ?? null, town?.name);
+        if (!placed.ok) return { ok: false as const, why: placed.why };
+        this.buildStopMarker(placed.stop);
+        this.syncLines();
+        return { ok: true as const, id: placed.stop.id, name: placed.stop.name, town: placed.stop.town };
+      },
+      /** Makes a line calling at the named stops, in order. */
+      makeLine: (stopIds: string[], name?: string) => {
+        const line = this.lines.createLine(name);
+        for (const id of stopIds) this.lines.addCall(line.id, id);
+        this.selectedLine = line.id;
+        this.syncLines();
+        return { id: line.id, name: line.name, calls: line.stops.length };
+      },
+      /** What every stop and station is judged to serve — the same two rules the light in
+       *  the world draws, in a form a test can read. */
+      links: () => ({
+        stops: [...this.lines.stops.values()].map((stop) => {
+          const link = this.stopLink(stop);
+          return {
+            id: stop.id, name: stop.name, x: stop.x, z: stop.z,
+            town: link.town ? displayName(link.town) : null,
+            works: link.works?.name ?? null,
+            townAway: link.nearTown ? Math.round(link.nearTown.distance) : null,
+            worksAway: link.nearWorks ? Math.round(link.nearWorks.distance) : null,
+          };
+        }),
+        stations: this.trackNet.stations().map((node) => {
+          const served = this.villageServedBy(node);
+          return {
+            id: node.id, x: Math.round(node.x), z: Math.round(node.z),
+            town: served ? displayName(served.village) : null,
+            away: served ? Math.round(served.distance) : null,
+          };
+        }),
+      }),
+      /** What a stop put down at a point would serve, before putting one down. */
+      linkAt: (x = this.player.x, z = this.player.z) => {
+        const link = this.linkAt(Math.round(x), Math.round(z));
+        return {
+          town: link.town ? displayName(link.town) : null,
+          works: link.works?.name ?? null,
+          townAway: link.nearTown ? Math.round(link.nearTown.distance) : null,
+          worksAway: link.nearWorks ? Math.round(link.nearWorks.distance) : null,
+          townReach: STOP_TOWN_REACH,
+          worksReach: STOP_SITE_REACH,
+        };
+      },
+      /** Every town's fields: what it works, and what is waiting at its depot. */
+      fields: () =>
+        this.villages
+          .discovered()
+          .filter((village) => !village.outpost)
+          .map((village) => ({
+            town: displayName(village),
+            x: village.x,
+            z: village.z,
+            stage: village.stage,
+            parcels: fieldsAt(this.options.seed, village, village.stage).length,
+            area: fieldArea(village.stage),
+            target: fieldTarget(village.stage),
+            harvest: village.harvest,
+            distance: Math.round(Math.hypot(village.x - this.player.x, village.z - this.player.z)),
+            // What the ground actually allowed, which is never quite what was planned.
+            standing: countFields(this.world, this.options.seed, village),
+            // And where the crop got to. The depot is usually empty because it is a
+            // doorway rather than a barn: what is cut is carried in the same breath.
+            food: this.foodHeld(village),
+          })),
+      /** Ploughs the fields of the town underfoot now, rather than waiting for a chunk to
+       *  arrive. Says how much soil it actually turned over, which is the number the
+       *  ground has the final say in. */
+      plough: () => {
+        const here = this.villages.at(this.player.x, this.player.z)
+          ?? this.nearestTownWithin(this.player.x, this.player.z, VILLAGE_RADIUS * 2);
+        if (!here) return { ok: false as const, why: 'no-town' as const };
+        const work = applyFields(this.world, this.options.seed, here, this.roadLevelAt);
+        return { ok: true as const, town: displayName(here), ...work };
+      },
+      /** Every industry the player has sited. */
+      industries: () =>
+        this.industries.all().map((works) => ({
+          id: works.id, name: works.name, kind: works.kind,
+          label: industryType(works.kind)?.label ?? '産業',
+          good: works.good,
+          x: works.x, y: works.y, z: works.z,
+          stock: works.stock, shipped: works.shipped,
+          richness: Math.round(works.richness * 100) / 100,
+          served: this.lines.stopNear(works.x, works.z, STOP_SITE_REACH) !== null,
+        })),
+      /** What the ground here would support, without building anything. Every kind is
+       *  reported on, including the ones that missed and by how much — which is the whole
+       *  of what a refusal in the world says, in a form a test can read. */
+      survey: (x = this.player.x, z = this.player.z) => {
+        const at = { x: Math.round(x), y: this.groundHeightAt(Math.round(x), Math.round(z)), z: Math.round(z) };
+        const ground = surveyGround(this.world, at.x, at.y, at.z);
+        return {
+          found: ground
+            .filter((report) => report.short.length === 0)
+            .map((report) => ({
+              kind: report.kind, label: report.label, good: report.good,
+              count: report.count, density: Math.round(report.density * 1000) / 1000,
+              richness: Math.round(report.richness * 100) / 100,
+            })),
+          all: ground.map((report) => ({
+            kind: report.kind, label: report.label,
+            count: report.count, need: report.needCount,
+            density: Math.round(report.density * 1000) / 1000,
+            needDensity: report.needDensity,
+            short: [...report.short],
+          })),
+          why: ground.some((report) => report.short.length === 0) ? null : depositMissReason(ground),
+        };
+      },
+      /** Sites an industry from the console, skipping the item and the reach. */
+      placeIndustry: (x = this.player.x, z = this.player.z) => {
+        const at = { x: Math.round(x), y: this.groundHeightAt(Math.round(x), Math.round(z)), z: Math.round(z) };
+        const ground = surveyGround(this.world, at.x, at.y, at.z);
+        const result = this.industries.place(at, ground.find((report) => report.short.length === 0) ?? null);
+        if (!result.ok) {
+          return {
+            ok: false as const,
+            why: result.why,
+            reason: result.why === 'too-close'
+              ? `${result.near.name}まで ${Math.round(result.distance)}m`
+              : depositMissReason(ground),
+          };
+        }
+        this.buildIndustrySite(result.industry);
+        this.transport.invalidate();
+        return {
+          ok: true as const,
+          id: result.industry.id, name: result.industry.name,
+          good: result.industry.good, x: result.industry.x, z: result.industry.z,
+        };
+      },
+      /** Takes one back down, as the kit does. Names the one nearest the point when no id
+       *  is given, so a test can undo what it just built without holding on to the id. */
+      removeIndustry: (id?: string) => {
+        const works = id
+          ? this.industries.get(id)
+          : this.industries.near(this.player.x, this.player.z, INDUSTRY_SPACING);
+        if (!works) return { ok: false as const, why: 'no-industry' as const };
+        this.takeDownIndustry(works);
+        return { ok: true as const, id: works.id, name: works.name };
+      },
       /** Everything the L screen shows, without opening it. */
       ledger: (): LedgerView => this.ledgerView(),
       /** Emeralds the network has paid out so far. */
@@ -3975,6 +5164,44 @@ export class Game {
           })),
         };
       },
+      /** The town inside the village the player is standing in: who lives where, what
+       *  each building is waiting for, and who is walking across it right now. */
+      town: () => {
+        const here = this.villages.at(this.player.x, this.player.z);
+        if (!here) return null;
+        const town = this.towns.get(here.id);
+        if (!town) return null;
+        const buildings = this.buildingsFor(here);
+        return {
+          village: here.name,
+          people: this.towns.populationOf(here.id),
+          waiting: town.waiting,
+          short: this.towns.shortOf(here.id),
+          buildings: [...town.cells.values()].map((cell) => ({
+            id: cell.id,
+            label: buildings.find((b) => b.id === cell.id)?.label ?? cell.id,
+            use: cell.use,
+            people: cell.people,
+            staff: cell.staff,
+            wants: [...cell.wants].map(([good, held]) => ({ good, held })),
+          })),
+        };
+      },
+      /** Everybody walking across the town the player is in, and whether a villager is
+       *  currently drawing each of them. A commute with no mob is one happening out of
+       *  sight, which is the thing worth being able to see from here. */
+      commutes: () => {
+        const here = this.villages.at(this.player.x, this.player.z);
+        const town = here ? this.towns.get(here.id) : undefined;
+        if (!town) return [];
+        return town.commutes.map((commute) => ({
+          from: commute.from,
+          to: commute.to,
+          t: Number(commute.t.toFixed(3)),
+          dir: commute.dir,
+          drawn: commute.mobId !== null,
+        }));
+      },
       /** What the crosshair is on, and the key that would claim it. */
       lookingAt: () => this.buildingPrompt(),
       /** Moves a village's loading and unloading, the way looking at a building and
@@ -4024,6 +5251,26 @@ export class Game {
       /** The world's clock speed, and how much of it the machine is keeping up with. */
       speed: () => ({ set: this.options.settings.speed, effective: this.effectiveSpeed }),
       setSpeed: (speed: number): number => this.setSpeed(speed),
+      /** Turns the world's clock by hand. See `fastForward`: the same seconds the game
+       *  would have run, without the wall clock going with them. */
+      fastForward: (seconds: number, step?: number): number => this.fastForward(seconds, step),
+      /** Walks every leg's road again now rather than within `RESURVEY_INTERVAL`. What
+       *  "I have just changed a block, is it joined up yet?" wants to ask. */
+      resurvey: (): number => {
+        this.transport.invalidate();
+        this.transport.update(0, this.player.x, this.player.z);
+        return this.transport.routes.filter((route) => route.connected).length;
+      },
+      /** How far the world is streamed, in chunks. Small is fast: most of what the browser
+       *  test waits for is chunks being generated, and most of what it looks at is under
+       *  its own feet. */
+      renderDistance: (chunks?: number): number => {
+        if (chunks !== undefined) {
+          this.options.settings.renderDistance = Math.max(2, Math.min(16, Math.round(chunks)));
+          this.setRenderDistance(this.options.settings.renderDistance);
+        }
+        return this.options.settings.renderDistance;
+      },
       /** Road the player laid that the index will not have, and why. */
       roadFaults: (radius = FAULT_REACH): RoadFault[] => this.roadFaults(radius),
       /** Widens the quest route's road to what a cart needs, the way walking its length
@@ -4031,10 +5278,26 @@ export class Game {
        *  afternoon, not the browser test's. */
       widenRoad: (fromId?: string, toId?: string): number =>
         this.debugBuildRoad(fromId, toId, undefined, 3),
-      /** Lays a road between the quest's two villages. Building 300 blocks of it by hand
+      /** Lays a road between the quest's two towns. Building 300 blocks of it by hand
        *  is the player's job, not the smoke test's. */
       buildRoad: (fromId?: string, toId?: string, surface?: string): number =>
         this.debugBuildRoad(fromId, toId, surface),
+      /** The same, between two arbitrary points — which is what a road to an industry is,
+       *  since an industry is somewhere the player chose rather than a place on the grid.
+       *  Each end is snapped to the nearest street of whatever town it stands in, so a
+       *  road to a town still arrives on its street rather than through its houses. */
+      pave: (ax: number, az: number, bx: number, bz: number, surface?: string, width = 1): number => {
+        const block = surface ? itemDef(surface)?.placesBlock ?? Block.DIRT_PATH : Block.DIRT_PATH;
+        const end = (x: number, z: number, towards: { x: number; z: number }): RoadPoint => {
+          const town = this.villages.at(x, z);
+          if (town) return this.roads.streetPoint(townPlace(town), towards.x, towards.z);
+          const at = { x: Math.round(x), z: Math.round(z) };
+          return { ...at, y: this.groundHeightAt(at.x, at.z) };
+        };
+        const from = end(ax, az, { x: bx, z: bz });
+        const to = end(bx, bz, { x: ax, z: az });
+        return this.runRoad(from, to, block, from.y, to.y, width);
+      },
       /** Lays a railway from one village to the other, which is what puts a train on the
        *  route. Curves, piers and all — the same builder the sample world uses, with
        *  nothing left open at the near end. */
@@ -4369,8 +5632,15 @@ export class Game {
     // After the edits are in place: the road index is built from them, not from the
     // world, which is what lets a road be surveyed while its chunks are still unloaded.
     this.villages.loadJSON(data.villages);
+    // Nothing about a town is saved, so the towns of the world being closed have to go:
+    // they are laid out again, hungry, from the villages that just came back.
+    this.towns.clear();
+    for (const id of [...this.commuterMobs.keys()]) this.removeCommuter(id);
     this.roads.seedFromEdits();
-    this.transport.loadJSON(data.routes);
+    this.industries.loadJSON(data.industries);
+    this.lines.loadJSON(data.network);
+    this.linesAt = -1;
+    this.syncLines();
     this.questline.loadJSON(data.quest);
     this.freightEarned = data.freight ?? 0;
     // Absent in every world written before this railway existed, which opens with none

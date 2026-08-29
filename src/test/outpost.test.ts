@@ -10,7 +10,7 @@ import { OUTPOST_FILL, OUTPOST_PAD, planOutpost } from '../world/generation/vill
 import { Block } from '../world/blocks';
 import {
   VillageRegistry,
-  villageTrade,
+  townCraft,
   type VillageRecord,
   type VillageSource,
 } from '../game/villages';
@@ -22,12 +22,12 @@ const PARENT = { id: '0,0', x: 0, z: 0 };
 const flat = () => 60;
 
 function village(id: string, x: number, z: number): VillageRecord {
-  const trade = villageTrade(1, x, z, 'plains');
+  const craft = townCraft(1, x, z);
   return {
     id, x, z, baseY: 60, variant: 'plains', name: `村${id}`,
-    kind: trade.kind, produces: trade.produces, input: trade.input, inputStock: 0,
+    produces: craft.produces, inputs: craft.inputs, inputStock: new Map(),
     needs: [], stage: 0, points: 0, stock: 0, received: 0,
-    discovered: true, spawnedStage: 0, progress: 0,
+    discovered: true, spawnedStage: 0, progress: 0, harvest: 0, harvestProgress: 0,
   };
 }
 
@@ -92,9 +92,9 @@ describe('a hamlet as a village', () => {
     expect(record.produces).not.toBe(parent.produces);
     expect(record.outpost).toBe(true);
     expect(record.parent).toBe(parent.id);
-    // Nothing that needs feeding: it is the far end of the first road, not a workshop.
-    expect(record.kind).toBe('farm');
-    expect(record.input).toBeNull();
+    // Nothing that needs feeding: it is the far end of the first line, and the one
+    // place in the world that makes its goods out of nothing.
+    expect(record.inputs).toEqual([]);
   });
 
   it('is the place the player is standing in, not its parent', () => {
@@ -197,11 +197,12 @@ describe('building a hamlet', () => {
     expect(fill).toHaveLength(OUTPOST_FILL - 1);
   });
 
-  it('builds two houses with somebody in each, a plot and a path between them', () => {
+  it('builds two houses with somebody in each, and a path between them', () => {
     const plan = planOutpost(1, site, 64, 'plains');
     expect(plan.villagers).toHaveLength(2);
-    expect(plan.chests).toHaveLength(2);
-    expect(plan.footprints).toHaveLength(3);
+    // Two houses and no field. A hamlet used to come with a wheat plot; growing things is
+    // an industry the player sites now, and one that arrived for free undercut that.
+    expect(plan.footprints).toHaveLength(2);
     const path = plan.placements.filter((p) => p.b === Block.DIRT_PATH && p.z === site.z);
     expect(path.length).toBeGreaterThanOrEqual(10);
     // Level with the pad it crosses, not a block proud of it: the doors either side open

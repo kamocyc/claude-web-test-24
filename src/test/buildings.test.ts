@@ -7,6 +7,7 @@ import {
   depotOf,
   describeBuilding,
   pathAroundPlots,
+  pointAlongPath,
 } from '../game/buildings';
 import {
   FACING_STEP,
@@ -16,18 +17,18 @@ import {
   type HouseRecord,
 } from '../world/generation/village';
 import { Block } from '../world/blocks';
-import { villageTrade, type VillageRecord } from '../game/villages';
+import { townCraft, type VillageRecord } from '../game/villages';
 
 const SITE = { cellX: 0, cellZ: 0, x: 100, z: 200 };
 const BASE_Y = 60;
 
 function village(): VillageRecord {
-  const trade = villageTrade(1, SITE.x, SITE.z, 'plains');
+  const craft = townCraft(1, SITE.x, SITE.z);
   return {
     id: '100,200', x: SITE.x, z: SITE.z, baseY: BASE_Y, variant: 'plains', name: '麦',
-    kind: trade.kind, produces: trade.produces, input: trade.input, inputStock: 0,
+    produces: craft.produces, inputs: craft.inputs, inputStock: new Map(),
     needs: [], stage: 0, points: 0, stock: 0, received: 0,
-    discovered: true, spawnedStage: 0, progress: 0,
+    discovered: true, spawnedStage: 0, progress: 0, harvest: 0, harvestProgress: 0,
   };
 }
 
@@ -128,12 +129,17 @@ describe('buildings a village earns', () => {
     for (const house of plan.buildings) expect(house.door.y).toBe(64);
   });
 
-  it('gives a market its own way in', () => {
-    const plan = planGrowth(1, SITE, BASE_Y, 'plains', 2, []);
-    const market = plan.buildings.find((house) => house.role === 'market');
-    expect(market).toBeDefined();
-    if (!market) return;
-    expect(market.outside.z).toBe(market.door.z - 1);
+  it('raises the kinds of building its zoning asked for', () => {
+    // A growth stage builds whole blocks, so what it raises follows from the zone of the
+    // blocks that stage reaches — not from a roll.
+    const seen = new Set<string>();
+    for (let stage = 1; stage <= 4; stage++) {
+      for (const house of planGrowth(1, SITE, BASE_Y, 'plains', stage, []).buildings) {
+        seen.add(house.role);
+      }
+    }
+    expect(seen.has('house')).toBe(true);
+    expect([...seen].every((role) => role !== 'plaza')).toBe(true);
   });
 });
 
@@ -195,3 +201,37 @@ describe('the walk from a doorway to the road', () => {
     }
   });
 });
+
+
+describe('walking along a path', () => {
+  const path = [
+    { x: 0, y: 60, z: 0 },
+    { x: 0, y: 60, z: 4 },
+    { x: 8, y: 64, z: 4 },
+  ];
+
+  it('lands on the ends at 0 and 1', () => {
+    expect(pointAlongPath(path, 0)).toEqual(path[0]);
+    expect(pointAlongPath(path, 1)).toEqual(path[2]);
+  });
+
+  it('walks between the corners in between', () => {
+    // Halfway is the middle corner, because the fraction is of the corners rather than of
+    // the distance — a town's streets are short and the two are close enough.
+    expect(pointAlongPath(path, 0.5)).toEqual(path[1]);
+    const quarter = pointAlongPath(path, 0.25)!;
+    expect(quarter.z).toBeGreaterThan(0);
+    expect(quarter.z).toBeLessThan(4);
+  });
+
+  it('holds at the ends rather than running off them', () => {
+    expect(pointAlongPath(path, -3)).toEqual(path[0]);
+    expect(pointAlongPath(path, 9)).toEqual(path[2]);
+  });
+
+  it('answers for a path that is one point, and for one that is none', () => {
+    expect(pointAlongPath([path[0]], 0.5)).toEqual(path[0]);
+    expect(pointAlongPath([], 0.5)).toBeNull();
+  });
+});
+

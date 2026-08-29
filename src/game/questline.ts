@@ -1,17 +1,27 @@
 /** The tutorial, as a state machine.
  *
- *  It teaches the loop in the order the player can actually do it: find a village, carry
- *  its goods to a neighbour by hand (which is what puts that neighbour on the map), then
- *  learn that a road does the carrying for you, build one, and watch the first delivery
- *  arrive. Pure data — the game drives it with events and reads back an objective. */
+ *  It teaches the loop in the order the player can actually do it: find a town, carry its
+ *  goods to a neighbour by hand (which is what puts that neighbour on the map), learn that
+ *  somebody else will do the carrying if there is a *service* to carry it on, put down the
+ *  two stops, draw the line between them, join them on the ground, and watch the first
+ *  delivery arrive.
+ *
+ *  The three steps in the middle are the ones this game has that the last one did not. A
+ *  road that started trading by itself taught the player that roads were the game; they
+ *  are not. What the player designs is the line, and the tutorial has to say so before the
+ *  first shovel goes in the ground. Pure data — the game drives it with events and a
+ *  snapshot of the network, and reads back an objective. */
 
+import type { Industry } from './industry';
 import { itemLabel } from './items';
+import type { Line, Stop } from './lines';
 import type { Route } from './transport';
 import {
   MAX_STAGE,
   RANKS,
   STAGE_POINTS,
   displayName,
+  goodLabel,
   type GoodId,
   type VillageId,
   type VillageRecord,
@@ -23,6 +33,8 @@ export type QuestStep =
   | 'accept_haul'
   | 'deliver_by_hand'
   | 'learn_roads'
+  | 'place_stops'
+  | 'draw_line'
   | 'build_road'
   | 'watch_porter'
   | 'done';
@@ -37,13 +49,15 @@ export const HAUL_COUNT = STAGE_POINTS[0] - 2;
  *  the whole thing is, which is what somebody opening the manual is asking — and keeping
  *  the two in one file is what stops them drifting apart. */
 export const QUEST_STEPS: readonly { step: QuestStep; label: string; detail: string }[] = [
-  { step: 'find_village', label: '村を見つける', detail: 'コンパスの ⌗ を目指して歩く。台地に踏み込むと村名・生産品・欲しがっている物が分かる' },
+  { step: 'find_village', label: '町を見つける', detail: 'コンパスの ⌗ を目指して歩く。台地に踏み込むと町名・工場の加工・欲しがっている物が分かる' },
   { step: 'accept_haul', label: '運搬を引き受ける', detail: '村人に話しかけると、取引画面の一番上に頼み事が出る。積み荷はその場で持たせてくれる' },
   { step: 'deliver_by_hand', label: '人力で運ぶ', detail: `${HAUL_COUNT} 個を担いで分村まで歩き、向こうの村人に納める。分村も地図に載る` },
-  { step: 'learn_roads', label: '道の話を聞く', detail: 'もう一度話しかけると「道さえあれば我々が自分で運ぶ」と言う' },
-  { step: 'build_road', label: '道でつなぐ', detail: 'シャベルを持って右クリックを押したまま歩く。1 マスも空けずにつながると路線になる' },
+  { step: 'learn_roads', label: '運送の話を聞く', detail: 'もう一度話しかけると「停留所と路線さえあれば我々が自分で運ぶ」と言う' },
+  { step: 'place_stops', label: '停留所を 2 つ置く', detail: '停留所を持って地面を右クリック。町の中に 1 つ、相手側にも 1 つ' },
+  { step: 'draw_line', label: '路線をひく', detail: '[N] で路線表を開き、新しい路線に 2 つの停留所を順に加える。ここまでは荷は 1 個も動かない' },
+  { step: 'build_road', label: '道でつなぐ', detail: 'シャベルを持って右クリックを押したまま歩く。1 マスも空けずにつながると路線が走り出す' },
   { step: 'watch_porter', label: '荷運びを見送る', detail: '在庫が 1 便ぶんたまると荷運びが出発する。近くにいれば実際に道を歩く姿が見える' },
-  { step: 'done', label: 'あとは網を広げる', detail: '以降は下の目標が順に出る。村を見つけ、道でつなぎ、舗装し、広げる' },
+  { step: 'done', label: 'あとは網を広げる', detail: '以降は下の目標が順に出る。産業を建て、停留所を置き、路線をひき、舗装し、広げる' },
 ];
 
 export interface QuestObjective {
@@ -72,11 +86,14 @@ export interface SavedQuest {
   milestone?: number;
 }
 
-/** Everything a milestone is allowed to look at: the villages the player has found and
- *  the routes between them. */
+/** Everything a milestone is allowed to look at: the towns the player has found, the
+ *  industries they have built, the service they have drawn, and the legs of it. */
 export interface NetworkState {
   villages: readonly VillageRecord[];
   routes: readonly Route[];
+  industries: readonly Industry[];
+  stops: readonly Stop[];
+  lines: readonly Line[];
   /** Where the player is, so "the nearest" can mean it. */
   player: { x: number; z: number };
   /** The nearest village nobody has walked into yet, when the grid knows of one. A goal
@@ -86,7 +103,8 @@ export interface NetworkState {
 }
 
 const EMPTY_STATE: NetworkState = {
-  villages: [], routes: [], player: { x: 0, z: 0 }, unfound: null,
+  villages: [], routes: [], industries: [], stops: [], lines: [],
+  player: { x: 0, z: 0 }, unfound: null,
 };
 
 /** A standing goal for the network, once the tutorial has run out of things to teach.
@@ -137,22 +155,31 @@ function closestGap(state: NetworkState): Route | null {
   return best;
 }
 
-function nameOf(state: NetworkState, id: VillageId): string {
-  return state.villages.find((v) => v.id === id)?.name ?? '?';
+function nameOf(_state: NetworkState, stop: Stop): string {
+  return stop.name;
 }
 
 function linked(state: NetworkState): Route[] {
   return state.routes.filter((r) => r.connected);
 }
 
-/** Villages standing at either end of a working route. */
+/** Towns standing at either end of a working leg. */
 function servedVillages(state: NetworkState): Set<VillageId> {
   const ids = new Set<VillageId>();
   for (const route of linked(state)) {
-    ids.add(route.from);
-    ids.add(route.to);
+    if (route.from.town) ids.add(route.from.town);
+    if (route.to.town) ids.add(route.to.town);
   }
   return ids;
+}
+
+/** Whether a town's works has anything to work with. */
+function fed(village: VillageRecord): boolean {
+  if (village.stock > 0) return true;
+  for (const good of village.inputs) {
+    if ((village.inputStock.get(good) ?? 0) > 0) return true;
+  }
+  return false;
 }
 
 /** The matching village closest to the player. It used to be whichever came first in the
@@ -182,16 +209,16 @@ function best(state: NetworkState, of: (v: VillageRecord) => number): number {
 export const MILESTONES: readonly Milestone[] = [
   {
     id: 'second_route',
-    title: '輸送路をもう 1 本ひらく',
+    title: '路線をもう 1 本ひらく',
     detail: (s) => {
       // Two different situations wear the same title, and only one of them is "lay road".
       // Saying which one it is now is the whole difference between a goal and a number
       // that does not move: a second route needs a second pair, and until the player has
       // walked into another village there is no pair to work on at all.
       const gap = closestGap(s);
-      if (gap) return `${nameOf(s, gap.from)}と${nameOf(s, gap.to)}を道でつなぐ — ${gapText(gap.missing)}`;
-      if (s.unfound) return 'つなぐ相手がいない。まずもう 1 つ村を見つける — コンパスの ⚑ へ';
-      return `つながっている輸送路 ${linked(s).length} / 2`;
+      if (gap) return `${nameOf(s, gap.from)}と${nameOf(s, gap.to)}をつなぐ — ${gapText(gap.missing)}`;
+      if (s.lines.length < 2) return 'まだ路線が 1 本しかない。[N] で新しい路線をひく';
+      return `つながっている区間 ${linked(s).length} / 2`;
     },
     reward: 6,
     done: (s) => linked(s).length >= 2,
@@ -206,43 +233,57 @@ export const MILESTONES: readonly Milestone[] = [
     pair: (s) => closestGap(s),
   },
   {
-    id: 'feed_workshop',
-    title: '工房の村に材料を届ける',
+    id: 'industry',
+    title: '一次産業を建てる',
     detail: (s) => {
-      const shop = s.villages.find((v) => v.kind === 'workshop');
-      if (!shop) return '工房の村をまだ見つけていない。探しに行こう';
-      return `${displayName(shop)}は${itemLabel(shop.input ?? '')}がないと何も作れない`;
+      const town = s.villages.find((v) => v.inputs.length > 0);
+      const wants = town ? town.inputs.map(goodLabel).join('と') : '原料';
+      return s.industries.length > 0
+        ? `建った。停留所を置いて路線でつなごう`
+        : `町の工場は${wants}がないと何も作らない。産業設置具を持って、鉱脈・砂地・森・草原を右クリック`;
     },
     reward: 8,
-    done: (s) => s.villages.some((v) => v.kind === 'workshop' && (v.inputStock > 0 || v.stock > 0)),
-    marker: (s) => nearest(s, (v) => v.kind === 'workshop' && v.inputStock <= 0 && v.stock <= 0),
+    done: (s) => s.industries.length >= 1,
+    marker: (s) => nearest(s, (v) => v.inputs.length > 0 && !fed(v)),
+  },
+  {
+    id: 'feed_works',
+    title: '町の工場に原料を届ける',
+    detail: (s) => {
+      const town = s.villages.find((v) => v.inputs.length > 0 && !fed(v));
+      if (!town) return '原料の届いていない町がない。次の町を探そう';
+      return `${displayName(town)}は${town.inputs.map(goodLabel).join('と')}がないと何も作れない`;
+    },
+    reward: 10,
+    done: (s) => s.villages.some((v) => v.inputs.length > 0 && fed(v)),
+    marker: (s) => nearest(s, (v) => v.inputs.length > 0 && !fed(v)),
   },
   {
     id: 'pave',
-    title: '路線を砂利以上に舗装する',
+    title: '区間を砂利以上に舗装する',
     detail: () => '砂利・丸石・木材・石レンガを道に敷くと荷運びが速くなり、一度に運ぶ量も増える',
     reward: 10,
     done: (s) => linked(s).some((r) => r.quality >= 1.2),
   },
   {
     id: 'grow_big',
-    title: `村を「${RANKS[2]}」に育てる`,
-    detail: (s) => `一番育っている村は今 ${RANKS[Math.min(best(s, (v) => v.stage), RANKS.length - 1)]}`,
+    title: `町を「${RANKS[2]}」に育てる`,
+    detail: (s) => `一番育っている町は今 ${RANKS[Math.min(best(s, (v) => v.stage), RANKS.length - 1)]}`,
     reward: 10,
     done: (s) => s.villages.some((v) => v.stage >= 2),
     marker: (s) => nearest(s, (v) => v.stage === best(s, (w) => w.stage)),
   },
   {
     id: 'three_served',
-    title: '3 つの村を輸送路でつなぐ',
-    detail: (s) => `輸送路につながっている村 ${servedVillages(s).size} / 3`,
+    title: '3 つの町を路線でつなぐ',
+    detail: (s) => `路線につながっている町 ${servedVillages(s).size} / 3`,
     reward: 12,
     done: (s) => servedVillages(s).size >= 3,
   },
   {
     id: 'town',
     title: `${RANKS[3]}をつくる`,
-    detail: (s) => `一番育っている村は今 ${RANKS[Math.min(best(s, (v) => v.stage), RANKS.length - 1)]}`,
+    detail: (s) => `一番育っている町は今 ${RANKS[Math.min(best(s, (v) => v.stage), RANKS.length - 1)]}`,
     reward: 16,
     done: (s) => s.villages.some((v) => v.stage >= 3),
     marker: (s) => nearest(s, (v) => v.stage === best(s, (w) => w.stage)),
@@ -255,9 +296,21 @@ export const MILESTONES: readonly Milestone[] = [
     done: (s) => linked(s).some((r) => r.quality >= 1.58),
   },
   {
+    id: 'two_inputs',
+    title: '原料が 2 種類要る工場を動かす',
+    detail: (s) => {
+      const hard = s.villages.filter((v) => v.inputs.length >= 2);
+      if (hard.length === 0) return '硝子・鍛冶・灯りの町をまだ見つけていない';
+      return hard.map((v) => `${v.name}: ${v.inputs.map(goodLabel).join(' + ')}`).join('、');
+    },
+    reward: 20,
+    done: (s) => s.villages.some((v) => v.inputs.length >= 2 && v.stock > 0),
+    marker: (s) => nearest(s, (v) => v.inputs.length >= 2 && v.stock <= 0),
+  },
+  {
     id: 'capital',
     title: `${RANKS[MAX_STAGE]}をつくる`,
-    detail: (s) => `${RANKS[MAX_STAGE]}になるには何本もの輸送路が要る。今 ${linked(s).length} 本`,
+    detail: (s) => `${RANKS[MAX_STAGE]}になるには何本もの路線が要る。今 ${linked(s).length} 区間`,
     reward: 24,
     done: (s) => s.villages.some((v) => v.stage >= MAX_STAGE),
     marker: (s) => nearest(s, (v) => v.stage === best(s, (w) => w.stage)),
@@ -269,15 +322,15 @@ export const MILESTONES: readonly Milestone[] = [
   {
     id: 'railway',
     title: '鉄道を敷く（線路でつなぎ、両端に駅を建てる）',
-    detail: () => '線路が両方の村に届き、その両端に駅が建つと列車が走る。速さも一度に運ぶ量も上がる',
+    detail: () => '線路が両方の停留所に届き、その両端に駅が建つと列車が走る。速さも一度に運ぶ量も上がる',
     reward: 20,
     done: (s) => linked(s).some((r) => r.vehicle === 'train'),
   },
 ];
 
 const STEPS: readonly QuestStep[] = [
-  'find_village', 'accept_haul', 'deliver_by_hand',
-  'learn_roads', 'build_road', 'watch_porter', 'done',
+  'find_village', 'accept_haul', 'deliver_by_hand', 'learn_roads',
+  'place_stops', 'draw_line', 'build_road', 'watch_porter', 'done',
 ];
 
 export class Questline {
@@ -392,10 +445,37 @@ export class Questline {
       return '納品した。村人がまだ何か言いたそうにしている';
     }
     if (kind === 'learn' && this.step === 'learn_roads') {
-      this.step = 'build_road';
-      return '「道さえあれば、我々が自分で運ぶ」— 2 つの村を歩ける道でつなごう';
+      this.step = 'place_stops';
+      return '「停留所を置いて、路線に並べてくれ。あとは我々がやる」— 停留所を 2 つ置こう';
     }
     return null;
+  }
+
+  /** Watches the network for the two steps nobody can announce with an event.
+   *
+   *  Putting a stop down and adding a call to a line are edits to a network, not things
+   *  that happen at a place — and a tutorial that had to be told about each of them would
+   *  need a hook in every one of the half dozen ways either can be undone as well. Reading
+   *  the state back is both shorter and impossible to get out of step with. */
+  observe(state: NetworkState): string | null {
+    if (this.step === 'place_stops') {
+      if (!this.servesBoth(state.stops)) return null;
+      this.step = 'draw_line';
+      return '停留所が 2 つ立った。[N] で路線表を開き、新しい路線に両方を加えよう';
+    }
+    if (this.step === 'draw_line') {
+      if (!state.routes.some((route) => this.involves(route))) return null;
+      this.step = 'build_road';
+      return '路線がひけた。あとは 2 つを道でつなげば荷が動きだす';
+    }
+    return null;
+  }
+
+  /** Whether the tutorial's two towns each have a stop of their own. */
+  private servesBoth(stops: readonly Stop[]): boolean {
+    if (!this.originId || !this.targetId) return false;
+    const towns = new Set(stops.map((stop) => stop.town));
+    return towns.has(this.originId) && towns.has(this.targetId);
   }
 
   onRouteEstablished(route: Route): string | null {
@@ -413,7 +493,7 @@ export class Questline {
   }
 
   private involves(route: Route): boolean {
-    const pair = [route.from, route.to];
+    const pair = [route.from.town, route.to.town];
     return (
       this.originId !== null && this.targetId !== null &&
       pair.includes(this.originId) && pair.includes(this.targetId)
@@ -489,6 +569,24 @@ export class Questline {
               step: this.step,
               title: 'もう一度村人に話しかける',
               detail: '納品のあと、何か言いたそうにしている',
+              marker: { x: target.x, z: target.z, kind: 'village' },
+            }
+          : null;
+      case 'place_stops':
+        return origin && target
+          ? {
+              step: this.step,
+              title: '停留所を 2 つ置く',
+              detail: `停留所を手に持って地面を右クリック。${origin.name}に 1 つ、${target.name}に 1 つ`,
+              marker: { x: origin.x, z: origin.z, kind: 'village' },
+            }
+          : null;
+      case 'draw_line':
+        return target
+          ? {
+              step: this.step,
+              title: '路線をひく',
+              detail: '[N] で路線表を開き、新しい路線に 2 つの停留所を順に加える',
               marker: { x: target.x, z: target.z, kind: 'village' },
             }
           : null;

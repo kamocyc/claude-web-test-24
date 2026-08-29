@@ -881,3 +881,35 @@ export function buildAtlas(): Atlas {
 export function tileNames(): string[] {
   return [...drawings.keys()];
 }
+
+// The stop, as it looks in the hand. A post with a sign on it standing on a paved square:
+// not a building, because a stop is not one — it is a place a line calls at, and the
+// picture has to say "a name on a pole" rather than "a shed".
+tile('stop', (ctx) => {
+  iconBase(ctx);
+  // the paving it stands on
+  rect(ctx, 2, 12, 12, 3, shade(STONE, 6));
+  rect(ctx, 2, 12, 12, 1, shade(STONE, 36));
+  // the post
+  rect(ctx, 7, 4, 2, 8, shade(BARK, -4));
+  // the sign, with a line of writing on it
+  rect(ctx, 3, 2, 10, 5, [222, 214, 196]);
+  rect(ctx, 3, 2, 10, 1, [250, 246, 234]);
+  rect(ctx, 5, 4, 6, 1, [90, 84, 74]);
+});
+
+// The industry kit, as it looks in the hand. A surveyor's stake driven into a seam: what
+// the tool actually does is *look at the ground and answer*, so the picture is the stake
+// and the rock rather than a factory the player has not earned yet.
+tile('industry_kit', (ctx) => {
+  iconBase(ctx);
+  // the seam it is driven into
+  rect(ctx, 1, 11, 14, 4, shade(STONE, -14));
+  rect(ctx, 3, 12, 3, 2, [46, 44, 48]);
+  rect(ctx, 9, 12, 4, 2, [46, 44, 48]);
+  // the stake
+  rect(ctx, 7, 3, 2, 9, shade(BARK, 8));
+  // the flag on it
+  rect(ctx, 9, 3, 5, 4, [226, 138, 62]);
+  rect(ctx, 9, 3, 5, 1, [248, 176, 104]);
+});

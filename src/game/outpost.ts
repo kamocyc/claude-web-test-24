@@ -1,8 +1,8 @@
 /** The tutorial's neighbour.
  *
- *  Two generated villages are never near each other: the grid puts them 320 blocks apart
- *  and each sits on a plateau 76 across, so two of them 50 blocks apart would be standing
- *  on each other. That made the first errand in the game a four hundred block walk, and
+ *  Two generated towns are never near each other: the grid puts them 320 blocks apart and
+ *  each sits on a plateau wide enough to hold a street grid, so two of them a few dozen
+ *  blocks apart would be standing on each other. That made the first errand in the game a four hundred block walk, and
  *  the road it teaches the player to lay an afternoon with a shovel — both of them the
  *  real game rather than the lesson.
  *
@@ -15,22 +15,29 @@
 
 import { villageId, type GoodId, type VillageId, type VillageRecord } from './villages';
 import { hashInts, mulberry32 } from '../core/rng';
-import { OUTPOST_FILL, OUTPOST_PAD, type VillageVariant } from '../world/generation/village';
+import { OUTPOST_FILL, OUTPOST_PAD, VILLAGE_RADIUS, type VillageVariant } from '../world/generation/village';
 
-/** How far from its parent village a hamlet stands. Far enough to be somewhere else, near
- *  enough that carrying a crate there is a walk rather than an expedition. */
-export const OUTPOST_DISTANCE = 50;
-/** The band of distances searched for level ground, either side of that. */
-export const OUTPOST_NEAR = 44;
-export const OUTPOST_FAR = 62;
+/** Walking this close is what counts as finding it. Smaller than a town's, because a
+ *  hamlet is smaller. */
+export const OUTPOST_RADIUS = 16;
+
+/** How far from its parent town a hamlet stands.
+ *
+ *  Derived, not chosen: a town flattens the ground out to `VILLAGE_RADIUS` and a hamlet
+ *  levels its own pad out to `OUTPOST_RADIUS`, so anything closer than the sum of those
+ *  puts the hamlet's pad inside the town's plateau — two flat grounds at two heights
+ *  overlapping, with the walk between them drawn through the step where they meet. Far
+ *  enough to be somewhere else, near enough that carrying a crate there is a walk rather
+ *  than an expedition. */
+export const OUTPOST_NEAR = VILLAGE_RADIUS + OUTPOST_RADIUS;
+export const OUTPOST_DISTANCE = OUTPOST_NEAR + 4;
+/** The band of distances searched for level ground, above that. Only outwards: the near
+ *  end is a hard floor rather than a preference. */
+export const OUTPOST_FAR = OUTPOST_NEAR + 30;
 /** How uneven the ground may be under a hamlet. The hamlet levels its own pad by filling
  *  up to the highest column it covers, and it will only fill so far — see OUTPOST_FILL,
  *  which is what this has to stay under. */
 export const OUTPOST_LEVEL = OUTPOST_FILL - 1;
-
-/** Walking this close is what counts as finding it. Smaller than a village's, because a
- *  hamlet is smaller and its parent's own radius reaches most of the way here. */
-export const OUTPOST_RADIUS = 16;
 
 /** What a hamlet makes. Deliberately humble and always raw: it is the far end of the
  *  first road the player ever lays, not a workshop with an appetite. */
@@ -133,10 +140,12 @@ export function outpostRecord(
     baseY: site.baseY,
     variant: parent.variant,
     name: `${parent.name}の${NAMES[Math.floor(rng() * NAMES.length)]}`,
-    kind: 'farm',
     produces,
-    input: null,
-    inputStock: 0,
+    // A hamlet makes its one thing out of nothing. It is the tutorial's supplier and the
+    // only place in the world that does: everywhere else has to be fed before it works,
+    // and a tutorial that opened with that would have nothing to teach the lesson with.
+    inputs: [],
+    inputStock: new Map(),
     needs: [],
     stage: 0,
     points: 0,
@@ -145,6 +154,8 @@ export function outpostRecord(
     discovered: false,
     spawnedStage: 0,
     progress: 0,
+    harvest: 0,
+    harvestProgress: 0,
     outpost: true,
     parent: parent.id,
   };

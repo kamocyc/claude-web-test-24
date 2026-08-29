@@ -8,6 +8,7 @@ import {
   type VillageVariant,
 } from '../world/generation/village';
 import { Block } from '../world/blocks';
+import { onStreet } from '../world/generation/districts';
 
 describe('village placement', () => {
   it('places the same villages for the same seed', () => {
@@ -34,15 +35,37 @@ describe('village layout', () => {
   const site = { cellX: 0, cellZ: 0, x: 100, z: 200 };
   const plan = planVillage(999, site, 60, 'plains');
 
-  it('builds houses, a well, villagers and chests', () => {
+  it('builds a square, shops and people', () => {
     const all = [...plan.byChunk.values()].flat();
     expect(all.length).toBeGreaterThan(500);
     expect(plan.villagers.length).toBeGreaterThanOrEqual(3);
     expect(plan.chests.length).toBeGreaterThanOrEqual(1);
+    // The well on the square, the glass of a shopfront, and the cloth of its awning.
     expect(all.some((p) => p.b === Block.MOSSY_COBBLESTONE)).toBe(true);
-    expect(all.some((p) => p.b === Block.OAK_PLANKS)).toBe(true);
     expect(all.some((p) => p.b === Block.GLASS)).toBe(true);
-    expect(all.some((p) => p.b === Block.FARMLAND_WET)).toBe(true);
+    expect(all.some((p) => p.b === Block.WOOL)).toBe(true);
+  });
+
+  it('zones what it builds, and puts the shops in the middle', () => {
+    const shops = plan.buildings.filter((b) => b.role === 'shop');
+    expect(shops.length).toBeGreaterThan(0);
+    const homes = plan.buildings.filter((b) => b.role === 'house');
+    expect(homes.length).toBeGreaterThan(0);
+    // Every shop is nearer the middle than every home: that is the zoning, seen from the
+    // only angle that matters.
+    const far = (b: { x0: number; z0: number }): number => Math.hypot(b.x0 - site.x, b.z0 - site.z);
+    expect(Math.max(...shops.map(far))).toBeLessThan(Math.min(...homes.map(far)));
+  });
+
+  it('opens every door onto a street', () => {
+    // The grid is what makes this true without laying a path: a block is bounded by four
+    // streets, so the cell outside any door on its edge is one of them.
+    for (const house of plan.buildings) {
+      expect(
+        onStreet(site, house.outside.x, house.outside.z),
+        `${house.role} at ${house.x0},${house.z0} opens onto nothing`,
+      ).toBe(true);
+    }
   });
 
   it('groups every placement into the chunk that contains it', () => {
@@ -135,20 +158,21 @@ describe('village houses can be walked into', () => {
   });
 });
 
-/** The pinned seed test guards terrain; this guards the village layout itself. Village
- *  growth adds buildings from a separate random stream, so stage 0 must keep emitting
- *  exactly the blocks it always has. Any change to the order or count of `rng()` calls
- *  inside `planVillage` moves these numbers, and that is never accidental. */
-describe('village layout is pinned', () => {
+/** The pinned seed test guards terrain; this guards the town layout itself. Growth adds
+ *  blocks from a separate random stream, so stage 0 must keep emitting exactly what it
+ *  always has. Any change to the order or count of `rng()` calls inside `planVillage`
+ *  moves these numbers, and that is never accidental.
+ *
+ *  Re-pinned when the village became a town: a crossroads with houses along it became a
+ *  street grid with zoned blocks on it, which is a different settlement rather than the
+ *  same one rearranged. The three variants differ only in what they are built out of, so
+ *  their counts match and their hashes do not. */
+describe('town layout is pinned', () => {
   const site = { cellX: 0, cellZ: 0, x: 100, z: 200 };
   const expected: Record<VillageVariant, { count: number; hash: number }> = {
-    // Re-pinned twice, both times deliberately: once when the houses were lifted a block
-    // so their floors sit level with the street, and once when every door gained a short
-    // path out to that street. Neither drew a number from the random stream, which is
-    // what the villager and chest counts below are here to say.
-    plains: { count: 4805, hash: 447130268 },
-    desert: { count: 4805, hash: -609592904 },
-    snowy: { count: 4805, hash: -1153132286 },
+    plains: { count: 18773, hash: -814481521 },
+    desert: { count: 18773, hash: -814259111 },
+    snowy: { count: 18773, hash: -1438247941 },
   };
 
   for (const variant of ['plains', 'desert', 'snowy'] as VillageVariant[]) {
@@ -161,6 +185,9 @@ describe('village layout is pinned', () => {
       expect(hash).toBe(expected[variant].hash);
       expect(plan.villagers.length).toBe(7);
       expect(plan.chests.length).toBe(5);
+      // Six blocks at stage 0, one of them the square, so six buildings plus the pair of
+      // houses that share a residential block.
+      expect(plan.buildings.length).toBe(7);
     });
   }
 });

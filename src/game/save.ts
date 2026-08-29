@@ -2,7 +2,15 @@
  *  save stays small no matter how far the player has explored. */
 
 export const SAVE_KEY = 'voxelcraft.save.v1';
-export const SAVE_VERSION = 2;
+/** Bumped for the line network.
+ *
+ *  Version 2 knew nothing about stops, lines or industries. Its economy was a road between
+ *  two villages that started trading by itself, and there is no honest way to read one of
+ *  those into a world where nothing moves until somebody has designed a service — the
+ *  goods would be somewhere no line calls, in towns that no longer make what they made.
+ *  So a version 2 save is refused rather than half converted, and the player starts a new
+ *  world. That is the cost of the change and it is paid once. */
+export const SAVE_VERSION = 3;
 
 /** The id the old block railway used, and what a world that still has some in it opens
  *  with instead.
@@ -56,46 +64,21 @@ export interface SavedVillager {
   villageStage?: number;
 }
 
-/** What has happened to a village. Where it is, what it makes and what it is called are
- *  all re-derived from the seed, so only the earned part is stored. */
-export interface SavedVillage {
-  id: string;
-  produces: string;
-  stage: number;
-  points: number;
-  stock: number;
-  discovered: boolean;
-  spawnedStage: number;
-  /** Absent in saves written before workshops existed. */
-  inputStock?: number;
-  received?: number;
-  /** A tutorial hamlet is not on the village grid, so unlike every other village it
-   *  cannot be re-derived from the seed and its whole description is stored. */
-  outpost?: boolean;
-  parent?: string;
-  x?: number;
-  z?: number;
-  baseY?: number;
-  variant?: string;
-  name?: string;
-}
+/** The saved shapes of the things that own them, rather than a second copy declared here.
+ *
+ *  There used to be two declarations of each of these — one beside the code that writes it
+ *  and one here — and nothing made them agree: they are structural types, so TypeScript is
+ *  happy to let them drift apart until a field one side writes is a field the other side
+ *  has never heard of. Re-exporting the real ones is the fix. */
+export type { SavedVillage } from './villages';
+export type { SavedStop, SavedLine } from './lines';
+export type { SavedIndustry } from './industry';
+export type { SavedQuest } from './questline';
 
-/** Only the pair. The road itself is already in `edits`, so a route surveys itself again
- *  on load rather than storing its geometry twice. */
-export interface SavedRoute {
-  from: string;
-  to: string;
-}
-
-export interface SavedQuest {
-  step: string;
-  originId?: string;
-  targetId?: string;
-  good?: string;
-  count?: number;
-  /** Absent before the milestones existed; such a save starts the list from the top. */
-  milestone?: number;
-}
+import type { SavedVillage } from './villages';
+import type { SavedStop, SavedLine } from './lines';
+import type { SavedIndustry } from './industry';
+import type { SavedQuest } from './questline';
 
 /** One end of a laid track: where it is, which way the track runs through it, and how
  *  steeply. The heading came from the player's yaw at the moment they clicked and cannot
@@ -163,14 +146,19 @@ export interface SaveData {
   villagers: SavedVillager[];
   /** Chunks whose village villagers have already been spawned. */
   populatedChunks: string[];
-  /** The village economy. Optional: a save written before it
-   *  existed opens with no villages found yet and the tutorial at its first step, which
-   *  is exactly right. Bumping SAVE_VERSION instead would throw every world away. */
+  /** The town economy. */
   villages?: SavedVillage[];
   /** Emeralds the transport network has paid the player. A running total rather than
    *  state, but it is the one number the ledger leads with. */
   freight?: number;
-  routes?: SavedRoute[];
+  /** The service the player designed: where they put stops, and which stops each line
+   *  calls at. The roads and rails under it are already in `edits` and `tracks`, so a leg
+   *  surveys itself again on load rather than storing its geometry twice. */
+  network?: { stops: SavedStop[]; lines: SavedLine[] };
+  /** Primary industries the player sited. Unlike a town these cannot be re-derived from
+   *  anything — the player chose where each one stands — so the whole description is
+   *  stored. */
+  industries?: SavedIndustry[];
   quest?: SavedQuest;
   /** Villagers a village earned by growing while their chunk was unloaded. */
   pendingVillagers?: { x: number; y: number; z: number; profession: string }[];

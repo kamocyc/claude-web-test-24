@@ -67,6 +67,24 @@ recipe('basics', 'table', { id: 'rail', count: 16 }, [
   { id: 'oak_planks', count: 2 },
 ]);
 
+// A stop is the cheapest thing on this list on purpose. Nothing moves at all until the
+// player has put two down, so pricing it as an achievement would be pricing the tutorial:
+// a post, a sign and something to pave under it, out of what anybody has in the first
+// minute. Two at a time, because two is the fewest that does anything.
+recipe('basics', 'table', { id: 'stop', count: 2 }, [
+  { id: 'oak_planks', count: 4 },
+  { id: 'cobblestone', count: 2 },
+]);
+
+// The industry kit costs iron, which is the whole point of where it sits: siting a
+// colliery is the thing that makes iron freightable, and the first one therefore has to be
+// paid for out of ore the player dug themselves. One at a time - a pocketful would make
+// siting one a habit rather than a decision.
+recipe('basics', 'table', { id: 'industry_kit', count: 1 }, [
+  { id: 'iron_ingot', count: 2 },
+  { id: 'oak_planks', count: 4 },
+]);
+
 // A station is two of them - one for each end of the line - so it is priced as half of
 // what a player will actually pay. Timber for the platform and its roof, iron for the
 // fittings: a cost, but nothing beside the rail a line of any length eats, because the

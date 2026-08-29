@@ -4,6 +4,7 @@ import { ROAD_SPEED } from '../game/roads';
 import { WATER_FULL } from '../world/water';
 import type { Atlas } from '../render/textures';
 import { TILE } from '../render/textures';
+import { originOf, placeOn, worldAt, type MapOrigin } from './mapView';
 import { el } from './dom';
 
 /** Pixels across the corner map. */
@@ -54,6 +55,9 @@ const MARKER_COLORS: Record<string, string> = {
   gap: '#ff9b53',
   target: '#7cc4ff',
   porter: '#8ef0b8',
+  // Where somebody clicked the big map. Warmer than anything the world puts there itself,
+  // because it is the one marker the player put down rather than found.
+  pick: '#ff8ad4',
 };
 
 /** Steel, and off the end of the road ramp on purpose: a railway is not a better road,
@@ -81,8 +85,10 @@ export class Minimap {
   private readonly colors = new Map<number, [number, number, number]>();
   private atlasPixels: ImageData | null = null;
   private row = 0;
-  private originX = 0;
-  private originZ = 0;
+  /** World coordinate of the top-left pixel. Re-derived at the start of every repaint
+   *  cycle, so a map being painted a slice at a time is never half at one place and half
+   *  at another. */
+  private origin: MapOrigin = { x: 0, z: 0 };
   /** Set when the whole map has to be painted again on the next pass rather than a slice
    *  at a time: it has been opened, or the zoom has changed under it. */
   private repaint = true;
@@ -168,17 +174,20 @@ export class Minimap {
     return color;
   }
 
+  /** Draws the map looking at `centreX, centreZ`.
+   *
+   *  `playerAt` is where the player actually is, which is the centre on the corner map and
+   *  is not on a big map somebody has dragged. Omitting it means "the player is in the
+   *  middle", which is what the corner map has always been. */
   update(
     surface: MapSurface,
-    playerX: number,
-    playerZ: number,
+    centreX: number,
+    centreZ: number,
     yaw: number,
     overlay: MinimapOverlay = EMPTY_OVERLAY,
+    playerAt?: { x: number; z: number },
   ): void {
-    if (this.row === 0) {
-      this.originX = Math.floor(playerX) - (this.size / 2) * this.scale;
-      this.originZ = Math.floor(playerZ) - (this.size / 2) * this.scale;
-    }
+    if (this.row === 0) this.origin = originOf(centreX, centreZ, this.size, this.scale);
     // Everything at once when the view has just changed, and a slice a frame after that.
     // A map somebody has just opened has to be a map, and one full pass is a single frame
     // of work spent where a modal has already interrupted them; keeping up with a walking
@@ -189,9 +198,9 @@ export class Minimap {
     this.repaint = false;
     const end = Math.min(this.size, this.row + rows);
     for (let py = this.row; py < end; py++) {
-      const z = this.originZ + py * this.scale;
+      const z = this.origin.z + py * this.scale;
       for (let px = 0; px < this.size; px++) {
-        const x = this.originX + px * this.scale;
+        const x = this.origin.x + px * this.scale;
         this.paint(surface, px, py, x, z);
       }
     }
@@ -202,7 +211,13 @@ export class Minimap {
     this.drawRails(overlay);
     this.drawFaults(overlay);
     this.drawMarkers(overlay);
-    this.drawPlayer(yaw);
+    this.drawPlayer(yaw, playerAt ?? { x: centreX, z: centreZ });
+  }
+
+  /** The place a map pixel is pointing at. What the big map's readout names and what a
+   *  warp from it goes to. */
+  at(px: number, py: number): { x: number; z: number } {
+    return worldAt(this.origin, this.scale, px, py);
   }
 
   /** World coordinates to canvas pixels, or null when they fall off the map. */
@@ -215,7 +230,7 @@ export class Minimap {
   /** The same, unclipped. A line with one end off the map is still drawn to the edge;
    *  dropping its far point would bend it back on itself instead. */
   private place(x: number, z: number): { px: number; py: number } {
-    return { px: (x - this.originX) / this.scale, py: (z - this.originZ) / this.scale };
+    return placeOn(this.origin, this.scale, x, z);
   }
 
   /** The roads the player has laid, so it is visible at a glance where one stops. */
@@ -346,12 +361,16 @@ export class Minimap {
     this.image.data[index + 3] = 255;
   }
 
-  private drawPlayer(yaw: number): void {
+  /** The arrow. Drawn where the player actually is rather than in the middle, because on
+   *  a map that has been dragged those are two different places — and left off entirely
+   *  when they have dragged far enough that the player is not on the map at all. The bar
+   *  says how to get back; an arrow pinned to the edge would be saying it twice. */
+  private drawPlayer(yaw: number, at: { x: number; z: number }): void {
+    const here = this.project(at.x, at.z);
+    if (!here) return;
     const ctx = this.ctx;
-    const cx = this.size / 2;
-    const cy = this.size / 2;
     ctx.save();
-    ctx.translate(cx, cy);
+    ctx.translate(here.px, here.py);
     // Yaw 0 looks towards -Z, which is up on the map.
     ctx.rotate(-yaw);
     ctx.beginPath();
