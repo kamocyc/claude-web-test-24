@@ -76,6 +76,50 @@ export const FACING_STEP: readonly (readonly [number, number])[] = [
 
 export type BuildingRole = 'house' | 'market';
 
+/** What a building is *for*, which is what the town economy trades on.
+ *
+ *  A village used to be one producer with one stock, so a house was scenery with a door on
+ *  it. A town is a handful of places that each want something: somebody lives in one, buys
+ *  in another and works in the third, and the goods and the people moving between them are
+ *  the game. So every building says which of those it is.
+ *
+ *  `civic` is the well and anything else that is neither home, shop nor works — it is here
+ *  so the type is total, not because anything trades with one.
+ *
+ *  Deliberately *not* drawn from `planVillage`'s random stream. Stage 0's use follows from
+ *  the profession the village already rolled, and a growth stage's follows from the stage
+ *  and the order the houses went up (`GROWTH_USES`). Drawing even one extra number here
+ *  would shift every profession after it, and the fixed verification seed pins those. */
+export type BuildingUse = 'residential' | 'commercial' | 'industrial' | 'civic';
+
+/** What each growth stage builds, in the order `planGrowth` raises them.
+ *
+ *  Indexed by stage, so it reads as the ranks in `villages.ts` do: a 集落 is somewhere
+ *  people live, and a 都市 is somewhere they also work and shop. `HOUSES_PER_STAGE` houses
+ *  per stage, so each row is that long. */
+export const GROWTH_USES: readonly (readonly BuildingUse[])[] = [
+  [],
+  ['residential', 'residential'],
+  ['residential', 'commercial'],
+  ['commercial', 'industrial'],
+  ['industrial', 'residential'],
+];
+
+/** The use of a house the village itself was generated with.
+ *
+ *  Read off the profession rather than rolled, so stage 0 costs no randomness at all. A
+ *  smithy is the one generated building that makes something out of something else, which
+ *  is what an 工場 is. */
+export function useForProfession(profession: Profession): BuildingUse {
+  return profession === 'blacksmith' ? 'industrial' : 'residential';
+}
+
+/** The use of the `index`-th house a growth stage raises. Out-of-range stages and indices
+ *  answer `residential`, which is what a house is when nothing says otherwise. */
+export function useForGrowth(stage: number, index: number): BuildingUse {
+  return GROWTH_USES[Math.min(Math.max(stage, 0), GROWTH_USES.length - 1)]?.[index] ?? 'residential';
+}
+
 /** A building as something the rest of the game can address rather than merely avoid.
  *
  *  `Footprint` was only ever "ground that is taken"; a transport network needs to name a
@@ -85,6 +129,8 @@ export type BuildingRole = 'house' | 'market';
 export interface HouseRecord extends Footprint {
   facing: 0 | 1 | 2 | 3;
   role: BuildingRole;
+  /** What the town economy does with this building. */
+  use: BuildingUse;
   profession: Profession;
   /** The doorway cell itself, at floor level. */
   door: { x: number; y: number; z: number };
@@ -147,6 +193,8 @@ interface Building {
   /** Side the door faces. */
   facing: 0 | 1 | 2 | 3;
   profession: Profession;
+  /** Decided by whoever laid this building out, never rolled here — see `BuildingUse`. */
+  use: BuildingUse;
   hasChest: boolean;
   /** Plots already spoken for, so the path out of this door stops rather than running
    *  through the neighbour's wall. */
@@ -372,6 +420,7 @@ function layoutBuildings(rng: Rng, site: VillageSite): Building[] {
       d,
       facing: slot.facing,
       profession,
+      use: useForProfession(profession),
       hasChest: profession !== 'farmer' || rng() < 0.5,
     });
   }
@@ -431,6 +480,7 @@ function buildHouse(put: PutFn, plan: HouseSink, b: Building, baseY: number, pal
     x0, z0, w, d,
     facing: b.facing,
     role: 'house',
+    use: b.use,
     profession: b.profession,
     door: { x: doorX, y: baseY, z: doorZ },
     outside: { x: doorX + outX, y: baseY, z: doorZ + outZ },
@@ -616,6 +666,9 @@ export function planOutpost(
       {
         ...plots[i],
         facing: houses[i].slot.facing,
+        // A hamlet is two homes and a field. Nobody shops or manufactures out here — it is
+        // the far end of the first road the player ever lays, not a town.
+        use: 'residential',
         profession: PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)],
         hasChest: true,
         taken: plots,
@@ -680,6 +733,9 @@ export function planGrowth(
     taken.push(footprint);
     plan.footprints.push(footprint);
     plan.pads.push({ ...footprint, y: baseY });
+    // The use is read off the stage and the order, before `built` is bumped, so the first
+    // house of a stage is always that stage's first use.
+    const use = useForGrowth(stage, built);
     built++;
     buildHouse(
       put,
@@ -687,6 +743,7 @@ export function planGrowth(
       {
         ...footprint,
         facing: slot.facing,
+        use,
         profession: PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)],
         hasChest: true,
         taken,
@@ -775,6 +832,8 @@ function buildMarket(
     x0: plot.x0, z0: plot.z0, w: plot.w, d: plot.d,
     facing: 1,
     role: 'market',
+    // A market hall is where a village sells things, which is the whole of what a shop is.
+    use: 'commercial',
     profession,
     door,
     outside: { x: door.x, y: baseY, z: door.z - 1 },

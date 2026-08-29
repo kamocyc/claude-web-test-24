@@ -7,12 +7,17 @@ import {
   depotOf,
   describeBuilding,
   pathAroundPlots,
+  useLabel,
 } from '../game/buildings';
 import {
   FACING_STEP,
+  GROWTH_USES,
+  HOUSES_PER_STAGE,
   planGrowth,
   planOutpost,
   planVillage,
+  useForGrowth,
+  useForProfession,
   type HouseRecord,
 } from '../world/generation/village';
 import { Block } from '../world/blocks';
@@ -193,5 +198,72 @@ describe('the walk from a doorway to the road', () => {
     for (let i = 1; i < (path?.length ?? 0); i++) {
       expect(Math.abs((path ?? [])[i].y - (path ?? [])[i - 1].y)).toBeLessThanOrEqual(1);
     }
+  });
+});
+
+describe('what a building is for', () => {
+  it('reads a generated house off the trade already rolled for it', () => {
+    // Nothing is drawn from `planVillage`'s stream to decide this, so the whole village is
+    // exactly the village it was before uses existed — which `seeds.test.ts` also pins.
+    const plan = planVillage(999, SITE, BASE_Y, 'plains');
+    for (const house of plan.buildings) {
+      expect(house.use).toBe(useForProfession(house.profession));
+    }
+  });
+
+  it('turns a village into a town as it grows', () => {
+    // A 集落 is somewhere people live; a 都市 is somewhere they also work and shop.
+    for (let stage = 1; stage < GROWTH_USES.length; stage++) {
+      const plan = planGrowth(1, SITE, BASE_Y, 'plains', stage, []);
+      const houses = plan.buildings.filter((h) => h.role === 'house');
+      expect(houses.length).toBeLessThanOrEqual(HOUSES_PER_STAGE);
+      houses.forEach((house, i) => expect(house.use).toBe(useForGrowth(stage, i)));
+    }
+  });
+
+  it('makes the market hall the village shop', () => {
+    // Stage 2's landmark. A market is where a village sells, which is what a shop is.
+    const market = planGrowth(1, SITE, BASE_Y, 'plains', 2, []).buildings
+      .find((h) => h.role === 'market');
+    expect(market?.use).toBe('commercial');
+  });
+
+  it('leaves a hamlet as two homes', () => {
+    const plan = planOutpost(7, SITE, BASE_Y, 'plains');
+    expect(plan.buildings.length).toBeGreaterThan(0);
+    for (const house of plan.buildings) expect(house.use).toBe('residential');
+  });
+
+  it('holds the last stage rather than running off the end of the table', () => {
+    // `MAX_STAGE` is the last row, so nothing reaches these in play. What they are for is
+    // that raising the cap later should build a 都市 again, not nothing at all.
+    const last = GROWTH_USES[GROWTH_USES.length - 1];
+    expect(useForGrowth(99, 0)).toBe(last[0]);
+    expect(useForGrowth(-1, 0)).toBe('residential');
+    // A house past the ones a stage plans for is a home, which is what a house is when
+    // nothing says otherwise.
+    expect(useForGrowth(1, 99)).toBe('residential');
+  });
+
+  it('names a building by what it is for, keeping the trade of a home', () => {
+    const record = village();
+    const houses: HouseRecord[] = [
+      { x0: 0, z0: 0, w: 5, d: 5, facing: 0, role: 'house', use: 'industrial',
+        profession: 'librarian', door: { x: 0, y: 60, z: 2 }, outside: { x: -1, y: 60, z: 2 } },
+      { x0: 20, z0: 0, w: 5, d: 5, facing: 0, role: 'house', use: 'commercial',
+        profession: 'farmer', door: { x: 20, y: 60, z: 2 }, outside: { x: 19, y: 60, z: 2 } },
+      { x0: 40, z0: 0, w: 5, d: 5, facing: 0, role: 'house', use: 'residential',
+        profession: 'butcher', door: { x: 40, y: 60, z: 2 }, outside: { x: 39, y: 60, z: 2 } },
+    ];
+    const labels = buildingsOf(record, houses).map((b) => b.label);
+    expect(labels).toEqual(['工場', '商店', '肉屋']);
+  });
+
+  it('says what a building is for when it is not the depot', () => {
+    const record = village();
+    const buildings = buildingsOf(record, planVillage(999, SITE, BASE_Y, 'plains').buildings);
+    const line = describeBuilding(buildings[0], record, false, '麦を待っている');
+    expect(line).toContain(useLabel(buildings[0].use));
+    expect(line).toContain('麦を待っている');
   });
 });

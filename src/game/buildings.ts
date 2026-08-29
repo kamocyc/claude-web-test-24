@@ -14,7 +14,7 @@
  *  plan is a pure function of the seed, so a building can be named before anybody has
  *  stood in front of it. */
 
-import type { HouseRecord } from '../world/generation/village';
+import type { BuildingUse, HouseRecord } from '../world/generation/village';
 import { goodLabel, type VillageId, type VillageRecord } from './villages';
 
 /** A building's address. Stable across sessions because it is made of its own corner,
@@ -30,6 +30,19 @@ export interface VillageBuilding extends HouseRecord {
   fromCentre: number;
 }
 
+/** What each use is called. The economy is what the player is reading these for, so the
+ *  word is the one the ledger and the panel use for that side of it. */
+export const USE_LABELS: Record<BuildingUse, string> = {
+  residential: '住宅',
+  commercial: '商店',
+  industrial: '工場',
+  civic: '公共',
+};
+
+export function useLabel(use: BuildingUse): string {
+  return USE_LABELS[use];
+}
+
 export function buildingId(house: { x0: number; z0: number }): BuildingId {
   return `${house.x0},${house.z0}`;
 }
@@ -42,12 +55,24 @@ const PROFESSION_LABELS: Record<string, string> = {
 };
 
 /** Names a building after what goes on inside it. Two blacksmiths in one village are told
- *  apart by a number rather than by their coordinates, which nobody can read at a glance. */
+ *  apart by a number rather than by their coordinates, which nobody can read at a glance.
+ *
+ *  The use comes first, because that is what the town economy trades on and therefore what
+ *  the player is reading the name for. A home keeps its trade in the name — a 農家 is still
+ *  a 農家 — because those are homes with a job in them and calling every one of them 住宅
+ *  would throw away the only thing that told them apart. */
 function labelFor(house: HouseRecord, taken: Map<string, number>): string {
-  const stem = house.role === 'market' ? '市場' : PROFESSION_LABELS[house.profession] ?? '家';
+  const stem = stemFor(house);
   const seen = (taken.get(stem) ?? 0) + 1;
   taken.set(stem, seen);
   return seen === 1 ? stem : `${stem} ${seen}`;
+}
+
+function stemFor(house: HouseRecord): string {
+  if (house.role === 'market') return '市場';
+  if (house.use === 'industrial') return house.profession === 'blacksmith' ? '鍛冶屋' : '工場';
+  if (house.use === 'commercial') return '商店';
+  return PROFESSION_LABELS[house.profession] ?? '住宅';
 }
 
 /** Turns a village's raw house records into addressable buildings, in a stable order:
@@ -110,14 +135,23 @@ export function buildingAt(
   return null;
 }
 
-/** One line naming a building and what its village does with it. */
+/** One line naming a building and what its village does with it.
+ *
+ *  `note` is whatever the town economy has to say about this building right now — what it
+ *  is waiting for, what it has ready. It is passed in rather than looked up because this
+ *  module has never known what a village's economy is, and a name should not be the thing
+ *  that teaches it. */
 export function describeBuilding(
   building: VillageBuilding,
   village: VillageRecord,
   isDepot: boolean,
+  note?: string,
 ): string {
-  const role = isDepot ? `集荷所（${goodLabel(village.produces)}の積み下ろし）` : '住居';
-  return `${village.name}の${building.label} — ${role}`;
+  const role = isDepot
+    ? `集荷所（${goodLabel(village.produces)}の積み下ろし）`
+    : useLabel(building.use);
+  const tail = note ? ` ・ ${note}` : '';
+  return `${village.name}の${building.label} — ${role}${tail}`;
 }
 
 /** How far out of its way the walk from a doorway to the road may go. A village is 76
