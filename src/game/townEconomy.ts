@@ -59,23 +59,36 @@ export const HOME_PEOPLE = 4;
 export const SHOP_JOBS = 2;
 export const WORKS_JOBS = 3;
 
-/** Seconds one person takes to eat one unit of something. */
-export const HOUSEHOLD_SECONDS = 24;
-/** Seconds one job takes to use up one unit of what its building was stocked with. */
-export const TRADE_SECONDS = 18;
-/** Seconds a home takes to send one person out, and seconds one leg of that walk takes.
+/** Seconds one person takes to eat one unit of something, and seconds one filled job
+ *  takes to use up one unit of what its building was stocked with.
  *
- *  One number for both, because a town's streets are short and measuring them would buy
- *  nothing: how far the villager actually walks is the view's problem, and the view is
- *  allowed to hurry to catch its commute up exactly as a porter does. */
-export const COMMUTE_SECONDS = 14;
+ *  Both are per person, so a busy building empties faster than a quiet one. The scale is
+ *  set against what a route actually delivers rather than against what reads well on its
+ *  own: a home of four gets through a unit a minute or so, a 都市 of six homes through
+ *  five a minute, and one well paved cart route carries more than that. A town is
+ *  therefore *keepable*, which is the whole point — a demand nobody could ever meet is a
+ *  demand nobody bothers to read. */
+export const HOUSEHOLD_SECONDS = 300;
+export const TRADE_SECONDS = 240;
+/** Seconds one leg of a commute takes.
+ *
+ *  A fixed walk rather than anything measured: a town's streets are short, and how far the
+ *  villager actually covers is the view's problem — the view is allowed to hurry to catch
+ *  its commute up exactly as a porter does. */
+export const COMMUTE_WALK = 20;
+/** Seconds between people setting out from a town's homes. Shorter than the walk, so a
+ *  town has several people on its streets at once and reads as somewhere busy rather than
+ *  as somewhere with one person in it. */
+export const COMMUTE_EVERY = 8;
 /** How much longer a hungry home takes over all of that. A town nobody supplies does not
  *  stop — it slows down, which reads as somewhere going quiet rather than somewhere
  *  broken. */
 export const HUNGRY_FACTOR = 2.5;
 /** Seconds one person takes to decide they want to travel to another town. Much slower
- *  than a commute: a commute is every day, a journey is not. */
-export const JOURNEY_SECONDS = 90;
+ *  than a commute: a commute is every day, a journey is not. A 都市 of thirty people fills
+ *  its platform in about ten minutes, which is a queue a line can be built for rather than
+ *  a number pinned at its ceiling. */
+export const JOURNEY_SECONDS = 600;
 
 /** The most of one good a building keeps in. Small, because a building is not a warehouse
  *  — the point of the number is that a delivery runs out and the place wants another. */
@@ -304,10 +317,13 @@ export class TownEconomy {
     for (const cell of town.cells.values()) {
       if (cell.wants.size === 0) continue;
       const users = cell.use === 'residential' ? cell.people : cell.staff;
-      if (users <= 0) {
-        cell.progress = 0;
-        continue;
-      }
+      // An empty shop sells nothing — but it does not forget the half sale it was partway
+      // through either. The clock is held, not reset. Resetting it (which is what
+      // `VillageRegistry.produce` does to a starved workshop, and where this was copied
+      // from) meant a shop never sold anything at all: custom comes and goes as people
+      // walk in and out, so the counter was wiped every time the last customer left and
+      // never reached one sale.
+      if (users <= 0) continue;
       const seconds = (cell.use === 'residential' ? HOUSEHOLD_SECONDS : TRADE_SECONDS) / users;
       cell.progress += dt;
       while (cell.progress >= seconds) {
@@ -330,7 +346,7 @@ export class TownEconomy {
 
     for (let i = town.commutes.length - 1; i >= 0; i--) {
       const commute = town.commutes[i];
-      commute.t += (dt * commute.dir) / COMMUTE_SECONDS;
+      commute.t += (dt * commute.dir) / COMMUTE_WALK;
       if (commute.t < 1 && commute.t > 0) continue;
       if (commute.dir === 1) {
         // Arrived at work. The job is filled until this person walks home again.
@@ -353,7 +369,7 @@ export class TownEconomy {
     // ticking over quietly instead of falling off the map.
     const fed = homes.some((home) => !hungry(home));
     town.commuteProgress += dt;
-    const every = COMMUTE_SECONDS * (fed ? 1 : HUNGRY_FACTOR);
+    const every = COMMUTE_EVERY * (fed ? 1 : HUNGRY_FACTOR);
     while (town.commuteProgress >= every && town.commutes.length < MAX_COMMUTERS) {
       town.commuteProgress -= every;
       const pick = mulberry32(hashInts(

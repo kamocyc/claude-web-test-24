@@ -123,7 +123,8 @@ export function buildLedger(view: LedgerView): HTMLElement {
   root.appendChild(el('div', 'ledger-heading', '村'));
   const villages = el('div', 'ledger-table');
   villages.appendChild(
-    row('ledger-row head', ['村', '種類', '生産', '在庫', '求めている物', '人口', '発展', '距離']),
+    row('ledger-row head',
+      ['村', '種類', '生産', '在庫', '求めている物', '町が待っている物', '人口', '発展', '距離']),
   );
   if (view.villages.length === 0) {
     villages.appendChild(el('div', 'ledger-empty', 'まだ村を見つけていない。コンパスの村マーカーを目指そう。'));
@@ -139,6 +140,9 @@ export function buildLedger(view: LedgerView): HTMLElement {
       produces,
       village.input ? `${village.stock}（材料 ${village.inputStock}）` : `${village.stock}`,
       village.needs.length > 0 ? village.needs.join('・') : '—',
+      // Only the two most wanted: the whole list is every good every building is short
+      // of, which for a 都市 is a paragraph and not a column.
+      village.wants.length > 0 ? village.wants.slice(0, 2).join('・') : '—',
       // The queue only shows where there is one: a village nobody can leave is the normal
       // case until somebody opens a route, and a column of zeroes would say nothing.
       village.waiting > 0 ? `${village.people}（待ち ${village.waiting}）` : `${village.people}`,

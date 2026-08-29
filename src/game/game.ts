@@ -1223,7 +1223,9 @@ export class Game {
     if (!cell) return undefined;
     if (cell.use === 'residential') {
       const empty = [...cell.wants].filter(([, held]) => held <= 0).map(([good]) => good);
-      if (empty.length > 0) return `${empty.map((g) => this.goodName(g)).join('・')}が切れている`;
+      // 「要る」 rather than 「切れている」: a town the player has only just walked into never
+      // had any, and telling them it ran out would be describing a delivery that never was.
+      if (empty.length > 0) return `${empty.map((g) => this.goodName(g)).join('・')}が要る`;
       return `${cell.people} 人が住んでいる`;
     }
     // A works in a village that converts nothing is the village's own shed: it has no

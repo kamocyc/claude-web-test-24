@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   CELL_STOCK,
-  COMMUTE_SECONDS,
+  COMMUTE_EVERY,
+  COMMUTE_WALK,
   HOME_PEOPLE,
   HOUSEHOLD_GOODS,
   HOUSEHOLD_SECONDS,
@@ -97,7 +98,7 @@ describe('a town as its buildings', () => {
     const economy_ = new TownEconomy(SEED, { buildingsOf: () => buildings });
     const record = village();
     supply(economy_, record);
-    run(economy_, [record], COMMUTE_SECONDS * 2);
+    run(economy_, [record], COMMUTE_WALK * 2);
     expect(economy_.get(record.id)!.commutes.length).toBeGreaterThan(0);
     const shop = buildings[1].id;
     buildings = [buildings[0]];
@@ -175,13 +176,13 @@ describe('people moving', () => {
     const economy_ = economy(buildings);
     const record = village();
     supply(economy_, record);
-    run(economy_, [record], COMMUTE_SECONDS + 1);
+    run(economy_, [record], COMMUTE_WALK + 1);
     const t = economy_.get(record.id)!;
     const commute = t.commutes[0];
     expect(commute.from).toBe(buildings[0].id);
     expect(commute.to).toBe(buildings[1].id);
     // Out to work first, and the job it walked to is filled while it is there.
-    run(economy_, [record], COMMUTE_SECONDS);
+    run(economy_, [record], COMMUTE_WALK);
     expect(t.cells.get(buildings[1].id)!.staff).toBeGreaterThan(0);
     expect(t.commutes.some((c) => c.dir === -1)).toBe(true);
   });
@@ -189,7 +190,7 @@ describe('people moving', () => {
   it('sends nobody out of a town with nowhere to work', () => {
     const economy_ = economy(town('residential', 'residential'));
     const record = village();
-    run(economy_, [record], COMMUTE_SECONDS * 5);
+    run(economy_, [record], COMMUTE_WALK * 5);
     expect(economy_.get(record.id)!.commutes).toHaveLength(0);
   });
 
@@ -199,7 +200,7 @@ describe('people moving', () => {
     ));
     const record = village({ stage: 4 });
     supply(economy_, record);
-    run(economy_, [record], COMMUTE_SECONDS * 40);
+    run(economy_, [record], COMMUTE_WALK * 40);
     expect(economy_.get(record.id)!.commutes.length).toBeLessThanOrEqual(MAX_COMMUTERS);
   });
 
@@ -208,7 +209,7 @@ describe('people moving', () => {
     const economy_ = economy(town('residential', 'commercial'));
     const record = village();
     supply(economy_, record);
-    run(economy_, [record], COMMUTE_SECONDS * 3);
+    run(economy_, [record], COMMUTE_WALK * 3);
     const t = economy_.get(record.id)!;
     expect(t.commutes.every((c) => c.mobId === null)).toBe(true);
     expect(t.cells.get('10,0')!.staff).toBeGreaterThan(0);
@@ -224,11 +225,28 @@ describe('a shop that has customers', () => {
     const good = [...shop.wants.keys()][0];
     // Nobody has arrived yet, so nothing is sold however long it stands there.
     expect(shop.staff).toBe(0);
-    run(economy_, [record], COMMUTE_SECONDS - 1);
+    run(economy_, [record], COMMUTE_EVERY + COMMUTE_WALK - 1);
     expect(shop.wants.get(good)).toBe(CELL_STOCK);
     // Once the walk finishes, the shop starts selling.
-    run(economy_, [record], COMMUTE_SECONDS + TRADE_SECONDS + 1);
-    expect(shop.staff).toBeGreaterThan(0);
+    run(economy_, [record], COMMUTE_WALK + TRADE_SECONDS * 2);
+    expect(shop.wants.get(good)!).toBeLessThan(CELL_STOCK);
+  });
+
+  it('keeps the half sale it was partway through when the shop empties', () => {
+    // Custom comes and goes as people walk in and out. A shop that reset its counter
+    // every time the last customer left would never reach a sale at all — which is what
+    // it did, until it did not.
+    const economy_ = economy(town('residential', 'commercial'));
+    const record = village();
+    supply(economy_, record);
+    const shop = economy_.get(record.id)!.cells.get('10,0')!;
+    const good = [...shop.wants.keys()][0];
+    let emptied = false;
+    for (let t = 0; t < TRADE_SECONDS * 3; t += 0.05) {
+      economy_.update(0.05, [record]);
+      if (shop.staff === 0 && shop.progress > 0) emptied = true;
+    }
+    expect(emptied, 'the shop never stood empty, so this proves nothing').toBe(true);
     expect(shop.wants.get(good)!).toBeLessThan(CELL_STOCK);
   });
 

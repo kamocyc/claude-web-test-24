@@ -150,7 +150,7 @@ export function describeBuilding(
   const role = isDepot
     ? `集荷所（${goodLabel(village.produces)}の積み下ろし）`
     : useLabel(building.use);
-  const tail = note ? ` ・ ${note}` : '';
+  const tail = note ? ` ／ ${note}` : '';
   return `${village.name}の${building.label} — ${role}${tail}`;
 }
 

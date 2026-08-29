@@ -4,7 +4,7 @@ import { MILESTONES, QUEST_STEPS } from '../game/questline';
 import { BLOCKS_PER_PORTER, CART_LOAD, MAX_PORTERS, TRAIN_LOAD } from '../game/transport';
 import { MAX_STOCK, PRODUCE_SECONDS, RANKS, STAGE_POINTS } from '../game/villages';
 import { HEADROOM, MAX_STEP, ROAD_SPEED } from '../game/roads';
-import { CELL_STOCK, COMMUTE_SECONDS, HOME_PEOPLE, HOUSEHOLD_GOODS } from '../game/townEconomy';
+import { CELL_STOCK, COMMUTE_EVERY, HOME_PEOPLE, HOUSEHOLD_GOODS } from '../game/townEconomy';
 import { USE_LABELS } from '../game/buildings';
 import { itemLabel } from '../game/items';
 import { MAX_SWITCH_ANGLE } from '../game/tracks';
@@ -121,7 +121,7 @@ describe('the town section', () => {
 
   it('takes its numbers and its shopping lists from the code', () => {
     const words = [section?.heading, ...(section?.notes ?? [])].join('\n');
-    expect(words).toContain(`${COMMUTE_SECONDS} 秒`);
+    expect(words).toContain(`${COMMUTE_EVERY} 秒`);
     expect(words).toContain(`${CELL_STOCK} 個`);
     for (const good of HOUSEHOLD_GOODS) expect(words).toContain(itemLabel(good));
   });
