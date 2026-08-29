@@ -8,8 +8,10 @@ import {
   IndustryRegistry,
   MAX_INDUSTRY_STOCK,
   MAX_RICHNESS,
+  depositMissReason,
   richnessOf,
   surveyDeposits,
+  surveyGround,
   type BlockReader,
   type Deposit,
 } from '../game/industry';
@@ -109,6 +111,67 @@ describe('siting one', () => {
     kind: 'colliery', label: '炭鉱', good: 'coal', count: 100, density: 0.5, richness: 1,
   };
 
+  it('keeps the kinds that missed, and says which bar each one missed', () => {
+    // A seam one course deep: masses of coal by area, no thickness at all.
+    const flat = world({ block: Block.COAL_ORE, radius: DEPOSIT_RADIUS, top: GROUND, bottom: GROUND });
+    const colliery = surveyGround(flat, 0, GROUND, 0).find((r) => r.kind === 'colliery');
+    expect(colliery).toBeDefined();
+    expect(colliery!.count).toBeGreaterThanOrEqual(colliery!.needCount);
+    expect(colliery!.short).toEqual([]);
+
+    // And one that is thick but tiny: the density is perfect where it is, and there is
+    // nowhere near enough of it.
+    const small = coal(1);
+    const tiny = surveyGround(small, 0, GROUND, 0).find((r) => r.kind === 'colliery');
+    expect(tiny!.short).toContain('count');
+    expect(tiny!.needCount).toBe(INDUSTRY_TYPES.find((t) => t.kind === 'colliery')!.count);
+  });
+
+  it('every kind is reported on, qualifying or not', () => {
+    const reports = surveyGround(coal(6), 0, GROUND, 0);
+    expect(reports.map((r) => r.kind)).toEqual(INDUSTRY_TYPES.map((t) => t.kind));
+    // What qualifies is exactly what the built survey hands back, in the same order.
+    expect(reports.filter((r) => r.short.length === 0).map((r) => r.kind)).toEqual(
+      found(coal(6)).map((d) => d.kind),
+    );
+  });
+
+  it('names what came nearest, and which way to walk', () => {
+    const bare: BlockReader = { getBlock: (_x, y) => (y <= GROUND ? Block.STONE : Block.AIR) };
+    expect(depositMissReason(surveyGround(bare, 0, GROUND, 0))).toContain('何も無い');
+
+    // Packed enough to clear the density bar, and one course deep, so the only thing
+    // missing is quantity — the walk that finds a bigger seam, not a denser one.
+    const patch = world({ block: Block.COAL_ORE, radius: 2.5, top: GROUND, bottom: GROUND });
+    const small = depositMissReason(surveyGround(patch, 0, GROUND, 0));
+    expect(small).toContain('炭鉱');
+    expect(small).toContain('量が足りない');
+
+    // Thick but tiny misses both bars, and says so rather than picking one.
+    expect(depositMissReason(surveyGround(coal(1), 0, GROUND, 0))).toContain('密度');
+
+    // Wide and one course deep, of something with a high bar: enough sand by count,
+    // nowhere near the share of columns a quarry wants.
+    const dusting = world({ block: Block.SAND, radius: 4, top: GROUND, bottom: GROUND - 4 });
+    const spread = depositMissReason(surveyGround(dusting, 0, GROUND, 0));
+    expect(spread).toContain('砂採取場');
+    expect(spread).toContain('密度');
+  });
+
+  it('hands back what it removed, so the removal can say what went', () => {
+    const registry = new IndustryRegistry();
+    const placed = registry.place({ x: 0, y: GROUND, z: 0 }, deposit);
+    if (!placed.ok) throw new Error('the fixture could not site its industry');
+    const before = registry.revision;
+    const gone = registry.remove(placed.industry.id);
+    expect(gone?.name).toBe(placed.industry.name);
+    expect(registry.all()).toEqual([]);
+    expect(registry.revision).toBeGreaterThan(before);
+    // And the ground is free again: the whole point of taking one down.
+    expect(registry.place({ x: 0, y: GROUND, z: 0 }, deposit).ok).toBe(true);
+    expect(registry.remove('nothing')).toBeNull();
+  });
+
   it('refuses a place the survey found nothing at', () => {
     const registry = new IndustryRegistry();
     const result = registry.place({ x: 0, y: GROUND, z: 0 }, null);
@@ -121,10 +184,13 @@ describe('siting one', () => {
     expect(registry.place({ x: 0, y: GROUND, z: 0 }, deposit).ok).toBe(true);
     const close = registry.place({ x: INDUSTRY_SPACING - 1, y: GROUND, z: 0 }, deposit);
     expect(close.ok).toBe(false);
-    if (!close.ok) {
-      expect(close.why).toBe('too-close');
-      // Named, because "too close to what?" is the only question the refusal raises.
-      expect(close.near?.name).toBeDefined();
+    if (!close.ok && close.why === 'too-close') {
+      // Named and measured, because "too close to what, and by how much?" is the whole of
+      // what the refusal has to answer.
+      expect(close.near.name).toBeDefined();
+      expect(close.distance).toBeCloseTo(INDUSTRY_SPACING - 1);
+    } else {
+      throw new Error('the second industry was not refused for crowding');
     }
     expect(registry.place({ x: INDUSTRY_SPACING, y: GROUND, z: 0 }, deposit).ok).toBe(true);
   });

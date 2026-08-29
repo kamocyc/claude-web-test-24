@@ -113,6 +113,26 @@ export const MAX_RICHNESS = 2.5;
 /** What one industry piles up while nothing comes to collect it. */
 export const MAX_INDUSTRY_STOCK = 48;
 
+/** What one kind of industry makes of a place, whether or not it qualifies.
+ *
+ *  The survey keeps its failures. "Nothing here" is the least useful thing a tool can say
+ *  about ground somebody walked half a valley to reach — "the coal is there, it is just
+ *  too thin" is a direction to walk in, and the two are the same scan. */
+export interface DepositReport {
+  kind: IndustryKind;
+  label: string;
+  good: GoodId;
+  /** Blocks of the resource counted, and the bar it had to clear. */
+  count: number;
+  needCount: number;
+  /** Share of the columns looked at that held any, and the bar it had to clear. */
+  density: number;
+  needDensity: number;
+  richness: number;
+  /** Which of the two bars it missed. Empty when it cleared both. */
+  short: readonly ('count' | 'density')[];
+}
+
 /** What the survey found at a place. */
 export interface Deposit {
   kind: IndustryKind;
@@ -138,6 +158,21 @@ export interface BlockReader {
  *  `DEPOSIT_UP` above. Both halves of a deposit are counted the same way: an outcrop is
  *  simply the part of the seam that happens to be above ground. */
 export function surveyDeposits(world: BlockReader, x: number, y: number, z: number): Deposit[] {
+  return surveyGround(world, x, y, z)
+    .filter((report) => report.short.length === 0)
+    .map((report) => ({
+      kind: report.kind,
+      label: report.label,
+      good: report.good,
+      count: report.count,
+      density: report.density,
+      richness: report.richness,
+    }));
+}
+
+/** The same scan, with every kind's numbers kept whether or not it qualified. Ordered as
+ *  `INDUSTRY_TYPES` is, so the first one that qualifies is the one that gets built. */
+export function surveyGround(world: BlockReader, x: number, y: number, z: number): DepositReport[] {
   const counts = new Map<BlockId, number>();
   const columns = new Map<BlockId, Set<number>>();
   let scanned = 0;
@@ -161,7 +196,7 @@ export function surveyDeposits(world: BlockReader, x: number, y: number, z: numb
       }
     }
   }
-  const out: Deposit[] = [];
+  const out: DepositReport[] = [];
   for (const type of INDUSTRY_TYPES) {
     let count = 0;
     const held = new Set<number>();
@@ -170,17 +205,52 @@ export function surveyDeposits(world: BlockReader, x: number, y: number, z: numb
       for (const column of columns.get(block) ?? []) held.add(column);
     }
     const density = scanned > 0 ? held.size / scanned : 0;
-    if (count < type.count || density < type.density) continue;
+    const short: ('count' | 'density')[] = [];
+    if (count < type.count) short.push('count');
+    if (density < type.density) short.push('density');
     out.push({
       kind: type.kind,
       label: type.label,
       good: type.good,
       count,
+      needCount: type.count,
       density,
+      needDensity: type.density,
       richness: richnessOf(count, type.count),
+      short,
     });
   }
   return out;
+}
+
+/** Why nothing can be built here, in the one line a toast has room for.
+ *
+ *  Names whichever kind came nearest and says *which* of the two bars it missed, because
+ *  they are two different walks: not enough of the resource means find a bigger seam, and
+ *  not enough density means the seam is there and the player is standing at the wrong end
+ *  of it. */
+export function depositMissReason(reports: readonly DepositReport[]): string {
+  let best: DepositReport | null = null;
+  let bestScore = 0;
+  for (const report of reports) {
+    if (report.short.length === 0 || report.count === 0) continue;
+    // How close it came, judged by whichever bar it is furthest from clearing.
+    const score = Math.min(report.count / report.needCount, report.density / report.needDensity);
+    if (score <= bestScore) continue;
+    best = report;
+    bestScore = score;
+  }
+  if (!best) return 'ここには何も無い — 鉱脈の露頭、砂地、森、広い草原を探そう';
+  const share = (value: number) => `${Math.round(value * 100)}%`;
+  const amount = `${best.count} / ${best.needCount} 個`;
+  const spread = `密度 ${share(best.density)} / ${share(best.needDensity)}`;
+  if (best.short.length === 2) {
+    return `${best.label}には足りない（${amount}、${spread}）— もっと濃く固まった所を探そう`;
+  }
+  if (best.short[0] === 'count') {
+    return `${best.label}には量が足りない（${amount}。密度は足りている）— もっと大きい鉱脈を探そう`;
+  }
+  return `${best.label}には散らばりすぎ（${spread}。量は足りている）— 濃く固まった所の真上に立とう`;
 }
 
 /** How much faster rich ground works. Square rooted, so twice the ore is not twice the
@@ -222,7 +292,10 @@ export type IndustryRefusal = 'nothing-here' | 'too-close';
 
 export type PlaceResult =
   | { ok: true; industry: Industry }
-  | { ok: false; why: IndustryRefusal; near?: Industry };
+  | { ok: false; why: 'nothing-here' }
+  /** The one that already has this ground, and how near it stands — a refusal that names
+   *  a distance is a refusal the player can act on by walking. */
+  | { ok: false; why: 'too-close'; near: Industry; distance: number };
 
 /** Every industry the player has built. */
 export class IndustryRegistry {
@@ -235,9 +308,10 @@ export class IndustryRegistry {
    *  place is free and gives the thing a name. */
   place(at: { x: number; y: number; z: number }, deposit: Deposit | null): PlaceResult {
     if (!deposit) return { ok: false, why: 'nothing-here' };
-    for (const industry of this.byId.values()) {
-      if (Math.hypot(industry.x - at.x, industry.z - at.z) >= INDUSTRY_SPACING) continue;
-      return { ok: false, why: 'too-close', near: industry };
+    const crowding = this.near(at.x, at.z, INDUSTRY_SPACING);
+    const gap = crowding ? Math.hypot(crowding.x - at.x, crowding.z - at.z) : Infinity;
+    if (crowding && gap < INDUSTRY_SPACING) {
+      return { ok: false, why: 'too-close', near: crowding, distance: gap };
     }
     const id = `i${this.next++}`;
     const industry: Industry = {
@@ -262,9 +336,12 @@ export class IndustryRegistry {
     return this.byId.get(id);
   }
 
-  remove(id: IndustryId): boolean {
-    const gone = this.byId.delete(id);
-    if (gone) this.revision++;
+  /** Takes one down, and hands back what was there so the caller can say what it was. */
+  remove(id: IndustryId): Industry | null {
+    const gone = this.byId.get(id);
+    if (!gone) return null;
+    this.byId.delete(id);
+    this.revision++;
     return gone;
   }
 

@@ -158,11 +158,12 @@ import { CELL_STOCK, TownEconomy, type Commute } from './townEconomy';
 import { LineNetwork, MAX_LINE_STOPS, STOP_TOWN_REACH, type Stop } from './lines';
 import { networkSites, STOP_SITE_REACH } from './sites';
 import {
-  INDUSTRY_TYPES,
+  INDUSTRY_SPACING,
   IndustryRegistry,
   MAX_INDUSTRY_STOCK,
-  surveyDeposits,
-  type Deposit,
+  depositMissReason,
+  industryType,
+  surveyGround,
   type Industry,
 } from './industry';
 import type { LedgerTown, LedgerView } from '../ui/ledger';
@@ -190,6 +191,10 @@ const REACH = 5;
 /** How near the player has to be to put a stop down or take one back up. The same reach
  *  the rest of the world uses for placing things, so it needs no explaining. */
 const STOP_REACH = 6;
+/** How near the player has to be to take an industry back down, and how far from its
+ *  middle a block still counts as part of it. A works is a seven-by-seven yard, so this is
+ *  its far corner and a step: pointing anywhere at one is pointing at it. */
+const INDUSTRY_REACH = 8;
 const ATTACK_REACH = 3.6;
 const AUTOSAVE_SECONDS = 30;
 /** Half the span the minimap covers, so only nearby roads are handed to it. */
@@ -436,6 +441,9 @@ export class Game {
   private readonly villageBuildings = new Map<string, { stage: number; roads: number; list: VillageBuilding[] }>();
   /** The building the player is looking at, refreshed with the rest of the interaction. */
   private lookedAt: { building: VillageBuilding; village: VillageRecord } | null = null;
+  /** The industry under the crosshair. Kept apart from `lookedAt` because an industry is
+   *  not in a village and is found by distance rather than by plot. */
+  private lookedAtWorks: Industry | null = null;
   private focusCache: { at: number; route: Route | undefined } = { at: -1e9, route: undefined };
   private readonly effects: Effects;
   private readonly sky: Sky;
@@ -1269,8 +1277,17 @@ export class Game {
     look: { x: number; y: number; z: number },
   ): void {
     this.lookedAt = null;
+    this.lookedAtWorks = null;
     const hit = raycastVoxels(this.world, eye, look, { maxDistance: BUILDING_REACH });
     if (!hit) return;
+    // An industry is looked for first and by distance: it stands on its own out in the
+    // country, so there is no village to ask about it, and every one of them is the same
+    // shed — which makes this the one place its kind can be read.
+    const works = this.industries.near(hit.x, hit.z, INDUSTRY_REACH);
+    if (works) {
+      this.lookedAtWorks = works;
+      return;
+    }
     const village = this.villages.at(hit.x, hit.z);
     if (!village || !village.discovered) return;
     const building = buildingAt(this.buildingsFor(village), hit.x, hit.z);
@@ -1279,7 +1296,9 @@ export class Game {
 
   /** What the HUD says about the building under the crosshair. */
   private buildingPrompt(): { title: string; hint: string } | null {
-    if (!this.lookedAt || this.uiOpen) return null;
+    if (this.uiOpen) return null;
+    if (this.lookedAtWorks) return this.industryPrompt(this.lookedAtWorks);
+    if (!this.lookedAt) return null;
     const { building, village } = this.lookedAt;
     const depot = this.depotFor(village);
     const isDepot = depot?.id === building.id;
@@ -1287,6 +1306,28 @@ export class Game {
       title: describeBuilding(building, village, isDepot, this.buildingNote(village, building)),
       hint: isDepot ? 'ここから荷が出入りする' : '[F] この村の集荷所にする',
     };
+  }
+
+  /** What the works under the crosshair is: which kind it is, what it digs, how fast, and
+   *  how much has piled up waiting for somebody to come and take it.
+   *
+   *  Every industry is built out of the same shed, so this is where its kind lives. The
+   *  hint is whichever sentence is true of it: no stop yet, a stop that is not collecting,
+   *  or a working one — and on that last one, how to take the thing back down. */
+  private industryPrompt(works: Industry): { title: string; hint: string } {
+    const kind = industryType(works.kind)?.label ?? '産業';
+    const title =
+      `${works.name}［${kind}］— ${this.goodName(works.good)} ` +
+      `在庫 ${works.stock} / ${MAX_INDUSTRY_STOCK}・産出 ×${works.richness.toFixed(1)}・` +
+      `出荷 ${works.shipped}`;
+    const stop = this.lines.stopNear(works.x, works.z, STOP_SITE_REACH);
+    if (!stop) {
+      return { title, hint: `停留所が無い — ${STOP_SITE_REACH}マス以内に置いて路線につなごう` };
+    }
+    if (works.stock >= MAX_INDUSTRY_STOCK) {
+      return { title, hint: `満杯 — ${stop.name}を路線（N）に並べたか確かめよう` };
+    }
+    return { title, hint: `${stop.name}が集める。[産業設置具] 右クリックで撤去` };
   }
 
   /** What the building under the crosshair is waiting for, in one clause.
@@ -2310,24 +2351,32 @@ export class Game {
     const at = hit
       ? { x: hit.x, y: hit.y + 1, z: hit.z }
       : { x: Math.floor(this.player.x), y: Math.floor(this.player.y), z: Math.floor(this.player.z) };
-    const standing = this.industries.near(at.x, at.z, STOP_REACH);
+    const standing =
+      this.industries.near(at.x, at.z, INDUSTRY_REACH)
+      ?? this.industries.near(this.player.x, this.player.z, INDUSTRY_REACH);
     if (standing) {
-      this.hud.toast(`${standing.name}: ${itemLabel(standing.good)} 在庫 ${standing.stock} / ${MAX_INDUSTRY_STOCK}`);
+      this.takeDownIndustry(standing);
       return;
     }
     if (!this.player.inventory.has('industry_kit', 1)) {
       this.warn('産業設置具が無い（作業台で 鉄インゴット 2 ＋ 木材 4）');
       return;
     }
-    const found = surveyDeposits(this.world, at.x, at.y, at.z);
-    const best: Deposit | undefined = found[0];
-    const result = this.industries.place(at, best ?? null);
+    const ground = surveyGround(this.world, at.x, at.y, at.z);
+    const best = ground.find((report) => report.short.length === 0) ?? null;
+    const result = this.industries.place(at, best);
     if (!result.ok) {
       if (result.why === 'too-close') {
-        this.warn(`${result.near?.name ?? '産業'}が近すぎる — 同じ資源で二重取りはできない`);
+        this.warn(
+          `${result.near.name}まで ${Math.round(result.distance)}m しかない` +
+            `（産業どうしは ${INDUSTRY_SPACING}m 以上）— 同じ資源で二重取りはできない`,
+        );
         return;
       }
-      this.warn(this.depositMiss(at));
+      // The refusal is the interesting half, and it is built from the same scan that would
+      // have said yes: how much was there, how thin it was spread, and which of the two is
+      // the thing to go and fix.
+      this.warn(depositMissReason(ground));
       return;
     }
     this.player.inventory.remove('industry_kit', 1);
@@ -2339,25 +2388,45 @@ export class Game {
     );
   }
 
-  /** What to say when the ground did not qualify. Names whichever resource came nearest,
-   *  so "keep looking" has a direction to it. */
-  private depositMiss(at: { x: number; y: number; z: number }): string {
-    let closest: { label: string; have: number; need: number } | null = null;
-    for (const type of INDUSTRY_TYPES) {
-      let have = 0;
-      for (let dz = -6; dz <= 6; dz++) {
-        for (let dx = -6; dx <= 6; dx++) {
-          for (let dy = -6; dy <= 6; dy++) {
-            if (type.blocks.includes(this.world.getBlock(at.x + dx, at.y + dy, at.z + dz))) have++;
-          }
-        }
-      }
-      const share = have / type.count;
-      if (have === 0 || (closest && share <= closest.have / closest.need)) continue;
-      closest = { label: type.label, have, need: type.count };
+  /** Takes an industry back down.
+   *
+   *  The same one gesture the stop and the station follow: point the thing you built it
+   *  with at what you built, and it comes back up. The graded yard stays — the ground was
+   *  flattened and un-flattening it would be a lie about what the player did to the hill —
+   *  and the shed, the chimney and the crates go, because those are the whole of how a
+   *  works is told apart from a hillside. */
+  private takeDownIndustry(works: Industry): void {
+    this.industries.remove(works.id);
+    this.removeIndustrySite(works);
+    this.transport.invalidate();
+    if (!this.player.inventory.unlimited && this.player.inventory.add({ id: 'industry_kit', count: 1 }) > 0) {
+      this.dropAtPlayer({ id: 'industry_kit', count: 1 });
     }
-    if (!closest) return 'ここには何も無い — 鉱脈の露頭、砂地、森、広い草原を探そう';
-    return `${closest.label}には足りない（${closest.have} / ${closest.need} ほど）— もっと濃い所を探そう`;
+    const stop = this.lines.stopNear(works.x, works.z, STOP_SITE_REACH);
+    this.hud.toast(
+      stop
+        ? `${works.name}を撤去した — ${stop.name}に集める先が無くなった`
+        : `${works.name}を撤去した`,
+    );
+  }
+
+  /** Unbuilds the shed. Only blocks that are still what the site put there are taken, so
+   *  anything the player built on top of theirs survives them changing their mind. */
+  private removeIndustrySite(works: Industry): void {
+    const clear = (x: number, y: number, z: number, placed: BlockId): void => {
+      if (this.world.getBlock(x, y, z) !== placed) return;
+      this.world.setBlock(x, y, z, Block.AIR);
+    };
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = 0; dy <= 2; dy++) clear(works.x + dx, works.y + dy, works.z + dz, Block.COBBLESTONE);
+        clear(works.x + dx, works.y + 3, works.z + dz, Block.OAK_PLANKS);
+      }
+    }
+    for (let dy = 0; dy <= 6; dy++) clear(works.x - 1, works.y + dy, works.z - 1, Block.STONE_BRICKS);
+    clear(works.x + 2, works.y, works.z + 2, Block.OAK_LOG);
+    clear(works.x + 2, works.y, works.z - 2, Block.OAK_LOG);
+    clear(works.x - 2, works.y, works.z + 2, Block.OAK_LOG);
   }
 
   /** The little platform that says where a stop is.
@@ -3439,6 +3508,8 @@ export class Game {
       town: this.townLedger(),
       industries: this.industries.all().map((works) => ({
         name: works.name,
+        kind: industryType(works.kind)?.label ?? '産業',
+        richness: works.richness,
         good: this.goodName(works.good),
         stock: works.stock,
         full: works.stock >= MAX_INDUSTRY_STOCK,
@@ -4647,26 +4718,52 @@ export class Game {
       /** Every industry the player has sited. */
       industries: () =>
         this.industries.all().map((works) => ({
-          id: works.id, name: works.name, kind: works.kind, good: works.good,
+          id: works.id, name: works.name, kind: works.kind,
+          label: industryType(works.kind)?.label ?? '産業',
+          good: works.good,
           x: works.x, y: works.y, z: works.z,
           stock: works.stock, shipped: works.shipped,
           richness: Math.round(works.richness * 100) / 100,
+          served: this.lines.stopNear(works.x, works.z, STOP_SITE_REACH) !== null,
         })),
-      /** What the ground here would support, without building anything. */
+      /** What the ground here would support, without building anything. Every kind is
+       *  reported on, including the ones that missed and by how much — which is the whole
+       *  of what a refusal in the world says, in a form a test can read. */
       survey: (x = this.player.x, z = this.player.z) => {
         const at = { x: Math.round(x), y: this.groundHeightAt(Math.round(x), Math.round(z)), z: Math.round(z) };
-        return surveyDeposits(this.world, at.x, at.y, at.z).map((deposit) => ({
-          kind: deposit.kind, label: deposit.label, good: deposit.good,
-          count: deposit.count, density: Math.round(deposit.density * 1000) / 1000,
-          richness: Math.round(deposit.richness * 100) / 100,
-        }));
+        const ground = surveyGround(this.world, at.x, at.y, at.z);
+        return {
+          found: ground
+            .filter((report) => report.short.length === 0)
+            .map((report) => ({
+              kind: report.kind, label: report.label, good: report.good,
+              count: report.count, density: Math.round(report.density * 1000) / 1000,
+              richness: Math.round(report.richness * 100) / 100,
+            })),
+          all: ground.map((report) => ({
+            kind: report.kind, label: report.label,
+            count: report.count, need: report.needCount,
+            density: Math.round(report.density * 1000) / 1000,
+            needDensity: report.needDensity,
+            short: [...report.short],
+          })),
+          why: ground.some((report) => report.short.length === 0) ? null : depositMissReason(ground),
+        };
       },
       /** Sites an industry from the console, skipping the item and the reach. */
       placeIndustry: (x = this.player.x, z = this.player.z) => {
         const at = { x: Math.round(x), y: this.groundHeightAt(Math.round(x), Math.round(z)), z: Math.round(z) };
-        const found = surveyDeposits(this.world, at.x, at.y, at.z);
-        const result = this.industries.place(at, found[0] ?? null);
-        if (!result.ok) return { ok: false as const, why: result.why };
+        const ground = surveyGround(this.world, at.x, at.y, at.z);
+        const result = this.industries.place(at, ground.find((report) => report.short.length === 0) ?? null);
+        if (!result.ok) {
+          return {
+            ok: false as const,
+            why: result.why,
+            reason: result.why === 'too-close'
+              ? `${result.near.name}まで ${Math.round(result.distance)}m`
+              : depositMissReason(ground),
+          };
+        }
         this.buildIndustrySite(result.industry);
         this.transport.invalidate();
         return {
@@ -4674,6 +4771,16 @@ export class Game {
           id: result.industry.id, name: result.industry.name,
           good: result.industry.good, x: result.industry.x, z: result.industry.z,
         };
+      },
+      /** Takes one back down, as the kit does. Names the one nearest the point when no id
+       *  is given, so a test can undo what it just built without holding on to the id. */
+      removeIndustry: (id?: string) => {
+        const works = id
+          ? this.industries.get(id)
+          : this.industries.near(this.player.x, this.player.z, INDUSTRY_SPACING);
+        if (!works) return { ok: false as const, why: 'no-industry' as const };
+        this.takeDownIndustry(works);
+        return { ok: true as const, id: works.id, name: works.name };
       },
       /** Everything the L screen shows, without opening it. */
       ledger: (): LedgerView => this.ledgerView(),

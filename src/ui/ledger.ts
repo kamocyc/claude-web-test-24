@@ -58,7 +58,13 @@ export interface LedgerTown {
 /** One primary industry, as the ledger reports it. */
 export interface LedgerIndustry {
   name: string;
+  /** Which kind of industry it is. The name is built from this, but a works loaded out of
+   *  an old save may not carry it, and the table has room to be explicit. */
+  kind: string;
   good: string;
+  /** How much faster than the baseline the ground it stands on works out at. Fixed the day
+   *  it was built, so it is a property of the place and worth reading. */
+  richness: number;
   stock: number;
   /** True when it has filled up with nowhere to send anything, which is the one thing an
    *  industry can be wrong about and the player can fix. */
@@ -206,7 +212,9 @@ export function buildLedger(view: LedgerView): HTMLElement {
 
   root.appendChild(el('div', 'ledger-heading', '産業'));
   const industries = el('div', 'ledger-table');
-  industries.appendChild(row('ledger-row head', ['産業', '掘り出す物', '在庫', '出荷済み', '停留所', '距離']));
+  industries.appendChild(
+    row('ledger-row head', ['産業', '種類', '掘り出す物', '産出', '在庫', '出荷済み', '停留所', '距離']),
+  );
   if (view.industries.length === 0) {
     industries.appendChild(
       el('div', 'ledger-empty', 'まだ産業がない。産業設置具を持って鉱脈・砂地・森・草原を右クリック。'),
@@ -215,7 +223,9 @@ export function buildLedger(view: LedgerView): HTMLElement {
   for (const works of view.industries) {
     const node = row(`ledger-row${works.full || !works.served ? ' starved' : ''}`, [
       works.name,
+      works.kind,
       works.good,
+      `×${works.richness.toFixed(1)}`,
       works.full ? `${works.stock}（満杯）` : `${works.stock}`,
       `${works.shipped}`,
       works.served ? '有り' : 'まだ無い',
