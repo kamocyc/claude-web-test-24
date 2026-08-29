@@ -585,6 +585,7 @@ export class Game {
     );
     this.hud = new Hud(this.atlas);
     this.worldMap = new WorldMap(this.atlas, () => this.toggleWorldMap());
+    this.worldMap.bindWarp((x, z) => this.warpFromMap(x, z));
     this.screens = new ScreenManager(
       this.player,
       this.atlas,
@@ -752,7 +753,7 @@ export class Game {
     this.screens.refresh();
     const navigation = this.navigationInfo();
     this.hud.update(dt, this.player, this.debugInfo(), navigation);
-    this.worldMap.update(this.surveyed, this.player.x, this.player.z, this.player.yaw, navigation.overlay);
+    this.worldMap.update(this.surveyed, this.player, navigation.overlay);
 
     this.villageSearchTimer -= dt;
     if (this.villageSearchTimer <= 0) {
@@ -862,6 +863,10 @@ export class Game {
     const mapReach = this.worldMap.isOpen
       ? Math.max(MINIMAP_REACH, this.worldMap.reach)
       : MINIMAP_REACH;
+    // Where the overlays have to be gathered *around*, which is not the player once the
+    // big map has been dragged: a map slid two villages over needs the roads from over
+    // there, and gathering them around the player would leave it drawing bare ground.
+    const mapAt = this.worldMap.isOpen ? this.worldMap.centreFrom(this.player) : this.player;
     const markers: CompassMarker[] = [{ kind: 'spawn', x: this.spawnPoint.x, z: this.spawnPoint.z }];
     if (this.deathPoint) markers.push({ kind: 'death', x: this.deathPoint.x, z: this.deathPoint.z });
     const found = this.villages.discovered();
@@ -899,17 +904,17 @@ export class Game {
         // Only the roads that could be on screen: the index holds every column the
         // player ever laid, and even the big map at its widest is a fraction of that.
         roads: this.roads.columnsIn(
-          this.player.x - mapReach,
-          this.player.z - mapReach,
-          this.player.x + mapReach,
-          this.player.z + mapReach,
+          mapAt.x - mapReach,
+          mapAt.z - mapReach,
+          mapAt.x + mapReach,
+          mapAt.z + mapReach,
         ),
-        rails: this.railOverlay(),
+        rails: this.railOverlay(mapAt, mapReach),
         gap:
           questRoute?.gapFrom && questRoute.gapTo
             ? { from: questRoute.gapFrom, to: questRoute.gapTo }
             : null,
-        faults: this.roadFaults(MINIMAP_REACH),
+        faults: this.roadFaults(MINIMAP_REACH, mapAt),
       },
       routes: {
         quest: objective,
@@ -1103,6 +1108,13 @@ export class Game {
         case 'KeyR':
           if (this.paused || this.player.isDead || this.uiOpen) break;
           this.paveToHere();
+          break;
+        case 'Home':
+          // Only while the map is up: everywhere else Home is the browser's.
+          if (this.worldMap.isOpen) {
+            event.preventDefault();
+            this.worldMap.recentre();
+          }
           break;
         case 'KeyG':
           if (this.paused || this.player.isDead) break;
@@ -2712,9 +2724,10 @@ export class Game {
     };
   }
 
-  /** Places near the player where road blocks are laid and the index refuses them. */
-  private roadFaults(radius = FAULT_REACH): RoadFault[] {
-    return this.roads.faults(Math.floor(this.player.x), Math.floor(this.player.z), radius);
+  /** Places where road blocks are laid and the index refuses them. Near the player, or
+   *  near wherever the big map is looking when it is the thing asking. */
+  private roadFaults(radius = FAULT_REACH, at: { x: number; z: number } = this.player): RoadFault[] {
+    return this.roads.faults(Math.floor(at.x), Math.floor(at.z), radius);
   }
 
   private nearPlayer(point: { x: number; z: number }, within: number): boolean {
@@ -3559,8 +3572,29 @@ export class Game {
       document.body.classList.add('screen-open');
     } else {
       document.body.classList.remove('screen-open');
+      // Zooming the map turns the wheel, and the wheel is also the hotbar. Nothing reads
+      // the accumulator while a screen is up, so without this the whole zoom comes out as
+      // a hotbar scroll the moment the map closes.
+      this.options.input.takeWheel();
     }
     this.hud.setClickPrompt(!open && this.ready && !this.paused && !this.player.isDead);
+  }
+
+  /** Sends the player to a place they picked on the map.
+   *
+   *  Behind the debug mode, exactly as the all-items shelf is: walking to somewhere you
+   *  can see on the map is most of what the map is for, and a game that let you skip it
+   *  from the map itself would be a different game. The `G` box stays where it is — typing
+   *  coordinates you already know is a different thing from pointing at a place. */
+  private warpFromMap(x: number, z: number): void {
+    if (!this.options.settings.creative) {
+      this.hud.toast('デバッグモードが切になっている（Esc のポーズ画面で入れる）');
+      return;
+    }
+    this.toggleWorldMap();
+    this.jumpTo(x, z, null);
+    // The same wording the `G` box uses, because it is the same thing happening.
+    this.hud.toast(`X ${Math.floor(x)} / Y ${Math.round(this.player.y)} / Z ${Math.floor(z)} へ移動した`);
   }
 
   private openScreen(open: () => void): void {
@@ -3847,11 +3881,14 @@ export class Game {
   }
 
   /** The curves near the player, as polylines for the map. */
-  private railOverlay(): { x: number; z: number }[][] {
-    const key = `${this.trackNet.revision}:${Math.round(this.player.x / 32)},${Math.round(this.player.z / 32)}`;
+  private railOverlay(
+    at: { x: number; z: number } = this.player,
+    reach = MINIMAP_REACH,
+  ): { x: number; z: number }[][] {
+    const key = `${this.trackNet.revision}:${Math.round(at.x / 32)},${Math.round(at.z / 32)}:${reach}`;
     if (this.railMap?.key === key) return this.railMap.lines;
     const lines = this.trackNet
-      .edgesNear(this.player.x, this.player.z, MINIMAP_REACH)
+      .edgesNear(at.x, at.z, reach)
       .map((edge) => sampleTrack(edge.curve, MINIMAP_RAIL_STEP).map((p) => ({ x: p.x, z: p.z })));
     this.railMap = { key, lines };
     return lines;

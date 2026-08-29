@@ -857,6 +857,8 @@ body.screen-open #viewport {
 }
 
 .worldmap-zoom,
+.worldmap-home,
+.worldmap-warp,
 .worldmap-close {
   font: inherit;
   color: #eef3f8;
@@ -868,8 +870,48 @@ body.screen-open #viewport {
 }
 
 .worldmap-zoom:hover,
+.worldmap-home:hover,
+.worldmap-warp:hover,
 .worldmap-close:hover {
   background: rgba(255, 255, 255, 0.2);
+}
+
+/* A button with nothing to do yet rather than a broken one; the title says which. */
+.worldmap-home:disabled,
+.worldmap-warp:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.worldmap-home:disabled:hover,
+.worldmap-warp:disabled:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* Loud the moment the view leaves the player. A map that can be dragged has to keep
+   "where am I" answerable, and this is the whole of how. */
+.worldmap-home.away {
+  background: rgba(255, 190, 90, 0.28);
+  border-color: rgba(255, 190, 90, 0.6);
+}
+
+.worldmap-home.away:hover {
+  background: rgba(255, 190, 90, 0.4);
+}
+
+/* The place the player clicked, in the pin's own colour (MARKER_COLORS in minimap.ts). */
+.worldmap-cursor {
+  font-variant-numeric: tabular-nums;
+  color: #ff8ad4;
+}
+
+/* The map is paper under the hand. */
+.worldmap .worldmap-canvas-wrap {
+  cursor: grab;
+}
+
+.worldmap .worldmap-canvas-wrap.dragging {
+  cursor: grabbing;
 }
 
 .toggle-row {
