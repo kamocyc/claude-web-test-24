@@ -25,6 +25,7 @@ import { buildAtlas, type Atlas } from '../render/textures';
 import {
   RideDecks,
   TRAIL_STEP,
+  clearanceCells,
   consistLength,
   consistOf,
   decksOf,
@@ -204,6 +205,8 @@ import {
   PAVE_INTERVAL,
   PIER_MIN_GAP,
   PIER_STEP,
+  PLOUGH_PARTICLES,
+  PLOUGH_STEP,
   PORT_MARK_OUT,
   REACH,
   ROAD_GRADE,
@@ -3752,8 +3755,55 @@ export class Game {
       const engine: CarPose = { kind: 'loco', x: mob.x, y: mob.y, z: mob.z, yaw: mob.yaw };
       const cars = [engine, ...mob.consist];
       for (let i = 0; i < cars.length; i++) decks.push(...decksOf(`${mob.id}:${i}`, cars[i]));
+      // A train standing at a platform is running into nothing, and asking the same
+      // question of the same blocks every frame is the one way this gets expensive.
+      const cut = mob.ploughedFrom;
+      if (!cut || Math.hypot(mob.x - cut.x, mob.y - cut.y, mob.z - cut.z) >= PLOUGH_STEP) {
+        mob.ploughedFrom = { x: mob.x, y: mob.y, z: mob.z };
+        this.plough(cars);
+      }
     }
     this.rideDecks.update(decks);
+  }
+
+  /** Cuts whatever a train has run into out of the world.
+   *
+   *  Every car does it, not only the engine. The cars follow the engine's own trail, so on
+   *  a clear run they find nothing left to do — but a player who builds across the line
+   *  behind a train that has already passed would otherwise watch the wagons slide through
+   *  the wall, and the point of the whole thing is that a train is the heaviest object in
+   *  the world.
+   *
+   *  Nothing drops. A train is not mining: it is a hundred tonnes going past, and a
+   *  hillside that paid out its own weight in cobblestone every time a line ran through it
+   *  would be a quarry with a timetable. What a chest in the way gives up is its contents,
+   *  because a container the player filled is theirs and losing it silently is a bug
+   *  wearing a feature's clothes. */
+  private plough(cars: readonly CarPose[]): void {
+    let shown = 0;
+    for (const pose of cars) {
+      for (const cell of clearanceCells(pose)) {
+        const block = this.world.getBlock(cell.x, cell.y, cell.z);
+        if (block === Block.AIR) continue;
+        // Bedrock and water are the two things a train does not win against: one because
+        // nothing breaks it, the other because it is not in the way to begin with.
+        if (blockDef(block).hardness < 0) continue;
+        const entity = this.world.getBlockEntity(cell.x, cell.y, cell.z);
+        if (isChest(entity) || isFurnace(entity)) {
+          for (const slot of entity.slots.slots) {
+            if (slot) this.drops.spawn(cell.x + 0.5, cell.y + 0.5, cell.z + 0.5, slot);
+          }
+        }
+        if (entity) this.world.removeBlockEntity(cell.x, cell.y, cell.z);
+        this.world.setBlock(cell.x, cell.y, cell.z, Block.AIR);
+        // Enough of a burst to see what happened. A train through a mountain would
+        // otherwise spend the whole particle pool on the first metre of it.
+        if (shown < PLOUGH_PARTICLES) {
+          this.effects.spawnBlockParticles(cell.x, cell.y, cell.z, block);
+          shown++;
+        }
+      }
+    }
   }
 
   /** Moves whoever is standing on a carriage along with it.

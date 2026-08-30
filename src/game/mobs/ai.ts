@@ -108,6 +108,10 @@ export class Mob implements Damageable {
    *  carrying. Empty for everything that is not a train. */
   trail: TrailPoint[] = [];
   consist: CarPose[] = [];
+  /** Where the engine was standing when it last cut its way through the world, so a train
+   *  at a platform is not asking the same question of the same blocks every frame. Null
+   *  for everything that is not a train, and until the first time one runs. */
+  ploughedFrom: TrailPoint | null = null;
   /** Animation phase, advanced by how far the mob has walked. */
   walkPhase = 0;
 

@@ -198,6 +198,51 @@ export function posesAlong(trail: readonly TrailPoint[], kinds: readonly CarKind
 
 // --- standing on a moving train -----------------------------------------------
 
+// --- cutting a way through ------------------------------------------------------
+
+/** How wide a corridor a train needs, across the track.
+ *
+ *  Wider than the 1.7 a body is, and wider than the 2.0 the sleepers are: what the number
+ *  has to cover is not the vehicle but the room around it a player would expect a railway
+ *  to have. At the body's own width a train would arrive at a cutting with rock a
+ *  finger's breadth from the windows and call it clear. */
+export const CLEARANCE_WIDTH = 2.8;
+
+/** Every block cell one car is standing in: its own rectangle on the ground, from just
+ *  over the railhead up to the top of a roof.
+ *
+ *  From *over* the railhead because everything below it is what holds the track up. A
+ *  train that cut the embankment out from under itself as it ran would be through the
+ *  floor of its own line by the second lap.
+ *
+ *  The cell test is a separating-axis one over four axes — the car's two and the world's
+ *  two — because the car is at whatever angle the track left it at and the cells are
+ *  square. Testing the car's axes alone would claim a cell that only its corner is near. */
+export function clearanceCells(pose: CarPose): TrailPoint[] {
+  const fx = -Math.sin(pose.yaw);
+  const fz = -Math.cos(pose.yaw);
+  const rx = -fz;
+  const rz = fx;
+  const halfLong = lengthOf(pose.kind) / 2;
+  const halfWide = CLEARANCE_WIDTH / 2;
+  const bottom = Math.floor(pose.y + 0.05);
+  const top = Math.floor(pose.y + ROOF_TOP - 0.05);
+  const reach = Math.hypot(halfLong, halfWide) + 1;
+  const cells: TrailPoint[] = [];
+  for (let x = Math.floor(pose.x - reach); x <= Math.floor(pose.x + reach); x++) {
+    for (let z = Math.floor(pose.z - reach); z <= Math.floor(pose.z + reach); z++) {
+      const dx = x + 0.5 - pose.x;
+      const dz = z + 0.5 - pose.z;
+      if (Math.abs(dx * fx + dz * fz) > halfLong + (Math.abs(fx) + Math.abs(fz)) / 2) continue;
+      if (Math.abs(dx * rx + dz * rz) > halfWide + (Math.abs(rx) + Math.abs(rz)) / 2) continue;
+      if (Math.abs(dx) > halfLong * Math.abs(fx) + halfWide * Math.abs(rx) + 0.5) continue;
+      if (Math.abs(dz) > halfLong * Math.abs(fz) + halfWide * Math.abs(rz) + 0.5) continue;
+      for (let y = bottom; y <= top; y++) cells.push({ x, y, z });
+    }
+  }
+  return cells;
+}
+
 /** A flat top on a vehicle: an oriented rectangle at a height, not a box.
  *
  *  Oriented because a train at forty-five degrees inside an axis-aligned box would be

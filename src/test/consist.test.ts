@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CAR_FLOOR,
+  CAR_HEIGHT,
   CAR_LENGTH,
   COUPLING,
   LOCO_LENGTH,
@@ -9,6 +10,9 @@ import {
   TRAIL_STEP,
   WAGON_TOP,
   alongTrail,
+  CAR_WIDTH,
+  CLEARANCE_WIDTH,
+  clearanceCells,
   consistLength,
   consistOf,
   decksOf,
@@ -235,5 +239,59 @@ describe('standing on a train', () => {
     expect(decks.byId('1:1:floor')).not.toBeNull();
     decks.update([]);
     expect(decks.byId('1:1:floor')).toBeNull();
+  });
+});
+
+describe('the way a train cuts through what is in front of it', () => {
+  /** An engine in the middle of a block column, running east along the top of y = 63. */
+  const east: CarPose = { kind: 'loco', x: 0.5, y: 64, z: 0.5, yaw: -Math.PI / 2 };
+  const spread = (cells: TrailPoint[], axis: 'x' | 'y' | 'z'): [number, number] => {
+    const values = cells.map((cell) => cell[axis]);
+    return [Math.min(...values), Math.max(...values)];
+  };
+
+  it('clears the corridor it is asked to be wide, and no wider', () => {
+    // 2.8 across, centred on the middle of a column: three columns, and the fourth
+    // is a tenth of a block out of reach.
+    expect(spread(clearanceCells(east), 'z')).toEqual([-1, 1]);
+    expect(CLEARANCE_WIDTH).toBeGreaterThan(CAR_WIDTH);
+  });
+
+  it('clears its own length along the track', () => {
+    expect(spread(clearanceCells(east), 'x')).toEqual([-2, 2]);
+  });
+
+  it('leaves the ground the track stands on alone', () => {
+    const [bottom, top] = spread(clearanceCells(east), 'y');
+    // The railhead is the top face of the block at 63, and that block holds the line up.
+    expect(bottom).toBe(64);
+    expect(top).toBe(Math.floor(64 + ROOF_TOP - 0.05));
+    expect(top).toBeGreaterThanOrEqual(Math.floor(64 + CAR_FLOOR + CAR_HEIGHT));
+  });
+
+  it('takes a wagon as a wagon and not as an engine', () => {
+    // On a block boundary, where the two lengths land in different columns.
+    const at = { ...east, x: 0 };
+    const engine = spread(clearanceCells(at), 'x');
+    const wagon = spread(clearanceCells({ ...at, kind: 'wagon' }), 'x');
+    expect(engine).toEqual([-3, 2]);
+    expect(wagon).toEqual([-2, 1]);
+  });
+
+  it('turns with the train rather than boxing it in', () => {
+    // Running north instead: the length and the width swap axes.
+    const north = clearanceCells({ ...east, yaw: 0 });
+    expect(spread(north, 'x')).toEqual([-1, 1]);
+    expect(spread(north, 'z')).toEqual([-2, 2]);
+  });
+
+  it('claims no cell the car does not actually reach into', () => {
+    // On the diagonal a rectangle covers far fewer cells than the square it fits inside,
+    // and the corner test is the whole of what keeps a train from clearing a field.
+    const diagonal = clearanceCells({ ...east, yaw: -Math.PI / 4 });
+    const covered = new Set(diagonal.map((cell) => `${cell.x},${cell.z}`));
+    expect(covered.has('0,0')).toBe(true);
+    expect(covered.has('-3,-3')).toBe(false);
+    expect(covered.has('4,4')).toBe(false);
   });
 });

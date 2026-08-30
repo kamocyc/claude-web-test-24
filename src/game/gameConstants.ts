@@ -43,6 +43,13 @@ export const TRACK_VIEW_INTERVAL = 1;
 export const TRACK_START_MARK = 0xffbb33;
 export const TRACK_END_MARK = 0x66ccff;
 export const TRACK_SPLIT_MARK = 0xffa0d8;
+/** How far a train has to have moved before it looks again at what it is running into.
+ *  Short next to a car, so consecutive checks overlap and nothing slips between them. */
+export const PLOUGH_STEP = 0.3;
+/** Blocks per pass that throw a burst of debris. A train through a hillside breaks more
+ *  in one frame than the particle pool holds, and the first few say it just as well. */
+export const PLOUGH_PARTICLES = 6;
+
 export const STALL_LIGHT = 6;
 export const PORT_MARK_OUT = 0.9;
 
