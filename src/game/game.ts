@@ -85,7 +85,7 @@ import {
   writeSave,
 } from './save';
 import { findSpawn } from './seeds';
-import { SPEEDS, nearestSpeed } from './settings';
+import { SPEEDS, nearestSpeed, saveSettings } from './settings';
 import { tickFurnace } from './smelting';
 import { generateTrades, restockTrades } from './trading';
 import { VILLAGE_RADIUS, type Footprint, type HouseRecord } from '../world/generation/village';
@@ -530,7 +530,16 @@ export class Game {
       },
     );
     this.hud = new Hud(this.atlas);
-    this.worldMap = new WorldMap(this.atlas, () => this.toggleWorldMap());
+    this.worldMap = new WorldMap(this.atlas, () => this.toggleWorldMap(), {
+      // The span the map was last read at, remembered across worlds with the other view
+      // preferences: opening the map on a railway somebody laid across a continent and
+      // finding it back at one screen of ground is the map forgetting, not the world.
+      zoom: options.settings.mapZoom,
+      onZoom: (zoom) => {
+        options.settings.mapZoom = zoom;
+        saveSettings(options.settings);
+      },
+    });
     this.worldMap.bindWarp((x, z) => this.warpFromMap(x, z));
     this.screens = new ScreenManager(
       this.player,
@@ -4663,9 +4672,16 @@ export class Game {
   // --- persistence -----------------------------------------------------------
 
   save(announce = true): boolean {
-    const ok = writeSave(this.snapshot());
-    if (announce) this.hud.toast(ok ? 'セーブしました' : 'セーブに失敗しました');
-    return ok;
+    const outcome = writeSave(this.snapshot(), this.player);
+    // A trimmed save is said out loud even when nobody asked for one, which an ordinary
+    // autosave is. What it costs is the far edge of the map, and the player is the only
+    // one who can do anything about it — by keeping the world in a file instead.
+    if (outcome === 'trimmed') {
+      this.hud.toast('セーブしました（保存領域が足りず、遠くの地図を一部忘れた）');
+    } else if (announce) {
+      this.hud.toast(outcome === 'saved' ? 'セーブしました' : 'セーブに失敗しました');
+    }
+    return outcome !== 'failed';
   }
 
   /** Everything worth keeping about this world, in the shape a save file has. Written to

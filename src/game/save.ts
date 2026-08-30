@@ -75,6 +75,7 @@ export type { SavedStop, SavedLine } from './lines';
 export type { SavedIndustry } from './industry';
 export type { SavedQuest } from './questline';
 
+import { CHUNK_SIZE, parseChunkKey } from '../world/chunk';
 import type { SavedVillage } from './villages';
 import type { SavedStop, SavedLine } from './lines';
 import type { SavedIndustry } from './industry';
@@ -250,24 +251,56 @@ export function decodeWater(text: string, length: number): Uint8Array {
   return decodeRuns(text, length);
 }
 
-export function writeSave(data: SaveData): boolean {
+/** What became of a save. `trimmed` is a save that is on disk but had to forget some of
+ *  the map to get there, which is worth telling the player about: it is the one kind of
+ *  loss that looks like nothing at all until they next open the world. */
+export type SaveOutcome = 'saved' | 'trimmed' | 'failed';
+
+function store(data: object): boolean {
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
     return true;
   } catch {
-    // Quota exceeded or storage disabled. The survey is the one part of a save that can
-    // be had again by walking, and it is much the largest, so a world that will not fit
-    // is written without it rather than lost.
-    if (!data.explored) return false;
-    try {
-      const { explored: _dropped, ...rest } = data;
-      localStorage.setItem(SAVE_KEY, JSON.stringify(rest));
-      return true;
-    } catch {
-      // The game keeps running, just unsaved.
-      return false;
-    }
+    // Quota exceeded, or storage disabled entirely.
+    return false;
   }
+}
+
+/** The surveyed chunks, nearest `near` first.
+ *
+ *  Nearest first because the map somebody is using is the one around them. A save that has
+ *  to forget ground should forget the far edges of the world, not the town they are
+ *  standing in. */
+function nearestFirst(explored: Record<string, string>, near: { x: number; z: number }): string[] {
+  const cx = near.x / CHUNK_SIZE;
+  const cz = near.z / CHUNK_SIZE;
+  return Object.keys(explored).sort((a, b) => {
+    const [ax, az] = parseChunkKey(a);
+    const [bx, bz] = parseChunkKey(b);
+    return (ax - cx) ** 2 + (az - cz) ** 2 - ((bx - cx) ** 2 + (bz - cz) ** 2);
+  });
+}
+
+/** Writes the world to local storage, giving up as little of it as it can.
+ *
+ *  The survey is the one part of a save that can be had again by walking, and it is much
+ *  the largest, so it is what gets cut when the world will not fit. It is cut *down* and
+ *  not out: half the map, then a quarter, until one of them fits. A player who has walked
+ *  a continent loses the far edge of it rather than the whole thing, which is the
+ *  difference between a map with a horizon and no map at all. */
+export function writeSave(data: SaveData, near?: { x: number; z: number }): SaveOutcome {
+  if (store(data)) return 'saved';
+  const explored = data.explored;
+  if (!explored) return 'failed';
+  const ranked = nearestFirst(explored, near ?? { x: 0, z: 0 });
+  for (let keep = Math.floor(ranked.length / 2); keep >= 1; keep = Math.floor(keep / 2)) {
+    const kept: Record<string, string> = {};
+    for (let i = 0; i < keep; i++) kept[ranked[i]] = explored[ranked[i]];
+    if (store({ ...data, explored: kept })) return 'trimmed';
+  }
+  const { explored: _dropped, ...rest } = data;
+  // The game keeps running either way; this is only whether it will still be here later.
+  return store(rest) ? 'trimmed' : 'failed';
 }
 
 /** A save out of whatever held it — local storage, or a file the player chose. Null for
