@@ -25,17 +25,22 @@ export interface ModelPart {
   role: PartRole;
 }
 
-const STEEL = 0x2f3438;
-const STEEL_DARK = 0x1c2023;
-const IRONWORK = 0x39424a;
-const TIMBER = 0x8a6a3a;
-const TIMBER_DARK = 0x5f4826;
-const CRATE = 0xb99a5e;
-const COACH_SIDE = 0x7a4a3c;
-const COACH_TRIM = 0x9c6a52;
-const GLASS = 0x9fc4d8;
-const ROOF = 0xbfb6a6;
-const FIRE = 0xd4762a;
+/** Rolling stock, in the same soft palette as the rest of the world: a coral engine,
+ *  honey wagons and teal carriages, all of it on plum-grey wheels. The names say what
+ *  each colour is on rather than what it is made of, because none of it is black iron
+ *  any more. */
+const BOILER = 0xef8577;
+const CAB = 0xd76d63;
+/** Frames, wheels and the chimney — the parts that read as "underneath". */
+const CHASSIS = 0x6f5f78;
+const TIMBER = 0xd3a26a;
+const TIMBER_DARK = 0xa8794b;
+const CRATE = 0xe2c188;
+const COACH_SIDE = 0x6fb9a8;
+const COACH_TRIM = 0xa8dbcd;
+const GLASS = 0xc6e6f4;
+const ROOF = 0xf6ecdb;
+const FIRE = 0xffb454;
 
 /** How wide the way into a carriage is. A player is 0.6 across, so this is room to walk
  *  through without aiming. */
@@ -49,7 +54,7 @@ const WHEEL = 0.84;
 /** A pair of wheels on an axle, drawn as one box across the gauge: at this scale the gap
  *  between two discs would be a stripe of daylight nobody asked about. */
 function axle(z: number): ModelPart {
-  return { size: [WHEEL_SPAN + 0.3, WHEEL, WHEEL * 0.4], offset: [0, AXLE, z], color: STEEL_DARK, role: 'body' };
+  return { size: [WHEEL_SPAN + 0.3, WHEEL, WHEEL * 0.4], offset: [0, AXLE, z], color: CHASSIS, role: 'body' };
 }
 
 function locomotive(): ModelPart[] {
@@ -59,13 +64,13 @@ function locomotive(): ModelPart[] {
     axle(0.1),
     axle(backOfCab - 0.4),
     // the frame the whole thing sits on
-    { size: [CAR_WIDTH, 0.3, LOCO_LENGTH], offset: [0, CAR_FLOOR - 0.15, 0], color: STEEL_DARK, role: 'body' },
+    { size: [CAR_WIDTH, 0.3, LOCO_LENGTH], offset: [0, CAR_FLOOR - 0.15, 0], color: CHASSIS, role: 'body' },
     // boiler, and the flat smokebox front that gives it a face
-    { size: [CAR_WIDTH - 0.35, 1.25, LOCO_LENGTH - 2.0], offset: [0, CAR_FLOOR + 0.65, -1.1], color: STEEL, role: 'body' },
-    { size: [CAR_WIDTH - 0.2, 1.35, 0.3], offset: [0, CAR_FLOOR + 0.65, -LOCO_LENGTH / 2 + 0.15], color: IRONWORK, role: 'body' },
-    { size: [0.5, 0.85, 0.5], offset: [0, CAR_FLOOR + 1.6, -LOCO_LENGTH / 2 + 0.7], color: STEEL_DARK, role: 'body' },
+    { size: [CAR_WIDTH - 0.35, 1.25, LOCO_LENGTH - 2.0], offset: [0, CAR_FLOOR + 0.65, -1.1], color: BOILER, role: 'body' },
+    { size: [CAR_WIDTH - 0.2, 1.35, 0.3], offset: [0, CAR_FLOOR + 0.65, -LOCO_LENGTH / 2 + 0.15], color: CAB, role: 'body' },
+    { size: [0.5, 0.85, 0.5], offset: [0, CAR_FLOOR + 1.6, -LOCO_LENGTH / 2 + 0.7], color: CHASSIS, role: 'body' },
     // the cab, built up to the same height as the carriages behind it
-    { size: [CAR_WIDTH, CAR_HEIGHT, CAB_LONG], offset: [0, CAR_FLOOR + CAR_HEIGHT / 2, CAB_BACK], color: IRONWORK, role: 'body' },
+    { size: [CAR_WIDTH, CAR_HEIGHT, CAB_LONG], offset: [0, CAR_FLOOR + CAR_HEIGHT / 2, CAB_BACK], color: CAB, role: 'body' },
     { size: [CAR_WIDTH + 0.14, 0.16, CAB_LONG + 0.3], offset: [0, ROOF_TOP - 0.08, CAB_BACK], color: ROOF, role: 'body' },
     { size: [0.9, 0.7, 0.06], offset: [0, CAR_FLOOR + 1.5, CAB_BACK - CAB_LONG / 2 - 0.02], color: GLASS, role: 'body' },
     // the open firebox, which is what makes it read as a train and not a black box
@@ -207,8 +212,8 @@ const MODELS: Record<MobKind, ModelPart[]> = {
     { size: [0.16, 0.5, 0.16], offset: [0.35, 1.1, 0], color: MOB.skin, role: 'armRight' },
     { size: [0.2, 0.7, 0.2], offset: [-0.14, 0.35, 0], color: MOB.porterLegs, role: 'legFrontLeft' },
     { size: [0.2, 0.7, 0.2], offset: [0.14, 0.35, 0], color: MOB.porterLegs, role: 'legFrontRight' },
-    { size: [0.52, 0.52, 0.34], offset: [0, 1.32, 0.3], color: 0x8a6a3a, role: 'body' },
-    { size: [0.56, 0.1, 0.05], offset: [0, 1.32, 0.48], color: 0x5f4826, role: 'body' },
+    { size: [0.52, 0.52, 0.34], offset: [0, 1.32, 0.3], color: CRATE, role: 'body' },
+    { size: [0.56, 0.1, 0.05], offset: [0, 1.32, 0.48], color: TIMBER_DARK, role: 'body' },
   ],
   // The same porter with a two wheeled cart behind them. It has to read as "this road is
   // wide enough for that" from the side of the road, so the cart is deliberately as broad
@@ -223,14 +228,14 @@ const MODELS: Record<MobKind, ModelPart[]> = {
     { size: [0.2, 0.7, 0.2], offset: [-0.14, 0.35, 0], color: MOB.porterLegs, role: 'legFrontLeft' },
     { size: [0.2, 0.7, 0.2], offset: [0.14, 0.35, 0], color: MOB.porterLegs, role: 'legFrontRight' },
     // shafts from the porter's hands back to the bed
-    { size: [0.06, 0.06, 0.7], offset: [-0.3, 1.05, 0.45], color: 0x6b5330, role: 'body' },
-    { size: [0.06, 0.06, 0.7], offset: [0.3, 1.05, 0.45], color: 0x6b5330, role: 'body' },
+    { size: [0.06, 0.06, 0.7], offset: [-0.3, 1.05, 0.45], color: TIMBER_DARK, role: 'body' },
+    { size: [0.06, 0.06, 0.7], offset: [0.3, 1.05, 0.45], color: TIMBER_DARK, role: 'body' },
     // the bed, its load, and the wheels
-    { size: [1.2, 0.34, 0.8], offset: [0, 0.75, 0.95], color: 0x8a6a3a, role: 'body' },
-    { size: [1.24, 0.08, 0.84], offset: [0, 0.94, 0.95], color: 0x5f4826, role: 'body' },
-    { size: [0.86, 0.3, 0.56], offset: [0, 1.06, 0.95], color: 0xb99a5e, role: 'body' },
-    { size: [0.14, 0.66, 0.66], offset: [-0.65, 0.62, 0.95], color: 0x4a3423, role: 'body' },
-    { size: [0.14, 0.66, 0.66], offset: [0.65, 0.62, 0.95], color: 0x4a3423, role: 'body' },
+    { size: [1.2, 0.34, 0.8], offset: [0, 0.75, 0.95], color: TIMBER, role: 'body' },
+    { size: [1.24, 0.08, 0.84], offset: [0, 0.94, 0.95], color: TIMBER_DARK, role: 'body' },
+    { size: [0.86, 0.3, 0.56], offset: [0, 1.06, 0.95], color: CRATE, role: 'body' },
+    { size: [0.14, 0.66, 0.66], offset: [-0.65, 0.62, 0.95], color: CHASSIS, role: 'body' },
+    { size: [0.14, 0.66, 0.66], offset: [0.65, 0.62, 0.95], color: CHASSIS, role: 'body' },
   ],
   // The locomotive. Built to the track's own numbers rather than to numbers that happened
   // to look right — see `consist.ts` — because a train the player can stand on and walk
