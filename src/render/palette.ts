@@ -19,10 +19,16 @@ export const PASTEL = {
  *  as hostile from the colour alone. */
 export const MOB = {
   skin: 0xf1cba7, skinDeep: 0xdcaf88,
+  eyeRed: 0xff6d78, eyeBlue: 0x86d9ff, eyeDark: 0x4a3d4c,
   pig: 0xf7b4bd, pigDeep: 0xe89dab, pigSnout: 0xe98ba0,
-  cow: 0xc79a76, cowDeep: 0xb08260, cowPatch: 0xfdf4e6,
+  cow: 0xc79a76, cowDeep: 0xb08260, cowPatch: 0xfdf4e6, cowHorn: 0xf5e0ad,
   sheep: 0xfbf5ea, sheepDeep: 0xd5c4b6,
-  chicken: 0xfdf8ee, beak: 0xf8ba55, comb: 0xf4798c,
+  cat: 0xd18a68, catDeep: 0x765b5b, catEye: 0x9de36d,
+  dog: 0xc8956f, dogDeep: 0x7f594f, dogCollar: 0x6d9fd1,
+  fox: 0xe8844f, foxDeep: 0xfdf0d8, foxLeg: 0xb95d3d,
+  rabbit: 0xe3c9bd, rabbitDeep: 0xb99d98, rabbitEar: 0xf09eae,
+  camel: 0xc69b62, camelDeep: 0x9d7446,
+  chicken: 0xfdf8ee, chickenWing: 0xe4d9cd, beak: 0xf8ba55, comb: 0xf4798c,
   villager: 0xc9946a, villagerTrim: 0xe3ba8f, villagerLegs: 0x99714f,
   porter: 0x7fa8d4, porterTrim: 0x9cc2e6, porterLegs: 0x5e7fac,
   zombie: 0x8fcf87, zombieShirt: 0x6fc0bd, zombieLegs: 0x8390d6,

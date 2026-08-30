@@ -1875,6 +1875,7 @@ export class Game {
       day: this.day,
       difficulty: this.player.rules,
       currentAt: (x, y, z) => this.water.flowAt(x, y, z),
+      biomeAt: (x, z) => this.generator.biomeAt(Math.floor(x), Math.floor(z)),
       onPlayerHit: (damage, fromX, fromZ) => {
         // Every blow a mob lands passes through here, arrows included, so the difficulty
         // only has to be applied in one place.
