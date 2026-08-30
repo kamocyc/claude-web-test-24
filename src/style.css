@@ -178,7 +178,6 @@ body.screen-open #viewport {
 .slot-icon {
   width: 78%;
   height: 78%;
-  image-rendering: pixelated;
   pointer-events: none;
 }
 
@@ -314,7 +313,7 @@ body.screen-open #viewport {
 
 .slot-label {
   font-size: 12px;
-  opacity: 0.7;
+  color: var(--cute-ink-muted);
 }
 
 .slots {
@@ -359,7 +358,7 @@ body.screen-open #viewport {
   align-items: center;
   gap: 5px;
   font-size: 12px;
-  opacity: 0.8;
+  color: var(--cute-ink-muted);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -377,7 +376,7 @@ body.screen-open #viewport {
   margin-top: 6px;
   font-size: 11px;
   letter-spacing: 0.08em;
-  opacity: 0.55;
+  color: var(--cute-ink-muted);
 }
 
 .recipe-row {
@@ -400,7 +399,9 @@ body.screen-open #viewport {
 }
 
 .recipe-row.locked {
-  opacity: 0.42;
+  /* Recessed by its own ground rather than by fading the text: the missing
+     ingredient is written in red just below, and that is the part to read. */
+  background: rgba(74, 67, 96, 0.05);
   cursor: not-allowed;
 }
 
@@ -420,25 +421,24 @@ body.screen-open #viewport {
   flex-wrap: wrap;
   gap: 8px;
   font-size: 11px;
-  opacity: 0.75;
+  color: var(--cute-ink-muted);
 }
 
 .recipe-ingredient.missing {
-  color: #ff9b8a;
-  opacity: 1;
+  color: var(--cute-bad);
 }
 
 .recipe-stock {
   margin-left: auto;
   font-size: 11px;
-  opacity: 0.6;
+  color: var(--cute-ink-muted);
   white-space: nowrap;
 }
 
 .recipe-empty {
   padding: 10px 2px;
   font-size: 12px;
-  opacity: 0.6;
+  color: var(--cute-ink-muted);
 }
 
 .cursor-stack {
@@ -509,7 +509,7 @@ body.screen-open #viewport {
 }
 
 .trade-row.sold-out {
-  opacity: 0.4;
+  opacity: 0.78;
 }
 
 .trade-side {
@@ -518,7 +518,7 @@ body.screen-open #viewport {
 }
 
 .trade-arrow {
-  opacity: 0.7;
+  color: var(--cute-ink-muted);
 }
 
 .trade-button {
@@ -534,8 +534,8 @@ body.screen-open #viewport {
 }
 
 .trade-button:disabled {
-  background: #56606a;
-  color: #9aa3ab;
+  background: #e4dfea;
+  color: var(--cute-ink-faint);
   cursor: not-allowed;
 }
 
@@ -586,7 +586,7 @@ body.screen-open #viewport {
 
 .menu-note {
   margin: 0;
-  opacity: 0.75;
+  color: var(--cute-ink-muted);
   font-size: 14px;
 }
 
@@ -628,12 +628,12 @@ body.screen-open #viewport {
   margin-top: 10px;
   font-size: 12px;
   line-height: 1.9;
-  opacity: 0.72;
+  color: var(--cute-ink-muted);
   text-align: center;
 }
 
 .menu.death .menu-title {
-  color: #ff7b7b;
+  color: var(--cute-bad);
 }
 
 .click-prompt {
@@ -643,7 +643,8 @@ body.screen-open #viewport {
   transform: translateX(-50%);
   padding: 10px 20px;
   font-size: 15px;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--cute-veil);
+  color: #ffffff;
   border-radius: 8px;
   letter-spacing: 0.05em;
 }
@@ -677,7 +678,7 @@ body.screen-open #viewport {
   padding: 7px 4px;
   font: inherit;
   font-size: 13px;
-  color: rgba(255, 255, 255, 0.82);
+  color: var(--cute-ink);
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 5px;
@@ -697,7 +698,7 @@ body.screen-open #viewport {
 
 .setting-note {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.62);
+  color: var(--cute-ink-muted);
   line-height: 1.35;
   min-height: 1.35em;
 }
@@ -717,7 +718,7 @@ body.screen-open #viewport {
 
 .slider-value {
   text-align: right;
-  opacity: 0.8;
+  color: var(--cute-ink-muted);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -731,6 +732,10 @@ body.screen-open #viewport {
   margin-left: -210px;
   overflow: hidden;
   mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  /* A dark strip under the markers. Without it they are pale text on a pale sky, and
+     the mask fades its ends out along with theirs. */
+  background: var(--cute-veil);
+  border-radius: 999px;
 }
 
 .compass-strip {
@@ -755,7 +760,7 @@ body.screen-open #viewport {
   margin-left: -6px;
   font-size: 13px;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.85);
+  color: #ffffff;
   background: none;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
@@ -775,14 +780,13 @@ body.screen-open #viewport {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
 }
 
-.compass-marker.spawn { color: #9ad8ff; }
-.compass-marker.death { color: #ff8f7c; }
-.compass-marker.village { color: #ffd479; }
+.compass-marker.spawn { color: var(--hud-info); }
+.compass-marker.death { color: var(--hud-bad); }
+.compass-marker.village { color: var(--hud-gold); }
 
 .compass-distance {
   font-size: 10px;
   font-weight: 400;
-  opacity: 0.9;
 }
 
 .minimap {
@@ -808,9 +812,15 @@ body.screen-open #viewport {
   position: absolute;
   top: 1px;
   left: 50%;
-  margin-left: -4px;
+  transform: translateX(-50%);
+  padding: 0 4px;
+  border-radius: 999px;
   font-size: 10px;
   font-weight: 700;
+  /* The map under it can be anything from night rock to lit sand, so the letter
+     brings its own ground rather than trusting the one it lands on. */
+  color: #ffffff;
+  background: var(--cute-veil);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
 }
 
@@ -853,7 +863,7 @@ body.screen-open #viewport {
 
 .worldmap-readout {
   font-variant-numeric: tabular-nums;
-  opacity: 0.85;
+  opacity: 1;
 }
 
 .worldmap-zoom,
@@ -879,7 +889,7 @@ body.screen-open #viewport {
 /* A button with nothing to do yet rather than a broken one; the title says which. */
 .worldmap-home:disabled,
 .worldmap-warp:disabled {
-  opacity: 0.4;
+  opacity: 0.8;
   cursor: default;
 }
 
@@ -902,7 +912,7 @@ body.screen-open #viewport {
 /* The place the player clicked, in the pin's own colour (MARKER_COLORS in minimap.ts). */
 .worldmap-cursor {
   font-variant-numeric: tabular-nums;
-  color: #ff8ad4;
+  color: #ff9ede;
 }
 
 /* The map is paper under the hand. */
@@ -929,7 +939,7 @@ body.screen-open #viewport {
 
 .menu-button.subtle {
   font-size: 13px;
-  opacity: 0.75;
+  color: var(--cute-ink-muted);
 }
 
 /* What happened to the last file the player picked. Empty until there is something to
@@ -939,7 +949,7 @@ body.screen-open #viewport {
 }
 
 .file-note {
-  color: #ffd479;
+  color: var(--cute-gold);
   text-align: center;
 }
 
@@ -955,7 +965,7 @@ body.screen-open #viewport {
 }
 
 .route-quest {
-  background: rgba(0, 0, 0, 0.42);
+  background: var(--cute-veil);
   border-radius: 6px;
   border-left: 3px solid var(--accent);
   padding: 6px 8px;
@@ -969,14 +979,14 @@ body.screen-open #viewport {
 
 .route-quest-detail {
   margin-top: 2px;
-  color: rgba(255, 255, 255, 0.72);
+  color: rgba(255, 255, 255, 0.9);
   line-height: 1.35;
 }
 
 /* Which way the objective is, under its own description. */
 .route-quest-aim {
   margin-top: 3px;
-  color: #7cc4ff;
+  color: var(--hud-info);
   font-variant-numeric: tabular-nums;
 }
 
@@ -987,15 +997,15 @@ body.screen-open #viewport {
 }
 
 .route-row {
-  background: rgba(0, 0, 0, 0.42);
+  background: var(--cute-veil);
   border-radius: 5px;
-  border-left: 3px solid #ff9b53;
+  border-left: 3px solid var(--hud-warn);
   padding: 4px 8px;
 }
 
 /* A joined-up route reads as done at a glance; an unfinished one keeps the warm edge. */
 .route-row.linked {
-  border-left-color: #7fd18a;
+  border-left-color: var(--hud-good);
 }
 
 .route-pair {
@@ -1003,26 +1013,26 @@ body.screen-open #viewport {
 }
 
 .route-status {
-  color: rgba(255, 255, 255, 0.66);
+  color: rgba(255, 255, 255, 0.88);
   font-variant-numeric: tabular-nums;
 }
 
 .route-row.linked .route-status {
-  color: #7fd18a;
+  color: var(--hud-good);
 }
 
 .route-row.broken .route-status {
-  color: #ff9b53;
+  color: var(--hud-warn);
 }
 
 .compass-marker.gap {
-  color: #ff9b53;
+  color: var(--hud-warn);
 }
 
 /* Wherever the objective is pointing, so the destination stands out from the villages
    already on the strip. */
 .compass-marker.target {
-  color: #7cc4ff;
+  color: var(--hud-info);
 }
 
 /* What the player is looking at, when it is a building worth naming. Under the crosshair
@@ -1034,8 +1044,8 @@ body.screen-open #viewport {
   transform: translateX(-50%);
   padding: 5px 10px 6px;
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.46);
-  color: #f2f2f2;
+  background: var(--cute-veil);
+  color: #ffffff;
   font-size: 12px;
   line-height: 1.4;
   text-align: center;
@@ -1052,7 +1062,7 @@ body.screen-open #viewport {
 
 .track-fault {
   margin-top: 3px;
-  color: #ff9c9c;
+  color: var(--hud-bad);
 }
 
 
@@ -1062,12 +1072,12 @@ body.screen-open #viewport {
 
 .building-hint {
   font-size: 11px;
-  color: #8ef0b8;
+  color: var(--hud-good);
 }
 
 /* A shipment on its way. Green, because it is the thing working. */
 .compass-marker.porter {
-  color: #8ef0b8;
+  color: var(--hud-good);
 }
 
 .route-cargo {
@@ -1075,12 +1085,12 @@ body.screen-open #viewport {
 }
 
 .route-cargo.moving {
-  color: #8ef0b8;
+  color: var(--hud-good);
 }
 
 /* Joined up but idle: not a fault, just nothing loaded yet. */
 .route-cargo.waiting {
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(255, 255, 255, 0.82);
 }
 
 /* Why a road does not join, or does not pay. Matches the beacon colours in the world. */
@@ -1090,7 +1100,7 @@ body.screen-open #viewport {
 }
 
 .route-note.fault {
-  color: #ff8f7c;
+  color: var(--hud-bad);
 }
 
 .route-note.narrow {
@@ -1098,11 +1108,11 @@ body.screen-open #viewport {
 }
 
 .route-note.rail {
-  color: #b08cff;
+  color: #d7c2ff;
 }
 
 .route-note.cost {
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(255, 255, 255, 0.84);
 }
 
 /* ---------- the tutorial row above a villager's offers ---------- */
@@ -1123,7 +1133,7 @@ body.screen-open #viewport {
 .quest-detail {
   margin-top: 2px;
   font-size: 11px;
-  opacity: 0.72;
+  color: var(--cute-ink-muted);
 }
 
 .trade-button.quest-button {
@@ -1139,7 +1149,7 @@ body.screen-open #viewport {
   bottom: 12px;
   padding: 5px 8px;
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.42);
+  background: var(--cute-veil);
   font-family: ui-monospace, monospace;
   font-size: 11px;
   line-height: 1.4;
@@ -1153,7 +1163,7 @@ body.screen-open #viewport {
 }
 
 .coords-detail {
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.88);
 }
 
 .warp-dialog {
@@ -1178,7 +1188,7 @@ body.screen-open #viewport {
 .warp-hint {
   margin-top: 3px;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.62);
+  color: var(--cute-ink-muted);
 }
 
 .warp-input {
@@ -1201,7 +1211,7 @@ body.screen-open #viewport {
 .warp-error {
   margin-top: 6px;
   font-size: 11px;
-  color: #ff9d9d;
+  color: var(--cute-bad);
 }
 
 .warp-buttons {
@@ -1223,9 +1233,9 @@ body.screen-open #viewport {
   max-width: 520px;
   margin: 0 0 6px;
   padding: 6px 10px;
-  border-left: 3px solid #c8b06a;
-  background: rgba(0, 0, 0, 0.28);
-  color: #e8e2cf;
+  border-left: 3px solid var(--cute-gold);
+  background: var(--cute-card);
+  color: var(--cute-ink);
   font-size: 13px;
   line-height: 1.5;
 }
@@ -1245,33 +1255,33 @@ body.screen-open #viewport {
 
 .ledger-stat {
   padding: 4px 10px;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--cute-row);
   border-radius: 3px;
   font-size: 13px;
-  color: #e8e2cf;
+  color: var(--cute-ink);
 }
 
 .ledger-goal {
   margin-bottom: 10px;
   padding: 6px 10px;
-  border-left: 3px solid #7fc47f;
-  background: rgba(0, 0, 0, 0.28);
+  border-left: 3px solid var(--cute-good);
+  background: var(--cute-card);
 }
 
 .ledger-goal-title {
   font-size: 14px;
-  color: #e8e2cf;
+  color: var(--cute-ink);
 }
 
 .ledger-goal-detail {
   font-size: 12px;
-  color: #b9b39f;
+  color: var(--cute-ink-muted);
 }
 
 .ledger-heading {
   margin: 10px 0 4px;
   font-size: 13px;
-  color: #c8b06a;
+  color: var(--cute-gold);
 }
 
 .ledger-table {
@@ -1286,27 +1296,27 @@ body.screen-open #viewport {
   gap: 8px;
   padding: 4px 6px;
   font-size: 12px;
-  color: #ded8c4;
-  background: rgba(0, 0, 0, 0.22);
+  color: var(--cute-ink);
+  background: var(--cute-row);
 }
 
 .ledger-row.head {
-  color: #9a927c;
+  color: var(--cute-ink-muted);
   background: none;
 }
 
 /* A route that works, and one that has been dug up, should be tellable apart without
    reading the text. */
 .ledger-row.linked {
-  border-left: 3px solid #7fc47f;
+  border-left: 3px solid var(--cute-good);
 }
 
 .ledger-row.broken {
-  border-left: 3px solid #c47f7f;
+  border-left: 3px solid var(--cute-bad);
 }
 
 .ledger-row.starved {
-  border-left: 3px solid #c8b06a;
+  border-left: 3px solid var(--cute-gold);
 }
 
 .ledger-cell {
@@ -1319,7 +1329,7 @@ body.screen-open #viewport {
 .ledger-note {
   padding: 6px;
   font-size: 12px;
-  color: #9a927c;
+  color: var(--cute-ink-muted);
 }
 
 /* ---------- 遊びかた（H） ---------- */
@@ -1334,24 +1344,24 @@ body.screen-open #viewport {
 .help-goal {
   margin-bottom: 12px;
   padding: 6px 10px;
-  border-left: 3px solid #7fc47f;
-  background: rgba(0, 0, 0, 0.28);
+  border-left: 3px solid var(--cute-good);
+  background: var(--cute-card);
 }
 
 .help-goal-title {
   font-size: 14px;
-  color: #e8e2cf;
+  color: var(--cute-ink);
 }
 
 .help-goal-detail {
   font-size: 12px;
-  color: #b9b39f;
+  color: var(--cute-ink-muted);
 }
 
 .help-heading {
   margin: 14px 0 6px;
   font-size: 13px;
-  color: #c8b06a;
+  color: var(--cute-gold);
   border-bottom: 1px solid rgba(200, 176, 106, 0.35);
   padding-bottom: 3px;
 }
@@ -1360,7 +1370,7 @@ body.screen-open #viewport {
   margin: 3px 0;
   font-size: 12px;
   line-height: 1.6;
-  color: #cfc9b6;
+  color: var(--cute-ink);
 }
 
 .help-steps {
@@ -1379,31 +1389,31 @@ body.screen-open #viewport {
   width: 14px;
   flex: 0 0 14px;
   text-align: center;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--cute-ink-faint);
 }
 
 .help-step.done .help-mark {
-  color: #8ef0b8;
+  color: var(--cute-good);
 }
 
 .help-step.current .help-mark {
-  color: #ffd479;
+  color: var(--cute-warn);
 }
 
 .help-step.done .help-step-label {
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--cute-ink-muted);
 }
 
 .help-step.current .help-step-label {
-  color: #ffd479;
+  color: var(--cute-warn);
 }
 
 .help-step-label {
-  color: #e8e2cf;
+  color: var(--cute-ink);
 }
 
 .help-step-detail {
-  color: #9d977f;
+  color: var(--cute-ink-muted);
   font-size: 11px;
 }
 
@@ -1418,7 +1428,7 @@ body.screen-open #viewport {
   gap: 8px;
   padding: 3px 8px;
   font-size: 12px;
-  color: #cfc9b6;
+  color: var(--cute-ink);
 }
 
 .help-row:nth-child(even) {
@@ -1426,8 +1436,8 @@ body.screen-open #viewport {
 }
 
 .help-row.head {
-  color: #c8b06a;
-  background: rgba(0, 0, 0, 0.3);
+  color: var(--cute-gold);
+  background: var(--cute-row);
 }
 
 /* Wider tables lay themselves out from the header's own cell count. */
@@ -1498,14 +1508,14 @@ body.screen-open #viewport {
 
 .lines-hint {
   font-size: 12px;
-  color: #9a927c;
+  color: var(--cute-ink-muted);
 }
 
 .lines-button {
   padding: 3px 10px;
   border: 1px solid #6b6350;
-  background: rgba(0, 0, 0, 0.35);
-  color: #ded8c4;
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--cute-ink);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
@@ -1525,21 +1535,21 @@ body.screen-open #viewport {
 }
 
 .lines-button.danger {
-  border-color: #8a5b5b;
-  color: #d8a8a8;
+  border-color: #c89a9a;
+  color: var(--cute-bad);
 }
 
 .lines-line {
   margin-bottom: 8px;
   padding: 6px 8px;
-  border-left: 3px solid #4b4a3e;
-  background: rgba(0, 0, 0, 0.22);
+  border-left: 3px solid rgba(74, 67, 96, 0.22);
+  background: var(--cute-row);
 }
 
 /* The line the stop list adds to. Without this the 「加える」 buttons are aimed at
    something the player has to remember rather than something they can see. */
 .lines-line.selected {
-  border-left-color: #c8b06a;
+  border-left-color: var(--cute-gold);
 }
 
 .lines-head {
@@ -1552,9 +1562,9 @@ body.screen-open #viewport {
 .lines-name {
   flex: 1;
   padding: 2px 6px;
-  border: 1px solid #6b6350;
-  background: rgba(0, 0, 0, 0.35);
-  color: #e8e2cf;
+  border: 1px solid rgba(74, 67, 96, 0.28);
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--cute-ink);
   font: inherit;
   font-size: 13px;
 }
@@ -1567,7 +1577,7 @@ body.screen-open #viewport {
   gap: 8px;
   padding: 2px 4px;
   font-size: 12px;
-  color: #ded8c4;
+  color: var(--cute-ink);
 }
 
 .lines-call {
@@ -1581,11 +1591,11 @@ body.screen-open #viewport {
 
 /* A stop no line calls at is almost always what the player meant to do next. */
 .lines-stop.idle {
-  border-left: 3px solid #c8b06a;
+  border-left: 3px solid var(--cute-gold);
 }
 
 .lines-call-index {
-  color: #9a927c;
+  color: var(--cute-ink-muted);
 }
 
 .lines-legs {
@@ -1595,28 +1605,28 @@ body.screen-open #viewport {
 .lines-leg {
   padding: 1px 6px;
   font-size: 12px;
-  color: #b9b39f;
+  color: var(--cute-ink-muted);
   border-left: 3px solid transparent;
 }
 
 .lines-leg.linked {
-  border-left-color: #7fc47f;
+  border-left-color: var(--cute-good);
 }
 
 .lines-leg.broken {
-  border-left-color: #c47f7f;
+  border-left-color: var(--cute-bad);
 }
 
 .lines-heading {
   margin: 10px 0 4px;
   font-size: 13px;
-  color: #c8b06a;
+  color: var(--cute-gold);
 }
 
 .lines-empty {
   padding: 6px;
   font-size: 12px;
-  color: #9a927c;
+  color: var(--cute-ink-muted);
 }
 
 /* ---------- soft pastel art direction ---------- */
@@ -1629,6 +1639,30 @@ body.screen-open #viewport {
   --cute-ink: #4a4360;
   --cute-blue: #70c9ee;
   --cute-shadow: rgba(68, 59, 92, 0.18);
+  /* Ink on a pastel panel, at three weights. Anything softer than these washes out
+     on a near-white background, which is what the panels became. */
+  --cute-ink-soft: #675d82;
+  --cute-ink-muted: #635b7d;
+  --cute-ink-faint: #756c90;
+  --cute-good: #1f7d52;
+  --cute-warn: #a85a12;
+  --cute-bad: #a32a3e;
+  --cute-gold: #7f6111;
+  --cute-info: #2a6fa6;
+  --cute-plum: #6b47bd;
+  /* Fills for cards and rows inside a panel. Translucent black turned them into grey
+     slabs once the panel behind them went light. */
+  --cute-card: rgba(112, 201, 238, 0.16);
+  --cute-row: rgba(74, 67, 96, 0.06);
+  /* HUD boxes sit straight on the world, where the sky can be brighter than any panel.
+     They keep a dark ground and light text, but an opaque enough ground that the text
+     holds against the sky as well as against the terrain. */
+  --cute-veil: rgba(52, 45, 72, 0.82);
+  --hud-good: #a8f0bd;
+  --hud-warn: #ffc48a;
+  --hud-bad: #ffc0b3;
+  --hud-info: #bfe6ff;
+  --hud-gold: #ffd479;
 }
 
 html,
@@ -1745,7 +1779,7 @@ input,
 .toast,
 .building-hint,
 .track-readout {
-  background: rgba(74, 67, 96, 0.78);
+  background: var(--cute-veil);
   border: 1px solid rgba(255, 255, 255, 0.35);
   border-radius: 14px;
 }
@@ -1761,7 +1795,8 @@ input,
 .creative-badge,
 .speed-badge,
 .quest-label {
-  color: #fff;
-  background: #70c9ee;
+  /* Ink, not white: the pill is a pale blue, and white on it is barely a shape. */
+  color: var(--cute-ink);
+  background: var(--cute-blue);
   border-radius: 999px;
 }

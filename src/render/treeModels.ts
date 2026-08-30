@@ -90,27 +90,42 @@ function roundTree(rng: Rng, birch: boolean): TreeModel {
 function spruceTree(rng: Rng): TreeModel {
   const height = range(rng, 4.2, 5.6);
   const trunkRadius = range(rng, 0.22, 0.29);
+  // The trunk stops inside the top tier. A cone narrows to a point, so a trunk carried all
+  // the way up pokes out of the tip however tall the tier is made.
+  const trunkHeight = height * 0.8;
   const trunk = paint(
-    translated(new THREE.CylinderGeometry(trunkRadius * 0.6, trunkRadius, height, 7, 3), 0, height / 2, 0),
+    translated(new THREE.CylinderGeometry(trunkRadius * 0.6, trunkRadius, trunkHeight, 7, 3), 0, trunkHeight / 2, 0),
     PASTEL.barkDeep,
     PASTEL.bark,
   );
   const parts: THREE.BufferGeometry[] = [trunk];
-  const tiers = 3 + Math.floor(rng() * 2);
+  const tiers = 4 + Math.floor(rng() * 2);
+  const baseRadius = range(rng, 1.5, 1.9);
+  // The skirt climbs the whole trunk and the top tier caps it. A cone is centred on the
+  // point it is placed at, so the topmost apex lands half a tier above `skirtTop` — put
+  // the tiers any lower and the trunk stands out of the foliage as a bare pole.
+  const skirtBottom = height * 0.3;
+  const skirtTop = height * 0.86;
+  let topApex = skirtTop;
   for (let i = 0; i < tiers; i++) {
-    const t = i / Math.max(1, tiers - 1);
-    const radius = range(rng, 1.6, 2.05) * (1 - t * 0.48);
-    const skirt = new THREE.ConeGeometry(radius, range(rng, 1.65, 2.0), 8, 2);
+    const t = i / (tiers - 1);
+    // Wide at the bottom, narrow at the top: the taper is what makes it read as a fir.
+    const radius = baseRadius * (1 - t * 0.66);
+    const tierHeight = height * range(rng, 0.3, 0.38);
+    const skirt = new THREE.ConeGeometry(radius, tierHeight, 8, 2);
     skirt.rotateY(rng() * Math.PI * 2);
-    translated(skirt, 0, height * (0.3 + t * 0.2), 0);
+    const y = skirtBottom + (skirtTop - skirtBottom) * t;
+    translated(skirt, 0, y, 0);
+    // Consecutive tiers overlap, so the gaps between them are steps rather than daylight.
+    topApex = Math.max(topApex, y + tierHeight / 2);
     parts.push(paint(skirt, PASTEL.pineDeep, PASTEL.pineLight));
   }
   return {
     geometry: merge(parts),
-    height: height * 1.08,
+    height: topApex,
     trunkRadius,
-    canopyY: height * 0.58,
-    canopyRadius: 2.15,
+    canopyY: (skirtBottom + skirtTop) / 2,
+    canopyRadius: baseRadius * 1.15,
     logs: 4,
   };
 }
