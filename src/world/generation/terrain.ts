@@ -5,14 +5,17 @@ import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey
 import { WATER_FULL } from '../water';
 import { Biome, type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
 import { ORES, outcropDepth, outcropIn, placeCactus, placeSugarCane } from './features';
+import type { FieldParcel } from './fields';
 import {
   type ChestMarker,
   type HouseRecord,
+  type Footprint,
   type VillagePlan,
   type VillageSite,
   type VillageVariant,
   type VillagerMarker,
   VILLAGE_CELL,
+  VILLAGE_RADIUS,
   planVillage,
   plateauWeight,
   villageCandidates,
@@ -115,6 +118,8 @@ export class TerrainGenerator {
   private readonly villageInfoCache = new Map<string, VillageInfo>();
   private readonly villagePlanCache = new Map<string, VillagePlan>();
   private readonly cellSiteCache = new Map<string, VillageSite | null>();
+  private readonly growthPlotCache = new Map<string, boolean>();
+  private readonly farmParcelCache = new Map<string, boolean>();
   /** The last column `shape` was asked about.
    *
    *  Every caller wants two things out of the same column and asks for them separately:
@@ -637,6 +642,79 @@ export class TerrainGenerator {
       if (plateauWeight(info.site, x, z) > 0.35) return true;
     }
     return false;
+  }
+
+  /** Whether an earned town block can be terraced at the village's floor level.
+   *
+   *  Growth deliberately keeps one shared street level: accepting a distant hill and
+   *  then forcing a flat pad through it produces either a floating house or a quarry.
+   *  The limits mirror village growth's eight blocks of fill and five blocks of cut.
+   *  Nearby settlements also count as occupied land, so two endlessly growing towns do
+   *  not eventually build through one another. */
+  canBuildVillagePlot(
+    village: { x: number; z: number; baseY: number },
+    plot: Footprint,
+  ): boolean {
+    const key = `${village.x},${village.z},${village.baseY}:${plot.x0},${plot.z0},${plot.w},${plot.d}`;
+    const cached = this.growthPlotCache.get(key);
+    if (cached !== undefined) return cached;
+    const cx = plot.x0 + (plot.w - 1) / 2;
+    const cz = plot.z0 + (plot.d - 1) / 2;
+    for (const other of this.villagesAround(cx, cz, 1)) {
+      if (other.x === village.x && other.z === village.z) continue;
+      if (Math.hypot(other.x - cx, other.z - cz) < VILLAGE_RADIUS * 0.72) {
+        this.growthPlotCache.set(key, false);
+        return false;
+      }
+    }
+    for (let z = plot.z0; z < plot.z0 + plot.d; z += 3) {
+      for (let x = plot.x0; x < plot.x0 + plot.w; x += 3) {
+        const h = this.height(x, z);
+        if (h < village.baseY - 7 || h > village.baseY + 5) {
+          this.growthPlotCache.set(key, false);
+          return false;
+        }
+        if (h <= SEA_LEVEL + 1 || !biomeDef(this.biomeAt(x, z)).allowsVillage) {
+          this.growthPlotCache.set(key, false);
+          return false;
+        }
+      }
+    }
+    this.growthPlotCache.set(key, true);
+    return true;
+  }
+
+  /** Whether enough of a parcel is dry, cultivable land to count as the next field.
+   *  Individual rocks and stream banks are still left alone by the plough; this survey
+   *  only rejects a parcel whose broad shape is water or mountain. */
+  canFarmVillageParcel(
+    village: { x: number; z: number },
+    parcel: FieldParcel,
+  ): boolean {
+    const key = `${village.x},${village.z}:${parcel.x0},${parcel.z0},${parcel.w},${parcel.d}`;
+    const cached = this.farmParcelCache.get(key);
+    if (cached !== undefined) return cached;
+    const cx = parcel.x0 + (parcel.w - 1) / 2;
+    const cz = parcel.z0 + (parcel.d - 1) / 2;
+    for (const other of this.villagesAround(cx, cz, 1)) {
+      if (other.x === village.x && other.z === village.z) continue;
+      if (Math.hypot(other.x - cx, other.z - cz) < VILLAGE_RADIUS * 0.82) {
+        this.farmParcelCache.set(key, false);
+        return false;
+      }
+    }
+    let usable = 0;
+    let sampled = 0;
+    for (let z = parcel.z0; z < parcel.z0 + parcel.d; z += 4) {
+      for (let x = parcel.x0; x < parcel.x0 + parcel.w; x += 4) {
+        sampled++;
+        const h = this.height(x, z);
+        if (h > SEA_LEVEL + 1 && biomeDef(this.biomeAt(x, z)).allowsVillage) usable++;
+      }
+    }
+    const suitable = usable >= sampled * 0.6;
+    this.farmParcelCache.set(key, suitable);
+    return suitable;
   }
 
   /** Public vegetation exclusion used by deterministic object-tree generation. */

@@ -135,11 +135,11 @@ import {
   FARMED,
   PASSENGER,
   PASSENGER_LABEL,
-  STAGE_POINTS,
   VillageRegistry,
   displayName,
   radiusOf,
   rankLabel,
+  stagePoints,
   villageId,
   type GoodId,
   type VillageId,
@@ -162,8 +162,15 @@ import type { RouteIdle } from '../ui/routePanel';
 import type { LineActions, LinePanelView } from '../ui/linePanel';
 import { helpView, type HelpView } from '../ui/help';
 import { applyFields, countFields } from './villageFields';
-import { fieldArea, fieldTarget, fieldsAt } from '../world/generation/fields';
+import {
+  fieldArea,
+  fieldSideFor,
+  fieldTarget,
+  fieldsAt,
+  type FieldSurvey,
+} from '../world/generation/fields';
 import { applyGrowth, growthChunks, growthFor, growthVillagers, outpostBuildings, ownPaving, roadCrosses } from './villageGrowth';
+import type { TownPlotSurvey } from '../world/generation/districts';
 import {
   buildingAt,
   buildingsOf,
@@ -442,7 +449,12 @@ export class Game {
         return village ? this.buildingsFor(village) : [];
       },
     });
-    this.villages = new VillageRegistry(options.seed, this.generator, this.towns);
+    this.villages = new VillageRegistry(
+      options.seed,
+      this.generator,
+      this.towns,
+      (village, nextStage) => this.canVillageGrow(village, nextStage),
+    );
     this.roads = new RoadNetwork(this.world);
     this.world.onBlockChange((x, y, z, previous, next) => {
       this.light.onBlockChanged(x, y, z, previous, next);
@@ -2870,6 +2882,47 @@ export class Game {
   private readonly roadLevelAt = (x: number, z: number): number | undefined =>
     this.roads.columns.get(`${x},${z}`);
 
+  private growthSurvey(village: VillageRecord): TownPlotSurvey | undefined {
+    if (village.outpost) return undefined;
+    const farmSide = fieldSideFor(
+      this.options.seed, village, this.fieldSurvey(village),
+    );
+    return (plot) => {
+      if (!this.generator.canBuildVillagePlot(village, plot)) return false;
+      const dx = plot.x0 + (plot.w - 1) / 2 - village.x;
+      const dz = plot.z0 + (plot.d - 1) / 2 - village.z;
+      // The authored 4x4 core predates district separation and remains untouched. Beyond
+      // it, the chosen agricultural side is a permanent reservation for contiguous fields.
+      if (Math.max(Math.abs(dx), Math.abs(dz)) <= 30) return true;
+      const side = Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? 1 : 3) : dz > 0 ? 2 : 0;
+      return side !== farmSide;
+    };
+  }
+
+  private fieldSurvey(village: VillageRecord): FieldSurvey | undefined {
+    if (village.outpost) return undefined;
+    return (parcel) => this.generator.canFarmVillageParcel(village, parcel);
+  }
+
+  /** A stage is earned only when both halves of visible growth have somewhere to go.
+   *  The planners search several extra rows/rings first, so false means the local land is
+   *  genuinely exhausted rather than that the first compass slot happened to be a pond. */
+  private canVillageGrow(village: VillageRecord, nextStage: number): boolean {
+    const occupied = village.outpost ? [] : this.generator.villageBuildings(village.x, village.z);
+    const buildings = growthFor(
+      this.options.seed,
+      village,
+      nextStage,
+      occupied,
+      this.growthSurvey(village),
+    );
+    if (buildings.footprints.length === 0) return false;
+    if (village.outpost) return true;
+    const farms = this.fieldSurvey(village);
+    return fieldsAt(this.options.seed, village, nextStage, farms).length
+      > fieldsAt(this.options.seed, village, village.stage, farms).length;
+  }
+
   /** A stop at a town, made if there is not one there already.
    *
    *  Refusing to put a second stop on top of the first is the right answer to a player
@@ -2900,9 +2953,11 @@ export class Game {
     if (village.outpost) houses.push(...outpostBuildings(this.options.seed, village).buildings);
     else houses.push(...this.generator.villageBuildings(village.x, village.z));
     const occupied = village.outpost ? [] : this.generator.villageBuildings(village.x, village.z);
-    const paved = ownPaving(this.options.seed, village, occupied);
+    const paved = ownPaving(this.options.seed, village, occupied, this.growthSurvey(village));
     for (let stage = 1; stage <= village.stage; stage++) {
-      for (const house of growthFor(this.options.seed, village, stage, occupied).buildings) {
+      for (const house of growthFor(
+        this.options.seed, village, stage, occupied, this.growthSurvey(village),
+      ).buildings) {
         if (roadCrosses(house, village.baseY + 1, this.world, this.roadLevelAt, paved)) continue;
         houses.push(house);
       }
@@ -3381,7 +3436,9 @@ export class Game {
     if (!village) return;
     this.hud.toast(`${village.name}が発展して${rankLabel(stage)}になった`);
     const occupied = this.generator.villageBuildings(village.x, village.z);
-    for (const { cx, cz } of growthChunks(this.options.seed, village, occupied)) {
+    for (const { cx, cz } of growthChunks(
+      this.options.seed, village, occupied, this.growthSurvey(village),
+    )) {
       const chunk = this.world.getChunk(cx, cz);
       if (chunk) this.buildGrowth(village, chunk);
     }
@@ -3396,14 +3453,17 @@ export class Game {
    *  Cheap when there is nothing to do, which is almost always: one look at the middle of
    *  each parcel says whether it has been turned over already. */
   private buildFields(village: VillageRecord): void {
-    applyFields(this.world, this.options.seed, village, this.roadLevelAt);
+    applyFields(this.world, this.options.seed, village, this.roadLevelAt, this.fieldSurvey(village));
   }
 
   /** Builds whatever growth this village owes into one loaded chunk, and moves its new
    *  villagers in. */
   private buildGrowth(village: VillageRecord, chunk: Chunk): void {
     const occupied = this.generator.villageBuildings(village.x, village.z);
-    const result = applyGrowth(this.world, this.options.seed, village, chunk, occupied, this.roadLevelAt);
+    const survey = this.growthSurvey(village);
+    const result = applyGrowth(
+      this.world, this.options.seed, village, chunk, occupied, this.roadLevelAt, survey,
+    );
     for (const chest of result.chests) {
       if (this.world.getBlockEntity(chest.x, chest.y, chest.z)) continue;
       this.world.setBlockEntity(
@@ -3422,7 +3482,9 @@ export class Game {
     // share would leave the others behind, because this line closes the gate for good.
     const staffed = Math.max(village.stage, village.outpost ? 1 : 0);
     if (village.spawnedStage >= staffed) return;
-    for (const villager of growthVillagers(this.options.seed, village, occupied, this.world, this.roadLevelAt)) {
+    for (const villager of growthVillagers(
+      this.options.seed, village, occupied, this.world, this.roadLevelAt, survey,
+    )) {
       this.spawnOrQueueVillager(villager.x, villager.y, villager.z, villager.profession, village.stage);
     }
     village.spawnedStage = staffed;
@@ -3622,6 +3684,7 @@ export class Game {
             stage: village.stage,
             points: next.points,
             toNext: next.needed,
+            growthStopped: next.stopped === true,
             received: village.received,
             distance: Math.hypot(village.x - this.player.x, village.z - this.player.z),
             starved: this.villages.starvedOf(village) !== null,
@@ -3678,7 +3741,7 @@ export class Game {
       people: this.towns.populationOf(here.id),
       waiting: town.waiting,
       fields: {
-        parcels: fieldsAt(this.options.seed, here, here.stage).length,
+        parcels: fieldsAt(this.options.seed, here, here.stage, this.fieldSurvey(here)).length,
         area: fieldArea(here.stage),
         harvest: here.harvest,
       },
@@ -4929,13 +4992,17 @@ export class Game {
             x: village.x,
             z: village.z,
             stage: village.stage,
-            parcels: fieldsAt(this.options.seed, village, village.stage).length,
+            parcels: fieldsAt(
+              this.options.seed, village, village.stage, this.fieldSurvey(village),
+            ).length,
             area: fieldArea(village.stage),
             target: fieldTarget(village.stage),
             harvest: village.harvest,
             distance: Math.round(Math.hypot(village.x - this.player.x, village.z - this.player.z)),
             // What the ground actually allowed, which is never quite what was planned.
-            standing: countFields(this.world, this.options.seed, village),
+            standing: countFields(
+              this.world, this.options.seed, village, this.fieldSurvey(village),
+            ),
             // And where the crop got to. The depot is usually empty because it is a
             // doorway rather than a barn: what is cut is carried in the same breath.
             food: this.foodHeld(village),
@@ -4947,7 +5014,9 @@ export class Game {
         const here = this.villages.at(this.player.x, this.player.z)
           ?? this.nearestTownWithin(this.player.x, this.player.z, VILLAGE_RADIUS * 2);
         if (!here) return { ok: false as const, why: 'no-town' as const };
-        const work = applyFields(this.world, this.options.seed, here, this.roadLevelAt);
+        const work = applyFields(
+          this.world, this.options.seed, here, this.roadLevelAt, this.fieldSurvey(here),
+        );
         return { ok: true as const, town: displayName(here), ...work };
       },
       /** Every industry the player has sited. */
@@ -5136,18 +5205,22 @@ export class Game {
         const occupied = this.generator.villageBuildings(here.x, here.z);
         const plots: Footprint[] = [];
         while (here.stage < stage) {
-          const grew = this.villages.addPoints(here.id, STAGE_POINTS[here.stage]);
+          const grew = this.villages.addPoints(here.id, stagePoints(here.stage));
           if (grew === null) break;
           // Banking the points is only half of it: a delivery raises the buildings too,
           // and that is the half this is here to look at.
           this.onVillageGrew(here.id, grew);
-          plots.push(...growthFor(this.options.seed, here, grew, occupied).footprints);
+          plots.push(...growthFor(
+            this.options.seed, here, grew, occupied, this.growthSurvey(here),
+          ).footprints);
         }
         // The plots the stage after this one would fill, so a test can put something on
         // one before the village gets there. Planning a stage does not build it.
-        const next = here.stage >= STAGE_POINTS.length
+        const next = here.growthStopped
           ? []
-          : growthFor(this.options.seed, here, here.stage + 1, occupied).footprints;
+          : growthFor(
+            this.options.seed, here, here.stage + 1, occupied, this.growthSurvey(here),
+          ).footprints;
         return { name: here.name, stage: here.stage, plots, next };
       },
       /** Every block one growth stage wants to put down, for working out why one of them
@@ -5156,7 +5229,9 @@ export class Game {
         const here = this.villages.at(this.player.x, this.player.z);
         if (!here) return [];
         const occupied = this.generator.villageBuildings(here.x, here.z);
-        return growthFor(this.options.seed, here, stage, occupied).placements;
+        return growthFor(
+          this.options.seed, here, stage, occupied, this.growthSurvey(here),
+        ).placements;
       },
       /** State of the road index, for working out why a road is not joining up. */
       roadIndex: () => ({ columns: this.roads.columns.size, revision: this.roads.revision }),

@@ -2,16 +2,25 @@ import { hashFloat, mulberry32, hashInts, type Rng } from '../../core/rng';
 import { smoothstep } from '../../core/noise';
 import { Block, type BlockId } from '../blocks';
 import { CHUNK_SIZE, chunkKey, toChunkCoord } from '../chunk';
-import { townBlocks, townStreets, type TownBlock } from './districts';
 import {
+  townBlocks,
+  townGrowthBlocks,
+  townStreets,
+  type TownBlock,
+  type TownPlotSurvey,
+} from './districts';
+import {
+  architectureFor,
   buildHome,
   buildPlaza,
   buildShop,
   buildWorks,
+  HOME_HEIGHT,
   paletteFor,
   type BuildSink,
   type Palette,
   type PutFn,
+  type VillageArchitecture,
 } from './townBuildings';
 
 /** Villages sit on a coarse grid so their existence can be decided from the seed alone,
@@ -148,6 +157,8 @@ export interface VillagePlan {
   site: VillageSite;
   baseY: number;
   variant: VillageVariant;
+  /** The village-wide building tradition, visible in every roof and facade. */
+  architecture: VillageArchitecture;
   byChunk: Map<string, Placement[]>;
   villagers: VillagerMarker[];
   chests: ChestMarker[];
@@ -245,6 +256,7 @@ function buildBlock(
   block: TownBlock,
   baseY: number,
   palette: Palette,
+  architecture: VillageArchitecture,
   rng: Rng,
 ): Footprint[] {
   const facing = facingFor(block);
@@ -254,7 +266,7 @@ function buildBlock(
     return [plot];
   }
   if (block.zone === 'commercial') {
-    buildShop(put, sink, plot, facing, baseY, palette, pick(rng));
+    buildShop(put, sink, plot, facing, baseY, palette, architecture, pick(rng));
     return [plot];
   }
   if (block.zone === 'industrial') {
@@ -273,7 +285,7 @@ function buildBlock(
       if (rng() < 0.2) put(x, baseY, z, rng() < 0.5 ? Block.FLOWER_RED : Block.FLOWER_YELLOW);
     }
   }
-  for (const home of homes) buildHome(put, sink, home, facing, baseY, palette, pick(rng), rng);
+  for (const home of homes) buildHome(put, sink, home, facing, baseY, palette, architecture, pick(rng), rng);
   return [plot];
 }
 
@@ -309,16 +321,18 @@ export function planVillage(
   variant: VillageVariant,
 ): VillagePlan {
   const rng = mulberry32(hashInts(seed ^ 0x1111a9e, site.x, site.z));
+  const architecture = architectureFor(seed, site, variant);
   const plan: VillagePlan = {
     site,
     baseY,
     variant,
+    architecture,
     byChunk: new Map(),
     villagers: [],
     chests: [],
     buildings: [],
   };
-  const palette = paletteFor(variant);
+  const palette = paletteFor(variant, architecture);
   const put: PutFn = (x, y, z, b) => {
     const key = chunkKey(toChunkCoord(x), toChunkCoord(z));
     let list = plan.byChunk.get(key);
@@ -340,7 +354,7 @@ export function planVillage(
   // ground and leaves its doorway too low to walk through.
   for (const block of townBlocks(seed, site)) {
     if (block.stage !== 0) continue;
-    buildBlock(put, sink, block, baseY + 1, palette, rng);
+    buildBlock(put, sink, block, baseY + 1, palette, architecture, rng);
   }
   return plan;
 }
@@ -357,6 +371,7 @@ export function planGrowth(
   variant: VillageVariant,
   stage: number,
   occupied: readonly Footprint[],
+  survey?: TownPlotSurvey,
 ): GrowthPlan {
   const plan: GrowthPlan = {
     placements: [],
@@ -368,7 +383,8 @@ export function planGrowth(
   };
   if (stage <= 0) return plan;
   const rng = mulberry32(hashInts(seed ^ 0x9a0f, site.x, site.z, stage));
-  const palette = paletteFor(variant);
+  const architecture = architectureFor(seed, site, variant);
+  const palette = paletteFor(variant, architecture);
   const put: PutFn = (x, y, z, b) => {
     plan.placements.push({ x, y, z, b });
   };
@@ -377,13 +393,12 @@ export function planGrowth(
     villagers: plan.villagers,
     chests: plan.chests,
   };
-  for (const block of townBlocks(seed, site)) {
-    if (block.stage !== stage) continue;
+  for (const block of townGrowthBlocks(seed, site, stage, survey)) {
     const plot: Footprint = { x0: block.x0, z0: block.z0, w: block.w, d: block.d };
     if (occupied.some((taken) => overlaps(plot, taken))) continue;
     plan.footprints.push(plot);
     plan.pads.push({ ...plot, y: baseY });
-    buildBlock(put, sink, block, baseY + 1, palette, rng);
+    buildBlock(put, sink, block, baseY + 1, palette, architecture, rng);
   }
   return plan;
 }
@@ -432,7 +447,8 @@ export function planOutpost(
     pads: [],
   };
   const rng = mulberry32(hashInts(seed ^ 0x51d3, site.x, site.z));
-  const palette = paletteFor(variant);
+  const architecture = architectureFor(seed, site, variant);
+  const palette = paletteFor(variant, architecture);
   const put: PutFn = (x, y, z, b) => {
     plan.placements.push({ x, y, z, b });
   };
@@ -449,7 +465,9 @@ export function planOutpost(
       const z = site.z + dz;
       put(x, baseY - 1, z, palette.ground);
       for (let depth = 2; depth <= OUTPOST_FILL; depth++) put(x, baseY - depth, z, Block.DIRT);
-      for (let y = baseY; y <= baseY + 5; y++) put(x, y, z, Block.AIR);
+      for (let y = baseY; y <= baseY + HOME_HEIGHT + architecture.homeRise + 1; y++) {
+        put(x, y, z, Block.AIR);
+      }
     }
   }
 
@@ -460,7 +478,17 @@ export function planOutpost(
   const facings: (0 | 1 | 2 | 3)[] = [3, 1];
   for (let i = 0; i < plots.length; i++) {
     plan.footprints.push(plots[i]);
-    buildHome(put, sink, plots[i], facings[i], baseY, palette, PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)], rng);
+    buildHome(
+      put,
+      sink,
+      plots[i],
+      facings[i],
+      baseY,
+      palette,
+      architecture,
+      PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)],
+      rng,
+    );
   }
 
   // A scrap of street between the two doors, laid the way a town lays its own.

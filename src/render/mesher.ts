@@ -1,9 +1,15 @@
-import { Block, type BlockId, blockDef } from '../world/blocks';
+import { Block, type BlockId, type BlockShape, blockDef } from '../world/blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, type Chunk } from '../world/chunk';
 import { waterFraction } from '../world/water';
 import type { World } from '../world/world';
 import type { Atlas, TileUv } from './textures';
-import { FACE_OFFSETS, buildTemplateSet, type BlockTemplate } from './roundedTemplates';
+import {
+  FACE_OFFSETS,
+  buildCylinderTemplateSet,
+  buildSlopeTemplateSet,
+  buildTemplateSet,
+  type BlockTemplate,
+} from './roundedTemplates';
 
 /** Which draw pass a block belongs to. */
 export const PASS_OPAQUE = 0;
@@ -178,6 +184,21 @@ export interface MeshOptions {
 }
 
 const ROUNDED_NEAR = buildTemplateSet({ radius: 0.18, segments: 2 });
+type CustomShape = Exclude<BlockShape, 'cube'>;
+const CUSTOM_NEAR: Record<CustomShape, BlockTemplate[]> = {
+  slope_east: buildSlopeTemplateSet('east'),
+  slope_west: buildSlopeTemplateSet('west'),
+  slope_south: buildSlopeTemplateSet('south'),
+  slope_north: buildSlopeTemplateSet('north'),
+  cylinder: buildCylinderTemplateSet(12),
+};
+const CUSTOM_FAR: Record<CustomShape, BlockTemplate[]> = {
+  slope_east: CUSTOM_NEAR.slope_east,
+  slope_west: CUSTOM_NEAR.slope_west,
+  slope_south: CUSTOM_NEAR.slope_south,
+  slope_north: CUSTOM_NEAR.slope_north,
+  cylinder: buildCylinderTemplateSet(8),
+};
 
 /** Builds the geometry for one chunk, reading neighbouring chunks through the world so
  *  faces along a chunk seam are culled correctly. */
@@ -286,6 +307,30 @@ export function buildChunkMesh(
           continue;
         }
         if (def.render === 'none') continue;
+
+        if (def.shape !== 'cube') {
+          let mask = 0;
+          for (let face = 0; face < FACE_OFFSETS.length; face++) {
+            const [dx, dy, dz] = FACE_OFFSETS[face];
+            if (!loadedAt(x + dx, z + dz)) {
+              mask |= 1 << face;
+              continue;
+            }
+            const neighbor = blockAt(x + dx, y + dy, z + dz);
+            if (blockDef(neighbor).opaque || (neighbor === id && !def.opaque)) mask |= 1 << face;
+          }
+          const templates = options.lod === 'far' ? CUSTOM_FAR : CUSTOM_NEAR;
+          emitRounded(
+            builder,
+            templates[def.shape][mask],
+            atlas,
+            id,
+            x, y, z,
+            skyAt,
+            blockLightAt,
+          );
+          continue;
+        }
 
         if (def.render !== 'liquid' && options.roundedBlocks !== false && options.lod !== 'far') {
           let mask = 0;

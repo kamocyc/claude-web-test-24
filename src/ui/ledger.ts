@@ -19,6 +19,8 @@ export interface LedgerVillage {
   points: number;
   /** Points still wanted for the next rank, or 0 when it can grow no further. */
   toNext: number;
+  /** The numeric stages are unlimited; this is true only when the land search failed. */
+  growthStopped: boolean;
   received: number;
   distance: number;
   /** True when the works has run out of one of its inputs, which is the interesting
@@ -161,7 +163,9 @@ export function buildLedger(view: LedgerView): HTMLElement {
     const produces = village.inputs.length > 0
       ? `${village.inputs.map((i) => i.label).join(' + ')} → ${village.produces}`
       : village.produces;
-    const grow = village.toNext > 0 ? `${village.points} / ${village.toNext}` : '最大';
+    const grow = village.growthStopped
+      ? '土地なし'
+      : `${village.points} / ${village.toNext}`;
     const node = row(`ledger-row${village.starved ? ' starved' : ''}`, [
       village.name,
       produces,

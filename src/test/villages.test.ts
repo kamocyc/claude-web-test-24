@@ -263,12 +263,28 @@ describe('deliveries', () => {
     });
   });
 
-  it('stops raising the stage at the cap', () => {
+  it('keeps raising stages beyond the last named rank', () => {
     const registry = registryOf(FARM);
     const total = STAGE_POINTS.reduce((sum, n) => sum + n, 0);
     for (let i = 0; i < total * 3; i++) registry.addPoints(FARM_ID, 1);
-    expect(registry.get(FARM_ID)?.stage).toBe(MAX_STAGE);
-    expect(registry.progressToNext(registry.get(FARM_ID)!).needed).toBe(0);
+    expect(registry.get(FARM_ID)!.stage).toBeGreaterThan(MAX_STAGE);
+    expect(registry.progressToNext(registry.get(FARM_ID)!).needed).toBeGreaterThan(0);
+    expect(rankLabel(MAX_STAGE + 3)).toContain('Lv.');
+  });
+
+  it('stops permanently when its land-capacity check fails', () => {
+    const registry = new VillageRegistry(SEED, source(FARM), null, () => false);
+    registry.ensureNear(0, 0);
+    expect(registry.addPoints(FARM_ID, STAGE_POINTS[0])).toBeNull();
+    const village = registry.get(FARM_ID)!;
+    expect(village.stage).toBe(0);
+    expect(village.growthStopped).toBe(true);
+    expect(registry.progressToNext(village)).toMatchObject({ needed: 0, stopped: true });
+
+    const restored = new VillageRegistry(SEED, source(FARM));
+    restored.loadJSON(registry.toJSON());
+    restored.ensureNear(0, 0);
+    expect(restored.get(FARM_ID)?.growthStopped).toBe(true);
   });
 });
 

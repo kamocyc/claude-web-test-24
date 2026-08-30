@@ -11,6 +11,7 @@ import {
 } from '../world/generation/village';
 import { Block } from '../world/blocks';
 import { onStreet } from '../world/generation/districts';
+import { architectureFor, paletteFor } from '../world/generation/townBuildings';
 
 /** The first cell at or after `from` that offers candidates, so a test can talk about a
  *  real cell without pinning which one a hash happens to pick. */
@@ -133,6 +134,74 @@ describe('village layout', () => {
   });
 });
 
+describe('village architecture', () => {
+  const seed = 999;
+
+  it('keeps one deterministic local style across a village', () => {
+    const site = { cellX: 0, cellZ: 0, x: 100, z: 200 };
+    const a = planVillage(seed, site, 60, 'plains');
+    const b = planVillage(seed, site, 60, 'plains');
+    expect(a.architecture).toEqual(b.architecture);
+    expect(a.architecture.id.startsWith('plains-')).toBe(true);
+  });
+
+  it('gives neighbouring villages different traditions within the same biome', () => {
+    for (const variant of ['plains', 'desert', 'snowy'] as VillageVariant[]) {
+      const styles = new Set<string>();
+      for (let i = 0; i < 32; i++) {
+        styles.add(architectureFor(seed, { x: 100 + i * 37, z: 200 + i * 53 }, variant).id);
+      }
+      expect(styles.size, `${variant} only produced ${[...styles].join(', ')}`).toBe(2);
+      expect([...styles].every((style) => style.startsWith(`${variant}-`))).toBe(true);
+    }
+  });
+
+  it('builds a real triangular gable that narrows to a ridge', () => {
+    let site = { cellX: 0, cellZ: 0, x: 100, z: 200 };
+    for (let i = 0; i < 32; i++) {
+      const candidate = { cellX: 0, cellZ: 0, x: 100 + i * 37, z: 200 + i * 53 };
+      if (architectureFor(seed, candidate, 'plains').homeRoof === 'gable') {
+        site = candidate;
+        break;
+      }
+    }
+    const baseY = 60;
+    const plan = planVillage(seed, site, baseY, 'plains');
+    expect(plan.architecture.homeRoof).toBe('gable');
+    const all = [...plan.byChunk.values()].flat();
+    const slopes = new Set<number>([
+      Block.STONE_ROOF_EAST,
+      Block.STONE_ROOF_WEST,
+      Block.STONE_ROOF_SOUTH,
+      Block.STONE_ROOF_NORTH,
+    ]);
+    expect(all.some((placement) => slopes.has(placement.b))).toBe(true);
+    const home = plan.buildings.find((building) => building.role === 'house')!;
+    const finished = new Map<string, number>();
+    for (const p of all) finished.set(`${p.x},${p.y},${p.z}`, p.b);
+    const roof = paletteFor('plains', plan.architecture).roof;
+    const eaveY = baseY + 1 + 4;
+    const ridgeY = eaveY + plan.architecture.homeRise;
+    const slopeAlongX = home.facing === 1 || home.facing === 3;
+    const centreX = home.x0 + Math.floor(home.w / 2);
+    const centreZ = home.z0 + Math.floor(home.d / 2);
+    const eaveEdge = slopeAlongX
+      ? { x: home.x0 - 1, z: centreZ }
+      : { x: centreX, z: home.z0 - 1 };
+    const ridge = { x: centreX, z: centreZ };
+    expect(slopes.has(finished.get(`${eaveEdge.x},${eaveY},${eaveEdge.z}`) ?? Block.AIR)).toBe(true);
+    expect(finished.get(`${ridge.x},${ridgeY},${ridge.z}`)).toBe(roof);
+    expect(finished.get(`${eaveEdge.x},${ridgeY},${eaveEdge.z}`)).not.toBe(roof);
+  });
+
+  it('uses round columns for the well and square lamps', () => {
+    const plan = planVillage(seed, { cellX: 0, cellZ: 0, x: 100, z: 200 }, 60, 'plains');
+    const all = [...plan.byChunk.values()].flat();
+    expect(all.filter((placement) => placement.b === Block.STONE_COLUMN).length).toBeGreaterThanOrEqual(12);
+    expect(all.some((placement) => placement.b === Block.WOOD_COLUMN || placement.b === Block.STONE_COLUMN)).toBe(true);
+  });
+});
+
 describe('village terrain integration', () => {
   it('finds a village and generates its blocks into the world', () => {
     const gen = new TerrainGenerator(4242);
@@ -194,16 +263,14 @@ describe('village houses can be walked into', () => {
  *  always has. Any change to the order or count of `rng()` calls inside `planVillage`
  *  moves these numbers, and that is never accidental.
  *
- *  Re-pinned when the village became a town: a crossroads with houses along it became a
- *  street grid with zoned blocks on it, which is a different settlement rather than the
- *  same one rearranged. The three variants differ only in what they are built out of, so
- *  their counts match and their hashes do not. */
+ *  Re-pinned when villages gained local architecture: roof silhouettes, foundations and
+ *  wall bands now differ as well as their materials. */
 describe('town layout is pinned', () => {
   const site = { cellX: 0, cellZ: 0, x: 100, z: 200 };
   const expected: Record<VillageVariant, { count: number; hash: number }> = {
-    plains: { count: 18773, hash: -814481521 },
-    desert: { count: 18773, hash: -814259111 },
-    snowy: { count: 18773, hash: -1438247941 },
+    plains: { count: 19705, hash: 288983372 },
+    desert: { count: 19165, hash: -261237805 },
+    snowy: { count: 19067, hash: 694585752 },
   };
 
   for (const variant of ['plains', 'desert', 'snowy'] as VillageVariant[]) {

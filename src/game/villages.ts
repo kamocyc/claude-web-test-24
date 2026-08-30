@@ -31,10 +31,19 @@ export type GoodId = string;
 /** Deliveries banked to reach each next stage. Later stages cost more, so a town is a
  *  long-running goal rather than an afternoon's work. */
 export const STAGE_POINTS: readonly number[] = [8, 16, 26, 40];
+/** Last named milestone. Development continues past it. */
 export const MAX_STAGE = STAGE_POINTS.length;
 /** Ranks a village passes through, indexed by stage. Shown instead of a bare number, so
  *  growth reads as somewhere becoming a town. */
 export const RANKS: readonly string[] = ['集落', '村', '大きな村', '町', '都市'];
+
+/** Cost of the next stage. The authored early-game curve is preserved, then continues
+ *  linearly so no numeric cap can finish a town on the player's behalf. */
+export function stagePoints(stage: number): number {
+  const known = STAGE_POINTS[Math.max(0, Math.floor(stage))];
+  if (known !== undefined) return known;
+  return STAGE_POINTS[STAGE_POINTS.length - 1] + (Math.floor(stage) - STAGE_POINTS.length + 1) * 14;
+}
 /** Walking onto the plateau is what counts as finding a village. */
 export const DISCOVER_RADIUS = VILLAGE_RADIUS;
 /** A hamlet is smaller, and stands close enough to its parent that sharing the parent's
@@ -188,6 +197,8 @@ export interface VillageRecord {
   needs: GoodId[];
   /** 0 is the village as generated. */
   stage: number;
+  /** True once the outward search can find neither a buildable block nor another field. */
+  growthStopped?: boolean;
   /** Goods delivered towards the next stage. */
   points: number;
   /** Produced goods waiting for a porter. */
@@ -220,6 +231,7 @@ export interface SavedVillage {
   id: string;
   produces: string;
   stage: number;
+  growthStopped?: boolean;
   points: number;
   stock: number;
   discovered: boolean;
@@ -261,6 +273,7 @@ export function outpostFromSave(entry: SavedVillage): VillageRecord | null {
     inputStock: stockFromSave(entry.inputStock),
     needs: [],
     stage: entry.stage,
+    growthStopped: entry.growthStopped === true,
     points: entry.points,
     stock: entry.stock,
     received: entry.received ?? 0,
@@ -324,11 +337,12 @@ export function villageName(seed: number, x: number, z: number, produces: GoodId
 /** Name plus rank. Growth is meant to be visible in the language too, so a place the
  *  player has supplied stops being called a village. */
 export function displayName(village: Pick<VillageRecord, 'name' | 'stage'>): string {
-  return `${village.name}の${RANKS[Math.min(village.stage, RANKS.length - 1)]}`;
+  return `${village.name}の${rankLabel(village.stage)}`;
 }
 
 export function rankLabel(stage: number): string {
-  return RANKS[Math.max(0, Math.min(stage, RANKS.length - 1))];
+  const safe = Math.max(0, Math.floor(stage));
+  return RANKS[safe] ?? `都市 Lv.${safe - MAX_STAGE + 1}`;
 }
 
 export function goodLabel(good: GoodId): string {
@@ -343,7 +357,7 @@ export function pointsFor(village: VillageRecord, good: GoodId, count: number): 
 /** Seconds per unit at a given stage. A village that has been supplied works faster,
  *  which is what makes feeding one worth more than feeding two a little. */
 export function produceSeconds(stage: number): number {
-  return PRODUCE_SECONDS / (1 + 0.35 * stage);
+  return PRODUCE_SECONDS / (1 + 0.35 * Math.min(12, Math.max(0, stage)));
 }
 
 /** Every village the player has been near, and what has happened to it. */
@@ -360,6 +374,9 @@ export class VillageRegistry {
      *  test that only cares about a village as a producer, and the whole of what makes
      *  this class behave as it always did in that case. */
     private readonly town: TownLink | null = null,
+    /** Pure land-capacity check supplied by the running game. Tests and headless economy
+     *  simulations omit it and therefore model unlimited open ground. */
+    private readonly canGrow: ((village: VillageRecord, nextStage: number) => boolean) | null = null,
   ) {}
 
   /** Registers every village near a point. Idempotent: an already known village keeps
@@ -383,6 +400,7 @@ export class VillageRegistry {
           inputStock: new Map(),
           needs: [],
           stage: 0,
+          growthStopped: false,
           points: 0,
           stock: 0,
           received: 0,
@@ -595,10 +613,15 @@ export class VillageRegistry {
   addPoints(id: VillageId, points: number): number | null {
     const record = this.byId.get(id);
     if (!record || points <= 0) return null;
+    if (record.growthStopped) return null;
     record.points += points;
-    if (record.stage >= MAX_STAGE) return null;
-    const threshold = STAGE_POINTS[record.stage];
+    const threshold = stagePoints(record.stage);
     if (record.points < threshold) return null;
+    if (this.canGrow && !this.canGrow(record, record.stage + 1)) {
+      record.points = threshold;
+      record.growthStopped = true;
+      return null;
+    }
     record.points -= threshold;
     record.stage += 1;
     // A bigger place wants more than it used to, which is what keeps a finished route
@@ -608,9 +631,9 @@ export class VillageRegistry {
   }
 
   /** Points still to bank before the next rank, and how far along it is. */
-  progressToNext(record: VillageRecord): { points: number; needed: number; fraction: number } {
-    if (record.stage >= MAX_STAGE) return { points: record.points, needed: 0, fraction: 1 };
-    const needed = STAGE_POINTS[record.stage];
+  progressToNext(record: VillageRecord): { points: number; needed: number; fraction: number; stopped?: boolean } {
+    if (record.growthStopped) return { points: record.points, needed: 0, fraction: 1, stopped: true };
+    const needed = stagePoints(record.stage);
     return { points: record.points, needed, fraction: Math.min(1, record.points / needed) };
   }
 
@@ -619,6 +642,7 @@ export class VillageRegistry {
       id: v.id,
       produces: v.produces,
       stage: v.stage,
+      growthStopped: v.growthStopped,
       points: v.points,
       stock: v.stock,
       discovered: v.discovered,
@@ -666,7 +690,8 @@ export class VillageRegistry {
     const saved = this.pending.get(record.id);
     if (!saved) return;
     this.pending.delete(record.id);
-    record.stage = Math.max(0, Math.min(MAX_STAGE, saved.stage));
+    record.stage = Math.max(0, Math.floor(saved.stage));
+    record.growthStopped = saved.growthStopped === true;
     record.points = saved.points;
     record.stock = saved.stock;
     record.discovered = saved.discovered;

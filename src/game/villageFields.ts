@@ -20,7 +20,7 @@ import { Block, cropAt, isFarmland, type BlockId } from '../world/blocks';
 import { toChunkCoord } from '../world/chunk';
 import type { World } from '../world/world';
 import { hashInts } from '../core/rng';
-import { fieldsAt, isChannel, type FieldParcel } from '../world/generation/fields';
+import { fieldsAt, isChannel, type FieldParcel, type FieldSurvey } from '../world/generation/fields';
 import type { VillageRecord } from './villages';
 
 /** Ground a field may be ploughed out of. Anything else — a road, a wall, a chest, a tree
@@ -47,10 +47,14 @@ function clearable(id: BlockId): boolean {
 }
 
 /** Every chunk any of a town's fields touches. */
-export function fieldChunks(seed: number, village: VillageRecord): { cx: number; cz: number }[] {
+export function fieldChunks(
+  seed: number,
+  village: VillageRecord,
+  survey?: FieldSurvey,
+): { cx: number; cz: number }[] {
   const seen = new Set<string>();
   const out: { cx: number; cz: number }[] = [];
-  for (const parcel of fieldsAt(seed, village, village.stage)) {
+  for (const parcel of fieldsAt(seed, village, village.stage, survey)) {
     for (const [x, z] of corners(parcel)) {
       const cx = toChunkCoord(x);
       const cz = toChunkCoord(z);
@@ -95,10 +99,11 @@ export function applyFields(
   seed: number,
   village: VillageRecord,
   roadLevelAt?: (x: number, z: number) => number | undefined,
+  survey?: FieldSurvey,
 ): FieldWork {
   const work: FieldWork = { parcels: 0, tilled: 0, watered: 0 };
   if (village.outpost) return work;
-  for (const parcel of fieldsAt(seed, village, village.stage)) {
+  for (const parcel of fieldsAt(seed, village, village.stage, survey)) {
     if (!loaded(world, parcel)) continue;
     if (ploughed(world, parcel)) continue;
     const done = plough(world, seed, parcel, roadLevelAt);
@@ -205,10 +210,11 @@ export function countFields(
   world: World,
   seed: number,
   village: VillageRecord,
+  survey?: FieldSurvey,
 ): { soil: number; crops: number; water: number } {
   const out = { soil: 0, crops: 0, water: 0 };
   if (village.outpost) return out;
-  for (const parcel of fieldsAt(seed, village, village.stage)) {
+  for (const parcel of fieldsAt(seed, village, village.stage, survey)) {
     for (let z = parcel.z0; z < parcel.z0 + parcel.d; z++) {
       for (let x = parcel.x0; x < parcel.x0 + parcel.w; x++) {
         const ground = groundAt(world, x, z);

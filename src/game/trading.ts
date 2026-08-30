@@ -118,8 +118,11 @@ export function generateTrades(
     pool[i] = pool[j];
     pool[j] = tmp;
   }
-  const count = Math.min(pool.length, 3 + Math.floor(rng() * 3) + stage);
-  const discount = 1 - 0.08 * stage;
+  // More buildings keep appearing forever; one villager's table reaches a practical
+  // ceiling so discounts never become negative and restocks never grow without bound.
+  const benefitStage = Math.min(8, Math.max(0, stage));
+  const count = Math.min(pool.length, 3 + Math.floor(rng() * 3) + benefitStage);
+  const discount = 1 - 0.08 * benefitStage;
   const local = offers ? villageTrades(offers) : [];
   return local.concat(pool.slice(0, count).map((template) => {
     const jitter = template.jitter ?? 0;
@@ -135,7 +138,7 @@ export function generateTrades(
     return {
       give,
       get: { ...template.get },
-      maxUses: 4 + Math.floor(rng() * 5) + stage * 2,
+      maxUses: 4 + Math.floor(rng() * 5) + benefitStage * 2,
       uses: 0,
     };
   }));

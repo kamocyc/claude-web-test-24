@@ -312,3 +312,135 @@ export function buildTemplateSet(opt: TemplateOptions): BlockTemplate[] {
   return set;
 }
 
+type SlopeDirection = 'east' | 'west' | 'south' | 'north';
+
+function finishTemplate(b: SharpMeshBuilder): BlockTemplate {
+  b.fixWinding();
+  return {
+    positions: new Float32Array(b.pos),
+    normals: new Float32Array(b.nrm),
+    sharp: new Float32Array(b.sharp),
+    indices: new Uint16Array(b.idx),
+    vertexCount: b.pos.length / 3,
+    triangleCount: b.idx.length / 3,
+  };
+}
+
+/** One voxel-wide triangular prism. The base shape rises towards +X and is rotated
+ *  around Y for the other three block IDs. Faces hidden by complete neighbours are
+ *  omitted, while the diagonal roof face is always visible. */
+export function buildSlopeTemplate(direction: SlopeDirection, faceMask = 0): BlockTemplate {
+  const angle = direction === 'east' ? 0 : direction === 'west' ? Math.PI : direction === 'south' ? -Math.PI / 2 : Math.PI / 2;
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const b = new SharpMeshBuilder(0, UNIT_HALF);
+  const rotate = (x: number, y: number, z: number): [number, number, number] => [
+    x * cos + z * sin,
+    y,
+    -x * sin + z * cos,
+  ];
+  const vertex = (
+    x: number,
+    y: number,
+    z: number,
+    nx: number,
+    ny: number,
+    nz: number,
+  ): number => {
+    const p = rotate(x, y, z);
+    const n = rotate(nx, ny, nz);
+    return b.vertex(p[0], p[1], p[2], n[0], n[1], n[2]);
+  };
+  const actualFace = (nx: number, ny: number, nz: number): number => {
+    const n = rotate(nx, ny, nz);
+    const axis = Math.abs(n[0]) > 0.5 ? 0 : Math.abs(n[1]) > 0.5 ? 1 : 2;
+    return faceIndex(axis, n[axis] >= 0 ? 1 : -1);
+  };
+  const quad = (
+    normal: readonly [number, number, number],
+    points: readonly (readonly [number, number, number])[],
+  ): void => {
+    const [nx, ny, nz] = normal;
+    if (isExposed(faceMask, actualFace(nx, ny, nz))) {
+      const ids = points.map((p) => vertex(p[0], p[1], p[2], nx, ny, nz));
+      b.quad(ids[0], ids[1], ids[2], ids[3]);
+    }
+  };
+  const tri = (
+    normal: readonly [number, number, number],
+    points: readonly (readonly [number, number, number])[],
+  ): void => {
+    const [nx, ny, nz] = normal;
+    if (isExposed(faceMask, actualFace(nx, ny, nz))) {
+      const ids = points.map((p) => vertex(p[0], p[1], p[2], nx, ny, nz));
+      b.tri(ids[0], ids[1], ids[2]);
+    }
+  };
+
+  quad([0, -1, 0], [[-0.5, -0.5, -0.5], [-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, -0.5, -0.5]]);
+  quad([1, 0, 0], [[0.5, -0.5, -0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, -0.5]]);
+  tri([0, 0, -1], [[-0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [0.5, -0.5, -0.5]]);
+  tri([0, 0, 1], [[-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5]]);
+  const diagonal = Math.SQRT1_2;
+  // This is not axis-aligned and therefore cannot be hidden by a neighbouring cell.
+  const slope = [
+    vertex(-0.5, -0.5, -0.5, -diagonal, diagonal, 0),
+    vertex(0.5, 0.5, -0.5, -diagonal, diagonal, 0),
+    vertex(0.5, 0.5, 0.5, -diagonal, diagonal, 0),
+    vertex(-0.5, -0.5, 0.5, -diagonal, diagonal, 0),
+  ];
+  b.quad(slope[0], slope[1], slope[2], slope[3]);
+  return finishTemplate(b);
+}
+
+export function buildSlopeTemplateSet(direction: SlopeDirection): BlockTemplate[] {
+  const set: BlockTemplate[] = new Array(64);
+  for (let mask = 0; mask < 64; mask++) set[mask] = buildSlopeTemplate(direction, mask);
+  return set;
+}
+
+/** A vertical round post centred in one voxel. Side faces never touch the cell boundary,
+ *  while the top and bottom disks can be omitted when another block covers them. */
+export function buildCylinderTemplate(segments = 12, radius = 0.34, faceMask = 0): BlockTemplate {
+  const b = new SharpMeshBuilder(0, [radius, 0.5, radius]);
+  for (let i = 0; i < segments; i++) {
+    const a0 = (i / segments) * Math.PI * 2;
+    const a1 = ((i + 1) / segments) * Math.PI * 2;
+    const x0 = Math.cos(a0) * radius;
+    const z0 = Math.sin(a0) * radius;
+    const x1 = Math.cos(a1) * radius;
+    const z1 = Math.sin(a1) * radius;
+    const n0x = Math.cos(a0);
+    const n0z = Math.sin(a0);
+    const n1x = Math.cos(a1);
+    const n1z = Math.sin(a1);
+    const side = [
+      b.vertex(x0, -0.5, z0, n0x, 0, n0z),
+      b.vertex(x1, -0.5, z1, n1x, 0, n1z),
+      b.vertex(x1, 0.5, z1, n1x, 0, n1z),
+      b.vertex(x0, 0.5, z0, n0x, 0, n0z),
+    ];
+    b.quad(side[0], side[1], side[2], side[3]);
+    if (isExposed(faceMask, FACE_PY)) {
+      b.tri(
+        b.vertex(0, 0.5, 0, 0, 1, 0),
+        b.vertex(x0, 0.5, z0, 0, 1, 0),
+        b.vertex(x1, 0.5, z1, 0, 1, 0),
+      );
+    }
+    if (isExposed(faceMask, FACE_NY)) {
+      b.tri(
+        b.vertex(0, -0.5, 0, 0, -1, 0),
+        b.vertex(x1, -0.5, z1, 0, -1, 0),
+        b.vertex(x0, -0.5, z0, 0, -1, 0),
+      );
+    }
+  }
+  return finishTemplate(b);
+}
+
+export function buildCylinderTemplateSet(segments = 12, radius = 0.34): BlockTemplate[] {
+  const set: BlockTemplate[] = new Array(64);
+  for (let mask = 0; mask < 64; mask++) set[mask] = buildCylinderTemplate(segments, radius, mask);
+  return set;
+}

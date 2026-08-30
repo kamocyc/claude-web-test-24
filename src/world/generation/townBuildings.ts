@@ -14,7 +14,7 @@
  *  inside terrain generation, inside a growth pass, and inside a test alike. */
 
 import { Block, type BlockId } from '../blocks';
-import type { Rng } from '../../core/rng';
+import { hashInts, type Rng } from '../../core/rng';
 import {
   FACING_STEP,
   type BuildingUse,
@@ -38,21 +38,143 @@ export interface Palette {
   wall: BlockId;
   corner: BlockId;
   roof: BlockId;
+  /** Lower wall course and visible beams; these are what make two similarly coloured
+   *  villages read as different building traditions up close. */
+  foundation: BlockId;
+  trim: BlockId;
   floor: BlockId;
   path: BlockId;
   /** What the ground of this town is, for gardens and yards. */
   ground: BlockId;
 }
 
+export type RoofForm = 'gable' | 'hipped' | 'terrace';
+export type ArchitectureId =
+  | 'plains-timber'
+  | 'plains-stone'
+  | 'desert-courtyard'
+  | 'desert-stepped'
+  | 'snowy-alpine'
+  | 'snowy-longhouse';
+
+/** The visual grammar shared by every building in one village. A style is selected from
+ *  the biome's two local traditions, so travelling between villages changes both the
+ *  materials and the skyline without putting an alpine roof in the desert. */
+export interface VillageArchitecture {
+  id: ArchitectureId;
+  label: string;
+  homeRoof: RoofForm;
+  shopRoof: RoofForm;
+  /** Rise in blocks. Gables use the larger values; longhouses stay deliberately low. */
+  homeRise: number;
+  shopRise: number;
+  /** Horizontal log/stone course around the upper wall. */
+  wallBand: boolean;
+}
+
+const ARCHITECTURES: Record<ArchitectureId, VillageArchitecture> = {
+  'plains-timber': {
+    id: 'plains-timber', label: '木骨切妻式', homeRoof: 'gable', shopRoof: 'gable',
+    homeRise: 3, shopRise: 4, wallBand: true,
+  },
+  'plains-stone': {
+    id: 'plains-stone', label: '石造寄棟式', homeRoof: 'hipped', shopRoof: 'hipped',
+    homeRise: 3, shopRise: 3, wallBand: false,
+  },
+  'desert-courtyard': {
+    id: 'desert-courtyard', label: '砂岩中庭式', homeRoof: 'terrace', shopRoof: 'terrace',
+    homeRise: 1, shopRise: 1, wallBand: false,
+  },
+  'desert-stepped': {
+    id: 'desert-stepped', label: '砂漠段状式', homeRoof: 'hipped', shopRoof: 'terrace',
+    homeRise: 3, shopRise: 2, wallBand: true,
+  },
+  'snowy-alpine': {
+    id: 'snowy-alpine', label: 'アルプス切妻式', homeRoof: 'gable', shopRoof: 'gable',
+    homeRise: 4, shopRise: 4, wallBand: true,
+  },
+  'snowy-longhouse': {
+    id: 'snowy-longhouse', label: '北方長屋式', homeRoof: 'gable', shopRoof: 'hipped',
+    homeRise: 2, shopRise: 2, wallBand: false,
+  },
+};
+
+/** Stable and independent of the layout RNG. Adding a style must never reshuffle villagers,
+ *  professions or districts in an existing world. */
+export function architectureFor(
+  seed: number,
+  site: { x: number; z: number },
+  variant: VillageVariant,
+): VillageArchitecture {
+  const choice = (hashInts(seed ^ 0x6a09e667, site.x, site.z) >>> 0) & 1;
+  const ids: Record<VillageVariant, readonly [ArchitectureId, ArchitectureId]> = {
+    plains: ['plains-timber', 'plains-stone'],
+    desert: ['desert-courtyard', 'desert-stepped'],
+    snowy: ['snowy-alpine', 'snowy-longhouse'],
+  };
+  return ARCHITECTURES[ids[variant][choice]];
+}
+
 /** A town is built out of what its country is built out of, so a desert town does not read
  *  as an oak village that happens to be somewhere hot. */
-export function paletteFor(variant: VillageVariant): Palette {
-  if (variant === 'desert') {
+export function paletteFor(variant: VillageVariant, architecture?: VillageArchitecture): Palette {
+  const style = architecture?.id;
+  if (style === 'plains-stone') {
+    return {
+      wall: Block.SANDSTONE,
+      corner: Block.COBBLESTONE,
+      roof: Block.OAK_PLANKS,
+      foundation: Block.STONE_BRICKS,
+      trim: Block.COBBLESTONE,
+      floor: Block.OAK_PLANKS,
+      path: Block.DIRT_PATH,
+      ground: Block.GRASS,
+    };
+  }
+  if (style === 'desert-stepped') {
     return {
       wall: Block.SANDSTONE,
       corner: Block.OAK_LOG,
       roof: Block.STONE_BRICKS,
+      foundation: Block.SANDSTONE,
+      trim: Block.OAK_LOG,
+      floor: Block.SANDSTONE,
+      path: Block.GRAVEL,
+      ground: Block.SAND,
+    };
+  }
+  if (style === 'snowy-alpine') {
+    return {
+      wall: Block.OAK_PLANKS,
+      corner: Block.SPRUCE_LOG,
+      roof: Block.STONE_BRICKS,
+      foundation: Block.COBBLESTONE,
+      trim: Block.SPRUCE_LOG,
       floor: Block.OAK_PLANKS,
+      path: Block.COBBLESTONE,
+      ground: Block.SNOW,
+    };
+  }
+  if (style === 'snowy-longhouse') {
+    return {
+      wall: Block.SPRUCE_LOG,
+      corner: Block.COBBLESTONE,
+      roof: Block.OAK_PLANKS,
+      foundation: Block.STONE_BRICKS,
+      trim: Block.SPRUCE_LOG,
+      floor: Block.OAK_PLANKS,
+      path: Block.COBBLESTONE,
+      ground: Block.SNOW,
+    };
+  }
+  if (variant === 'desert') {
+    return {
+      wall: Block.SANDSTONE,
+      corner: Block.STONE_BRICKS,
+      roof: Block.SANDSTONE,
+      foundation: Block.SANDSTONE,
+      trim: Block.STONE_BRICKS,
+      floor: Block.SANDSTONE,
       path: Block.GRAVEL,
       ground: Block.SAND,
     };
@@ -62,6 +184,8 @@ export function paletteFor(variant: VillageVariant): Palette {
       wall: Block.SPRUCE_LOG,
       corner: Block.SPRUCE_LOG,
       roof: Block.STONE_BRICKS,
+      foundation: Block.COBBLESTONE,
+      trim: Block.SPRUCE_LOG,
       floor: Block.OAK_PLANKS,
       path: Block.COBBLESTONE,
       ground: Block.SNOW,
@@ -71,10 +195,103 @@ export function paletteFor(variant: VillageVariant): Palette {
     wall: Block.OAK_PLANKS,
     corner: Block.OAK_LOG,
     roof: Block.STONE_BRICKS,
+    foundation: Block.COBBLESTONE,
+    trim: Block.OAK_LOG,
     floor: Block.OAK_PLANKS,
     path: Block.DIRT_PATH,
     ground: Block.GRASS,
   };
+}
+
+/** A stepped roof whose final course closes to a one- or two-block ridge. `facing` makes
+ *  the triangular gable sit over the front wall, while the ridge runs into the building. */
+function buildGableRoof(
+  put: PutFn,
+  plot: Footprint,
+  facing: 0 | 1 | 2 | 3,
+  top: number,
+  block: BlockId,
+  rise: number,
+): void {
+  // A doorway in an X wall has a front that runs along Z, and vice versa. Sloping along
+  // that front-wall axis leaves the ridge pointing back into the building.
+  const slopeAlongX = facing === 1 || facing === 3;
+  const x0 = plot.x0 - 1;
+  const x1 = plot.x0 + plot.w;
+  const z0 = plot.z0 - 1;
+  const z1 = plot.z0 + plot.d;
+  const span = slopeAlongX ? x1 - x0 + 1 : z1 - z0 + 1;
+  const maxInset = Math.floor((span - 1) / 2);
+  for (let layer = 0; layer <= rise; layer++) {
+    const inset = Math.floor((layer * maxInset) / Math.max(1, rise));
+    const ax0 = slopeAlongX ? x0 + inset : x0;
+    const ax1 = slopeAlongX ? x1 - inset : x1;
+    const az0 = slopeAlongX ? z0 : z0 + inset;
+    const az1 = slopeAlongX ? z1 : z1 - inset;
+    for (let z = az0; z <= az1; z++) {
+      for (let x = ax0; x <= ax1; x++) {
+        let roofBlock = block;
+        // Only stone-brick roofs have authored wedge blocks. The two outside courses
+        // slope up towards the ridge; the final narrow course stays a solid ridge cap.
+        if (block === Block.STONE_BRICKS && layer < rise) {
+          if (slopeAlongX && ax0 < ax1) {
+            if (x === ax0) roofBlock = Block.STONE_ROOF_EAST;
+            else if (x === ax1) roofBlock = Block.STONE_ROOF_WEST;
+          } else if (!slopeAlongX && az0 < az1) {
+            if (z === az0) roofBlock = Block.STONE_ROOF_SOUTH;
+            else if (z === az1) roofBlock = Block.STONE_ROOF_NORTH;
+          }
+        }
+        put(x, top + layer, z, roofBlock);
+      }
+    }
+  }
+}
+
+/** A roof that slopes in from all four sides, used by the stone villages. */
+function buildHippedRoof(put: PutFn, plot: Footprint, top: number, block: BlockId, rise: number): void {
+  const x0 = plot.x0 - 1;
+  const x1 = plot.x0 + plot.w;
+  const z0 = plot.z0 - 1;
+  const z1 = plot.z0 + plot.d;
+  const maxInsetX = Math.floor((x1 - x0) / 2);
+  const maxInsetZ = Math.floor((z1 - z0) / 2);
+  for (let layer = 0; layer <= rise; layer++) {
+    const insetX = Math.floor((layer * maxInsetX) / Math.max(1, rise));
+    const insetZ = Math.floor((layer * maxInsetZ) / Math.max(1, rise));
+    for (let z = z0 + insetZ; z <= z1 - insetZ; z++) {
+      for (let x = x0 + insetX; x <= x1 - insetX; x++) put(x, top + layer, z, block);
+    }
+  }
+}
+
+/** Flat desert roof with a low parapet. The open centre distinguishes a usable roof
+ *  terrace from the old featureless slab. */
+function buildTerraceRoof(put: PutFn, plot: Footprint, top: number, block: BlockId, trim: BlockId): void {
+  const x0 = plot.x0 - 1;
+  const x1 = plot.x0 + plot.w;
+  const z0 = plot.z0 - 1;
+  const z1 = plot.z0 + plot.d;
+  for (let z = z0; z <= z1; z++) {
+    for (let x = x0; x <= x1; x++) {
+      put(x, top, z, block);
+      if (x === x0 || x === x1 || z === z0 || z === z1) put(x, top + 1, z, trim);
+    }
+  }
+}
+
+function buildRoof(
+  put: PutFn,
+  plot: Footprint,
+  facing: 0 | 1 | 2 | 3,
+  top: number,
+  palette: Palette,
+  form: RoofForm,
+  rise: number,
+): void {
+  if (form === 'gable') buildGableRoof(put, plot, facing, top, palette.roof, rise);
+  else if (form === 'hipped') buildHippedRoof(put, plot, top, palette.roof, rise);
+  else buildTerraceRoof(put, plot, top, palette.roof, palette.trim);
 }
 
 /** Clears the air above a column and lays the ground under it. Every builder starts here,
@@ -143,6 +360,7 @@ export function buildShop(
   facing: 0 | 1 | 2 | 3,
   baseY: number,
   palette: Palette,
+  architecture: VillageArchitecture,
   profession: Profession,
 ): void {
   const x1 = plot.x0 + plot.w - 1;
@@ -150,7 +368,7 @@ export function buildShop(
   const top = baseY + SHOP_HEIGHT;
   for (let z = plot.z0; z <= z1; z++) {
     for (let x = plot.x0; x <= x1; x++) {
-      clearTo(put, x, z, baseY, palette.floor, SHOP_HEIGHT + 3);
+      clearTo(put, x, z, baseY, palette.floor, SHOP_HEIGHT + architecture.shopRise + 1);
     }
   }
   const front = frontWall(plot, facing);
@@ -169,10 +387,9 @@ export function buildShop(
       }
     }
   }
-  // Flat roof with a one block overhang, and an awning a further block out over the front.
-  for (let z = plot.z0 - 1; z <= z1 + 1; z++) {
-    for (let x = plot.x0 - 1; x <= x1 + 1; x++) put(x, top, z, palette.roof);
-  }
+  // The whole village shares a roof grammar. A timber town gets a market hall with a
+  // triangular gable; a desert town keeps a roof terrace rather than borrowing it.
+  buildRoof(put, plot, facing, top, palette, architecture.shopRoof, architecture.shopRise);
   const [stepX, stepZ] = FACING_STEP[facing];
   for (let z = plot.z0; z <= z1; z++) {
     for (let x = plot.x0; x <= x1; x++) {
@@ -276,6 +493,7 @@ export function buildHome(
   facing: 0 | 1 | 2 | 3,
   baseY: number,
   palette: Palette,
+  architecture: VillageArchitecture,
   profession: Profession,
   rng: Rng,
 ): void {
@@ -283,13 +501,22 @@ export function buildHome(
   const z1 = plot.z0 + plot.d - 1;
   const top = baseY + HOME_HEIGHT;
   for (let z = plot.z0; z <= z1; z++) {
-    for (let x = plot.x0; x <= x1; x++) clearTo(put, x, z, baseY, palette.floor, HOME_HEIGHT + 3);
+    for (let x = plot.x0; x <= x1; x++) {
+      clearTo(put, x, z, baseY, palette.floor, HOME_HEIGHT + architecture.homeRise + 1);
+    }
   }
   for (let y = baseY; y < top; y++) {
     for (let z = plot.z0; z <= z1; z++) {
       for (let x = plot.x0; x <= x1; x++) {
         if (!onEdge(plot, x, z)) continue;
-        put(x, y, z, isCorner(plot, x, z) ? palette.corner : palette.wall);
+        const material = isCorner(plot, x, z)
+          ? palette.corner
+          : y === baseY
+            ? palette.foundation
+            : architecture.wallBand && y === top - 1
+              ? palette.trim
+              : palette.wall;
+        put(x, y, z, material);
       }
     }
   }
@@ -306,14 +533,7 @@ export function buildHome(
     if (free(plot.x0, z)) put(plot.x0, baseY + 1, z, Block.GLASS);
     if (free(x1, z)) put(x1, baseY + 1, z, Block.GLASS);
   }
-  // A roof in two courses rather than one flat slab: the only pitched roof in the town,
-  // and the reason a house never reads as a small shop.
-  for (let z = plot.z0 - 1; z <= z1 + 1; z++) {
-    for (let x = plot.x0 - 1; x <= x1 + 1; x++) put(x, top, z, palette.roof);
-  }
-  for (let z = plot.z0 + 1; z <= z1 - 1; z++) {
-    for (let x = plot.x0 + 1; x <= x1 - 1; x++) put(x, top + 1, z, palette.roof);
-  }
+  buildRoof(put, plot, facing, top, palette, architecture.homeRoof, architecture.homeRise);
   const house = record(sink, plot, facing, 'residential', 'house', profession, baseY);
   knockDoor(put, house, baseY);
   put(plot.x0 + 1, baseY, plot.z0 + 1, Block.TORCH);
@@ -354,14 +574,17 @@ export function buildPlaza(
   put(cx, baseY, cz, Block.WATER);
   put(cx, baseY - 1, cz, Block.WATER);
   for (const [dx, dz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
-    for (let h = 1; h <= 3; h++) put(cx + dx, baseY + h, cz + dz, Block.COBBLESTONE);
+    for (let h = 1; h <= 3; h++) put(cx + dx, baseY + h, cz + dz, Block.STONE_COLUMN);
   }
   for (let dz = -1; dz <= 1; dz++) {
     for (let dx = -1; dx <= 1; dx++) put(cx + dx, baseY + 4, cz + dz, palette.roof);
   }
   // Lamps at the corners of the square, which is what makes a town visible after dark.
+  const lampPost = palette.corner === Block.OAK_LOG || palette.corner === Block.SPRUCE_LOG
+    ? Block.WOOD_COLUMN
+    : Block.STONE_COLUMN;
   for (const [lx, lz] of [[plot.x0 + 1, plot.z0 + 1], [x1 - 1, plot.z0 + 1], [plot.x0 + 1, z1 - 1], [x1 - 1, z1 - 1]] as const) {
-    for (let h = 0; h < 3; h++) put(lx, baseY + h, lz, palette.corner);
+    for (let h = 0; h < 3; h++) put(lx, baseY + h, lz, lampPost);
     put(lx, baseY + 3, lz, Block.TORCH);
   }
 }
