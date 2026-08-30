@@ -4,6 +4,7 @@ import { mulberry32 } from '../core/rng';
 import { ChunkRenderer } from '../render/chunkRenderer';
 import { Effects } from '../render/effects';
 import { EntityRenderer } from '../render/entityRenderer';
+import { CargoRenderer, type CargoDisplay } from '../render/cargoRenderer';
 import { TreeRenderer } from '../render/treeRenderer';
 import { buildTreeModels, type TreeModel, type TreeSpecies } from '../render/treeModels';
 import { RouteGuide, type GuideBeam, type GuideLine, type GuidePoint, type GuideView } from '../render/routeGuide';
@@ -286,6 +287,9 @@ export class Game {
   private readonly materials: ChunkMaterials;
   private readonly chunkRenderer: ChunkRenderer;
   private readonly entityRenderer: EntityRenderer;
+  /** Physical piles and placards showing what is waiting and what each visible carrier
+   *  has aboard. Like the carrier mobs, this is a view of the economy, never its state. */
+  private readonly cargoRenderer = new CargoRenderer();
   private readonly treeModels: Record<TreeSpecies, TreeModel[]>;
   readonly trees: TreeStore;
   private readonly treeRenderer: TreeRenderer;
@@ -488,7 +492,7 @@ export class Game {
     this.sky = new Sky(this.scene, this.renderDistance * CHUNK_SIZE);
     this.scene.add(
       this.chunkRenderer.group, this.treeRenderer.group, this.entityRenderer.group, this.effects.group,
-      this.routeGuide.group, this.trackRenderer.group,
+      this.cargoRenderer.group, this.routeGuide.group, this.trackRenderer.group,
     );
 
     this.mobs = new MobManager(this.world, options.seed);
@@ -600,6 +604,7 @@ export class Game {
     this.chunkRenderer.dispose();
     this.treeRenderer.dispose();
     this.trackRenderer.dispose();
+    this.cargoRenderer.dispose();
     this.hud.root.remove();
     this.worldMap.dispose();
     this.worldMap.root.remove();
@@ -721,6 +726,7 @@ export class Game {
     );
     this.effects.update(dt);
     this.entityRenderer.sync(this.mobs.mobs, this.drops.drops, this.mobs.arrows, performance.now() / 1000);
+    this.cargoRenderer.sync(this.cargoDisplays());
     this.screens.refresh();
     const navigation = this.navigationInfo();
     this.hud.update(dt, this.player, this.debugInfo(), navigation);
@@ -3788,6 +3794,90 @@ export class Game {
    *  cannot answer for them. */
   private goodName(good: GoodId): string {
     return good === PASSENGER ? PASSENGER_LABEL : itemLabel(good);
+  }
+
+  /** Everything close enough to deserve a physical cargo readout.
+   *
+   *  Waiting goods stand beside the doorway they actually leave through. A moving readout
+   *  follows the mob drawing that shipment rather than the abstract route point, so a
+   *  porter hurrying to catch up never leaves their label floating down the road ahead. */
+  private cargoDisplays(): CargoDisplay[] {
+    const displays: CargoDisplay[] = [];
+
+    for (const route of this.transport.routes) {
+      for (const porter of route.porters) {
+        if (porter.mobId === null || porter.cargo <= 0) continue;
+        const mob = this.livePorter(porter.mobId);
+        if (!mob) continue;
+        let pose: { x: number; y: number; z: number; yaw: number } = mob;
+        if (mob.kind === 'train') {
+          // The first coach is always for the player. Freight is named over the first
+          // wagon; travellers are named over the first coach, which is where they sit.
+          const wanted = porter.good === PASSENGER ? 'coach' : 'wagon';
+          pose = mob.consist.find((car) => car.kind === wanted) ?? mob.consist[0] ?? mob;
+        }
+        displays.push({
+          key: `moving:${porter.mobId}`,
+          good: porter.good,
+          label: this.goodName(porter.good),
+          count: porter.cargo,
+          kind: mob.kind === 'train' ? 'train' : mob.kind === 'cart' ? 'cart' : 'porter',
+          x: pose.x,
+          y: pose.y,
+          z: pose.z,
+          yaw: pose.yaw,
+        });
+      }
+    }
+
+    for (const village of this.villages.byId.values()) {
+      if (!village.discovered) continue;
+      if (Math.hypot(village.x - this.player.x, village.z - this.player.z) > LINK_VISIBLE + radiusOf(village)) continue;
+      const depot = this.depotFor(village);
+      const outside = depot?.outside ?? { x: village.x, y: village.baseY + 1, z: village.z };
+      const stepX = depot ? depot.outside.x - depot.door.x : 0;
+      const stepZ = depot ? depot.outside.z - depot.door.z : 1;
+      const sideX = -stepZ;
+      const sideZ = stepX;
+      const waiting: { key: string; good: GoodId; count: number }[] = [];
+      if (village.stock > 0) waiting.push({ key: 'stock', good: village.produces, count: village.stock });
+      if (village.harvest > 0) waiting.push({ key: 'harvest', good: 'wheat', count: village.harvest });
+      const people = this.towns.waitingAt(village.id);
+      if (people > 0) waiting.push({ key: 'people', good: PASSENGER, count: people });
+      for (let i = 0; i < waiting.length; i++) {
+        const cargo = waiting[i];
+        const across = (i - (waiting.length - 1) / 2) * 2.2;
+        displays.push({
+          key: `waiting:${village.id}:${cargo.key}`,
+          good: cargo.good,
+          label: this.goodName(cargo.good),
+          count: cargo.count,
+          kind: 'waiting',
+          x: outside.x + 0.5 + sideX * across + stepX * 0.25,
+          y: outside.y + 1,
+          z: outside.z + 0.5 + sideZ * across + stepZ * 0.25,
+          yaw: Math.atan2(stepX, stepZ),
+          labelLift: i * 0.62,
+        });
+      }
+    }
+
+    for (const works of this.industries.all()) {
+      if (works.stock <= 0) continue;
+      if (Math.hypot(works.x - this.player.x, works.z - this.player.z) > LINK_VISIBLE) continue;
+      displays.push({
+        key: `waiting:${works.id}`,
+        good: works.good,
+        label: this.goodName(works.good),
+        count: works.stock,
+        kind: 'waiting',
+        // The shed opens south onto its cleared yard.
+        x: works.x + 0.5,
+        y: works.y,
+        z: works.z + 2.5,
+      });
+    }
+    return displays;
   }
 
   /** Where every train's cars are, and what there is to stand on because of them.
