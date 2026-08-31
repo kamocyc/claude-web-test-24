@@ -61,11 +61,18 @@ export const Block = {
   DRAIN: 56,
   FLOODGATE_CLOSED: 57,
   FLOODGATE_OPEN: 58,
+  STONE_ROOF_EAST: 59,
+  STONE_ROOF_WEST: 60,
+  STONE_ROOF_SOUTH: 61,
+  STONE_ROOF_NORTH: 62,
+  STONE_COLUMN: 63,
+  WOOD_COLUMN: 64,
 } as const;
 
 export type BlockId = number;
 export type ToolKind = 'pickaxe' | 'axe' | 'shovel' | 'hoe' | 'sword';
 export type RenderKind = 'none' | 'cube' | 'cross' | 'liquid';
+export type BlockShape = 'cube' | 'slope_east' | 'slope_west' | 'slope_south' | 'slope_north' | 'cylinder';
 
 export interface BlockTextures {
   all?: string;
@@ -79,6 +86,9 @@ export interface BlockDef {
   name: string;
   label: string;
   render: RenderKind;
+  /** Geometry inside the voxel cell. Non-cube shapes still use the normal block atlas,
+   *  storage, mining and placement pipeline. */
+  shape: BlockShape;
   /** Whether the player and mobs collide with it. */
   solid: boolean;
   /** Fully blocks light and hides the faces of neighbouring blocks. */
@@ -105,8 +115,8 @@ export interface BlockDef {
   contactDamage?: number;
 }
 
-type DefInput = Omit<BlockDef, 'solid' | 'opaque' | 'replaceable' | 'light' | 'filter' | 'render' | 'tier' | 'tool'> &
-  Partial<Pick<BlockDef, 'solid' | 'opaque' | 'replaceable' | 'light' | 'filter' | 'render' | 'tier' | 'tool'>>;
+type DefInput = Omit<BlockDef, 'solid' | 'opaque' | 'replaceable' | 'light' | 'filter' | 'render' | 'shape' | 'tier' | 'tool'> &
+  Partial<Pick<BlockDef, 'solid' | 'opaque' | 'replaceable' | 'light' | 'filter' | 'render' | 'shape' | 'tier' | 'tool'>>;
 
 const DEFS: BlockDef[] = [];
 
@@ -114,6 +124,7 @@ function def(input: DefInput): void {
   const render = input.render ?? 'cube';
   const full: BlockDef = {
     render,
+    shape: input.shape ?? 'cube',
     solid: input.solid ?? (render === 'cube'),
     opaque: input.opaque ?? (render === 'cube'),
     replaceable: input.replaceable ?? (render === 'cross' || render === 'liquid' || render === 'none'),
@@ -186,6 +197,17 @@ def({ id: B.FLOODGATE_CLOSED, name: 'floodgate_closed', label: '水門', hardnes
 // The open gate lets water and entities straight through, so it is neither solid nor
 // opaque; only its frame is drawn.
 def({ id: B.FLOODGATE_OPEN, name: 'floodgate_open', label: '水門（開）', hardness: 3, tool: 'pickaxe', tier: 1, solid: false, opaque: false, replaceable: false, tex: { all: 'floodgate_open' }, drop: 'floodgate' });
+
+// --- architectural shapes ---------------------------------------------------
+// Direction names say where the high edge is. These cells are deliberately not opaque:
+// a slope or a round post does not cover a complete voxel face, so light and adjacent
+// cube faces must be allowed through the unused part of the cell.
+def({ id: B.STONE_ROOF_EAST, name: 'stone_roof_east', label: '石レンガ屋根（東上がり）', shape: 'slope_east', opaque: false, hardness: 2, tool: 'pickaxe', tier: 1, tex: { all: 'stone_bricks' }, drop: 'stone_bricks' });
+def({ id: B.STONE_ROOF_WEST, name: 'stone_roof_west', label: '石レンガ屋根（西上がり）', shape: 'slope_west', opaque: false, hardness: 2, tool: 'pickaxe', tier: 1, tex: { all: 'stone_bricks' }, drop: 'stone_bricks' });
+def({ id: B.STONE_ROOF_SOUTH, name: 'stone_roof_south', label: '石レンガ屋根（南上がり）', shape: 'slope_south', opaque: false, hardness: 2, tool: 'pickaxe', tier: 1, tex: { all: 'stone_bricks' }, drop: 'stone_bricks' });
+def({ id: B.STONE_ROOF_NORTH, name: 'stone_roof_north', label: '石レンガ屋根（北上がり）', shape: 'slope_north', opaque: false, hardness: 2, tool: 'pickaxe', tier: 1, tex: { all: 'stone_bricks' }, drop: 'stone_bricks' });
+def({ id: B.STONE_COLUMN, name: 'stone_column', label: '石レンガの円柱', shape: 'cylinder', opaque: false, hardness: 2, tool: 'pickaxe', tier: 1, tex: { all: 'stone_bricks' }, drop: 'stone_bricks' });
+def({ id: B.WOOD_COLUMN, name: 'wood_column', label: '木の円柱', shape: 'cylinder', opaque: false, hardness: 2, tool: 'axe', tex: { top: 'oak_log_top', side: 'oak_log_side', bottom: 'oak_log_top' }, drop: 'oak_log' });
 
 for (let i = 0; i < DEFS.length; i++) {
   if (!DEFS[i]) throw new Error(`block id ${i} has no definition`);

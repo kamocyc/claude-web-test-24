@@ -165,6 +165,32 @@ describe('growing past the first stage', () => {
     }
   });
 
+  it('continues adding non-overlapping outer blocks without a stage cap', () => {
+    clearGrowthCache();
+    const village = planVillage(999, SITE, BASE_Y, 'plains');
+    const taken: Footprint[] = [...village.buildings];
+    let earlyDistance = 0;
+    let lateDistance = 0;
+    for (let stage = 5; stage <= 30; stage++) {
+      const plan = growthFor(999, record(stage), stage, village.buildings);
+      expect(plan.footprints, `stage ${stage}`).toHaveLength(3);
+      for (const plot of plan.footprints) {
+        expect(taken.some((other) => overlaps(plot, other)), `stage ${stage} overlaps`).toBe(false);
+        taken.push(plot);
+        const distance = Math.hypot(plot.x0 + plot.w / 2 - SITE.x, plot.z0 + plot.d / 2 - SITE.z);
+        if (stage === 5) earlyDistance = Math.max(earlyDistance, distance);
+        if (stage === 30) lateDistance = Math.max(lateDistance, distance);
+      }
+    }
+    expect(lateDistance).toBeGreaterThan(earlyDistance);
+  });
+
+  it('returns no stage when every searched outer plot is unsuitable', () => {
+    const plan = planGrowth(999, SITE, BASE_Y, 'plains', 5, [], () => false);
+    expect(plan.footprints).toHaveLength(0);
+    expect(plan.placements).toHaveLength(0);
+  });
+
   // The lamp posts and gate towers that used to mark stages 3 and 4 are gone with the
   // village they belonged to. A town grows by whole city blocks now, which is a far
   // louder change than a lamp — there is nothing left for a landmark to say.

@@ -5,8 +5,14 @@ export const CHUNK_SIZE = 16;
 export const CHUNK_HEIGHT = 128;
 export const CHUNK_AREA = CHUNK_SIZE * CHUNK_SIZE;
 export const CHUNK_VOLUME = CHUNK_AREA * CHUNK_HEIGHT;
-/** Y level of the ocean surface. */
-export const SEA_LEVEL = 46;
+/** Y level of the ocean surface.
+ *
+ *  Low in the world rather than halfway up it, because the budget that matters is the one
+ *  *above* the water: everything the player walks on lives between here and `MAX_HEIGHT`,
+ *  and a mountain range is only as steep as that budget lets it be. Dropping the sea from
+ *  46 to 34 bought the terrain twelve more blocks of relief without making a chunk any
+ *  taller. The ocean is shallower for it, which costs nothing — nobody digs the sea bed. */
+export const SEA_LEVEL = 34;
 
 export function blockIndex(x: number, y: number, z: number): number {
   return (y * CHUNK_SIZE + z) * CHUNK_SIZE + x;

@@ -2,16 +2,25 @@ import { hashFloat, mulberry32, hashInts, type Rng } from '../../core/rng';
 import { smoothstep } from '../../core/noise';
 import { Block, type BlockId } from '../blocks';
 import { CHUNK_SIZE, chunkKey, toChunkCoord } from '../chunk';
-import { townBlocks, townStreets, type TownBlock } from './districts';
 import {
+  townBlocks,
+  townGrowthBlocks,
+  townStreets,
+  type TownBlock,
+  type TownPlotSurvey,
+} from './districts';
+import {
+  architectureFor,
   buildHome,
   buildPlaza,
   buildShop,
   buildWorks,
+  HOME_HEIGHT,
   paletteFor,
   type BuildSink,
   type Palette,
   type PutFn,
+  type VillageArchitecture,
 } from './townBuildings';
 
 /** Villages sit on a coarse grid so their existence can be decided from the seed alone,
@@ -25,7 +34,22 @@ export const VILLAGE_CELL = VILLAGE_CELL_CHUNKS * CHUNK_SIZE;
  *  inside this radius. A town on a smaller plateau builds its outer blocks down the side
  *  of its own hill. */
 export const VILLAGE_RADIUS = 56;
-const VILLAGE_CHANCE = 0.62;
+/** Share of grid cells that get to try for a village at all.
+ *
+ *  Lower than it used to be because the *siting* got better, not because there are fewer
+ *  towns: a cell no longer stakes everything on one hashed point, it picks the best of
+ *  `VILLAGE_TRIES`, so many more of the cells that try end up with a town on them. The
+ *  number is set by measurement — see `terrainShape.test.ts`, which pins the villages per
+ *  square kilometre this produces against what the old generator produced. */
+const VILLAGE_CHANCE = 0.38;
+
+/** Candidate centres considered inside a cell that has a village.
+ *
+ *  With features three times as wide, a whole cell can land inside one mountain range or
+ *  one plain. One hashed point per cell would answer that by leaving the range empty and
+ *  the plain full; a handful of points lets a cell find the flat corner of itself, which
+ *  is what a town needs and what somebody founding one would have done. */
+export const VILLAGE_TRIES = 12;
 
 export type VillageVariant = 'plains' | 'desert' | 'snowy';
 
@@ -133,6 +157,8 @@ export interface VillagePlan {
   site: VillageSite;
   baseY: number;
   variant: VillageVariant;
+  /** The village-wide building tradition, visible in every roof and facade. */
+  architecture: VillageArchitecture;
   byChunk: Map<string, Placement[]>;
   villagers: VillagerMarker[];
   chests: ChestMarker[];
@@ -141,32 +167,30 @@ export interface VillagePlan {
   buildings: HouseRecord[];
 }
 
-/** Returns the village centre inside a grid cell, or null when the cell has none. */
-export function villageInCell(seed: number, cellX: number, cellZ: number): VillageSite | null {
-  if (hashFloat(seed ^ 0x5eed1, cellX, cellZ, 17) > VILLAGE_CHANCE) return null;
+/** Where a cell would put a village, best candidate first. Empty when the cell has none.
+ *
+ *  Every candidate lands inside the same inset box the single hashed point used to, so the
+ *  nearest two towns in adjacent cells are still at least `VILLAGE_CELL - 2 * margin`
+ *  apart however the search goes — 144 blocks, unchanged.
+ *
+ *  This is deliberately world-blind: it says where a town *could* stand, and the terrain
+ *  generator, which is the only thing that knows what the ground is like, decides which of
+ *  them it does stand on. */
+export function villageCandidates(seed: number, cellX: number, cellZ: number): VillageSite[] {
+  if (hashFloat(seed ^ 0x5eed1, cellX, cellZ, 17) > VILLAGE_CHANCE) return [];
   const jitter = mulberry32(hashInts(seed ^ 0x5eed2, cellX, cellZ));
   const margin = VILLAGE_RADIUS + 16;
   const span = VILLAGE_CELL - margin * 2;
-  return {
-    cellX,
-    cellZ,
-    x: cellX * VILLAGE_CELL + margin + Math.floor(jitter() * span),
-    z: cellZ * VILLAGE_CELL + margin + Math.floor(jitter() * span),
-  };
-}
-
-/** Every candidate village whose plateau could reach the given block column. */
-export function nearbyVillageSites(seed: number, blockX: number, blockZ: number): VillageSite[] {
-  const cellX = Math.floor(blockX / VILLAGE_CELL);
-  const cellZ = Math.floor(blockZ / VILLAGE_CELL);
-  const sites: VillageSite[] = [];
-  for (let dz = -1; dz <= 1; dz++) {
-    for (let dx = -1; dx <= 1; dx++) {
-      const site = villageInCell(seed, cellX + dx, cellZ + dz);
-      if (site) sites.push(site);
-    }
+  const out: VillageSite[] = [];
+  for (let i = 0; i < VILLAGE_TRIES; i++) {
+    out.push({
+      cellX,
+      cellZ,
+      x: cellX * VILLAGE_CELL + margin + Math.floor(jitter() * span),
+      z: cellZ * VILLAGE_CELL + margin + Math.floor(jitter() * span),
+    });
   }
-  return sites;
+  return out;
 }
 
 /** 1 inside the flat core, falling to 0 at the plateau edge. The band is wide because a
@@ -232,6 +256,7 @@ function buildBlock(
   block: TownBlock,
   baseY: number,
   palette: Palette,
+  architecture: VillageArchitecture,
   rng: Rng,
 ): Footprint[] {
   const facing = facingFor(block);
@@ -241,7 +266,7 @@ function buildBlock(
     return [plot];
   }
   if (block.zone === 'commercial') {
-    buildShop(put, sink, plot, facing, baseY, palette, pick(rng));
+    buildShop(put, sink, plot, facing, baseY, palette, architecture, pick(rng));
     return [plot];
   }
   if (block.zone === 'industrial') {
@@ -260,7 +285,7 @@ function buildBlock(
       if (rng() < 0.2) put(x, baseY, z, rng() < 0.5 ? Block.FLOWER_RED : Block.FLOWER_YELLOW);
     }
   }
-  for (const home of homes) buildHome(put, sink, home, facing, baseY, palette, pick(rng), rng);
+  for (const home of homes) buildHome(put, sink, home, facing, baseY, palette, architecture, pick(rng), rng);
   return [plot];
 }
 
@@ -296,16 +321,18 @@ export function planVillage(
   variant: VillageVariant,
 ): VillagePlan {
   const rng = mulberry32(hashInts(seed ^ 0x1111a9e, site.x, site.z));
+  const architecture = architectureFor(seed, site, variant);
   const plan: VillagePlan = {
     site,
     baseY,
     variant,
+    architecture,
     byChunk: new Map(),
     villagers: [],
     chests: [],
     buildings: [],
   };
-  const palette = paletteFor(variant);
+  const palette = paletteFor(variant, architecture);
   const put: PutFn = (x, y, z, b) => {
     const key = chunkKey(toChunkCoord(x), toChunkCoord(z));
     let list = plan.byChunk.get(key);
@@ -327,7 +354,7 @@ export function planVillage(
   // ground and leaves its doorway too low to walk through.
   for (const block of townBlocks(seed, site)) {
     if (block.stage !== 0) continue;
-    buildBlock(put, sink, block, baseY + 1, palette, rng);
+    buildBlock(put, sink, block, baseY + 1, palette, architecture, rng);
   }
   return plan;
 }
@@ -344,6 +371,7 @@ export function planGrowth(
   variant: VillageVariant,
   stage: number,
   occupied: readonly Footprint[],
+  survey?: TownPlotSurvey,
 ): GrowthPlan {
   const plan: GrowthPlan = {
     placements: [],
@@ -355,7 +383,8 @@ export function planGrowth(
   };
   if (stage <= 0) return plan;
   const rng = mulberry32(hashInts(seed ^ 0x9a0f, site.x, site.z, stage));
-  const palette = paletteFor(variant);
+  const architecture = architectureFor(seed, site, variant);
+  const palette = paletteFor(variant, architecture);
   const put: PutFn = (x, y, z, b) => {
     plan.placements.push({ x, y, z, b });
   };
@@ -364,13 +393,12 @@ export function planGrowth(
     villagers: plan.villagers,
     chests: plan.chests,
   };
-  for (const block of townBlocks(seed, site)) {
-    if (block.stage !== stage) continue;
+  for (const block of townGrowthBlocks(seed, site, stage, survey)) {
     const plot: Footprint = { x0: block.x0, z0: block.z0, w: block.w, d: block.d };
     if (occupied.some((taken) => overlaps(plot, taken))) continue;
     plan.footprints.push(plot);
     plan.pads.push({ ...plot, y: baseY });
-    buildBlock(put, sink, block, baseY + 1, palette, rng);
+    buildBlock(put, sink, block, baseY + 1, palette, architecture, rng);
   }
   return plan;
 }
@@ -419,7 +447,8 @@ export function planOutpost(
     pads: [],
   };
   const rng = mulberry32(hashInts(seed ^ 0x51d3, site.x, site.z));
-  const palette = paletteFor(variant);
+  const architecture = architectureFor(seed, site, variant);
+  const palette = paletteFor(variant, architecture);
   const put: PutFn = (x, y, z, b) => {
     plan.placements.push({ x, y, z, b });
   };
@@ -436,7 +465,9 @@ export function planOutpost(
       const z = site.z + dz;
       put(x, baseY - 1, z, palette.ground);
       for (let depth = 2; depth <= OUTPOST_FILL; depth++) put(x, baseY - depth, z, Block.DIRT);
-      for (let y = baseY; y <= baseY + 5; y++) put(x, y, z, Block.AIR);
+      for (let y = baseY; y <= baseY + HOME_HEIGHT + architecture.homeRise + 1; y++) {
+        put(x, y, z, Block.AIR);
+      }
     }
   }
 
@@ -447,7 +478,17 @@ export function planOutpost(
   const facings: (0 | 1 | 2 | 3)[] = [3, 1];
   for (let i = 0; i < plots.length; i++) {
     plan.footprints.push(plots[i]);
-    buildHome(put, sink, plots[i], facings[i], baseY, palette, PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)], rng);
+    buildHome(
+      put,
+      sink,
+      plots[i],
+      facings[i],
+      baseY,
+      palette,
+      architecture,
+      PROFESSIONS[Math.floor(rng() * PROFESSIONS.length)],
+      rng,
+    );
   }
 
   // A scrap of street between the two doors, laid the way a town lays its own.

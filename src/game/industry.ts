@@ -76,8 +76,8 @@ export const INDUSTRY_TYPES: readonly IndustryType[] = [
     label: '林業所',
     good: 'oak_log',
     blocks: [Block.OAK_LOG, Block.OAK_LEAVES],
-    count: 120,
-    density: 0.2,
+    count: 24,
+    density: 0.15,
   },
 ];
 
@@ -146,6 +146,7 @@ export interface Deposit {
  *  over a function. */
 export interface BlockReader {
   getBlock(x: number, y: number, z: number): BlockId;
+  surveyTrees?(x: number, z: number, radius: number): { wood: number; density: number };
 }
 
 /** Every industry that could stand at a point, best first.
@@ -200,7 +201,14 @@ export function surveyGround(world: BlockReader, x: number, y: number, z: number
       count += counts.get(block) ?? 0;
       for (const column of columns.get(block) ?? []) held.add(column);
     }
-    const density = scanned > 0 ? held.size / scanned : 0;
+    let density = scanned > 0 ? held.size / scanned : 0;
+    if (type.kind === 'forestry') {
+      const natural = world.surveyTrees?.(cx, cz, DEPOSIT_RADIUS);
+      if (natural) {
+        count += natural.wood;
+        density = Math.min(1, density + natural.density);
+      }
+    }
     const short: ('count' | 'density')[] = [];
     if (count < type.count) short.push('count');
     if (density < type.density) short.push('density');

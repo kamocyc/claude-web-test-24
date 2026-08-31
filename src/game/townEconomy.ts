@@ -171,9 +171,12 @@ export interface Town {
 /** People in a building of this use, in a village at this stage. Pure, so it is never
  *  stored — the same building in the same town always holds the same number. */
 export function peopleFor(use: BuildingUse, stage: number): number {
-  if (use === 'residential') return HOME_PEOPLE + stage;
-  if (use === 'commercial') return SHOP_JOBS + stage;
-  if (use === 'industrial') return WORKS_JOBS + stage;
+  // Open-ended growth adds more addresses, not infinitely crowded rooms. The authored
+  // density curve reaches its intended maximum at the 都市 milestone.
+  const density = Math.min(4, Math.max(0, stage));
+  if (use === 'residential') return HOME_PEOPLE + density;
+  if (use === 'commercial') return SHOP_JOBS + density;
+  if (use === 'industrial') return WORKS_JOBS + density;
   return 0;
 }
 

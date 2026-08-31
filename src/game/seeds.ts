@@ -1,5 +1,5 @@
 import { seedFromString } from '../core/rng';
-import { CHUNK_HEIGHT } from '../world/chunk';
+import { CHUNK_HEIGHT, SEA_LEVEL } from '../world/chunk';
 import type { TerrainGenerator } from '../world/generation/terrain';
 
 /** The world used for verification: screenshots, the browser smoke test and the
@@ -26,7 +26,7 @@ export function findSpawn(generator: TerrainGenerator): { x: number; y: number; 
       const x = Math.round(Math.cos(angle) * radius);
       const z = Math.round(Math.sin(angle) * radius);
       const height = generator.height(x, z);
-      if (height > 47 && height < CHUNK_HEIGHT - 20) return { x, y: height + 1, z };
+      if (height > SEA_LEVEL + 1 && height < CHUNK_HEIGHT - 20) return { x, y: height + 1, z };
     }
   }
   return { x: 0, y: 70, z: 0 };

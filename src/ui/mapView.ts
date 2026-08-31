@@ -87,6 +87,21 @@ export function canvasPixel(
   };
 }
 
+/** Which of the offered zooms a remembered one is, as an index into `steps`.
+ *
+ *  Snapped rather than trusted: the number comes back from storage, where it may have been
+ *  written by an older build with a different set of steps, or edited by hand. Falling back
+ *  to the nearest offered zoom is a map that opens where it was left; refusing it outright
+ *  is a map that forgets every time the list changes. */
+export function zoomStepFor(steps: readonly number[], zoom: number): number {
+  let best = 0;
+  if (!Number.isFinite(zoom)) return best;
+  for (let i = 1; i < steps.length; i++) {
+    if (Math.abs(steps[i] - zoom) < Math.abs(steps[best] - zoom)) best = i;
+  }
+  return best;
+}
+
 /** How far the world moves when the mouse moves, in blocks.
  *
  *  Dragging a map moves the *paper*: the ground follows the hand, so the point the map is

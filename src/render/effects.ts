@@ -32,7 +32,9 @@ function createCrackTextures(): THREE.Texture[] {
     canvas.height = TILE;
     const ctx = canvas.getContext('2d')!;
     ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-    ctx.lineWidth = 1;
+    // Tiles are drawn several pixels to the unit, so a one-pixel crack would be a hair.
+    ctx.lineWidth = TILE / 16;
+    ctx.lineCap = 'round';
     const count = Math.round(((stage + 1) / 8) * strokes.length);
     for (let i = 0; i < count; i++) {
       const [x0, y0, x1, y1] = strokes[i];

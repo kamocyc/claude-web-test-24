@@ -39,6 +39,7 @@ function startGame(seed: number, save: ReturnType<typeof readSave>, sample = fal
   menus.bindSettings(settings, (next) => {
     input.sensitivity = next.sensitivity;
     game?.setRenderDistance(next.renderDistance);
+    game?.setRoundedBlocks(next.roundedBlocks);
     game?.setDifficulty(next.difficulty);
     saveSettings(next);
   });

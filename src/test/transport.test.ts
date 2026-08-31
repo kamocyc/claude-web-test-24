@@ -28,7 +28,6 @@ import { networkSites, type DepotSource } from '../game/sites';
 import {
   MAX_STAGE,
   PASSENGER,
-  STAGE_POINTS,
   VillageRegistry,
   villageId,
   type VillageSeed,
@@ -603,7 +602,7 @@ describe('transport routes', () => {
     expect(events.arrivals).toHaveLength(0);
   });
 
-  it('stops banking stages at the cap', () => {
+  it('keeps banking stages beyond the named-rank milestone', () => {
     const { transport, registry, link } = build();
     link();
     run(transport, 3);
@@ -611,8 +610,8 @@ describe('transport routes', () => {
       registry.produce(0.5);
       transport.update(0.5, 10_000, 10_000);
     }
-    expect(registry.get(ID_B)?.stage).toBe(MAX_STAGE);
-    expect(registry.get(ID_B)?.points).toBeGreaterThanOrEqual(STAGE_POINTS[0]);
+    expect(registry.get(ID_B)!.stage).toBeGreaterThan(MAX_STAGE);
+    expect(registry.get(ID_B)?.growthStopped).not.toBe(true);
   });
 
   it('carries more, and faster, on a better surface', () => {

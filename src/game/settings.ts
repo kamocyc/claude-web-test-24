@@ -6,6 +6,8 @@ export interface Settings {
   difficulty: Difficulty;
   /** Chunks loaded around the player in each direction. */
   renderDistance: number;
+  /** Use bevelled geometry for nearby terrain blocks. */
+  roundedBlocks: boolean;
   /** Radians of camera rotation per pixel of mouse movement. */
   sensitivity: number;
   /** Heading strip with markers for spawn, the last death and the nearest village. */
@@ -30,6 +32,10 @@ export interface Settings {
   /** How many times faster the world runs than real time. The player is never sped up —
    *  only the clock everything else lives on. */
   speed: number;
+  /** Blocks per pixel on the big map, so it opens at the span it was left at. A view
+   *  preference and not world state: somebody who reads their railway at eight thousand
+   *  blocks across means that about maps, not about one world. */
+  mapZoom: number;
 }
 
 /** The speeds the pause menu offers. Powers of two so the jumps read as jumps, and
@@ -50,7 +56,8 @@ export const SETTINGS_KEY = 'voxelcraft.settings.v1';
 
 export const DEFAULT_SETTINGS: Settings = {
   difficulty: DEFAULT_DIFFICULTY,
-  renderDistance: 8,
+  renderDistance: 4,
+  roundedBlocks: true,
   sensitivity: 0.0022,
   compass: true,
   minimap: true,
@@ -61,9 +68,13 @@ export const DEFAULT_SETTINGS: Settings = {
   autoStep: true,
   creative: false,
   speed: 1,
+  mapZoom: 2,
 };
 
 export const RENDER_DISTANCE_RANGE = { min: 4, max: 12 };
+/** The coarsest and finest the big map goes. The offered steps themselves live with the
+ *  map — this is only the range a stored number has to be inside to be worth passing on. */
+export const MAP_ZOOM_RANGE = { min: 1, max: 16 };
 export const SENSITIVITY_RANGE = { min: 0.0006, max: 0.006 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -81,6 +92,7 @@ export function loadSettings(): Settings {
         RENDER_DISTANCE_RANGE.min,
         RENDER_DISTANCE_RANGE.max,
       ),
+      roundedBlocks: parsed.roundedBlocks ?? DEFAULT_SETTINGS.roundedBlocks,
       sensitivity: clamp(
         parsed.sensitivity ?? DEFAULT_SETTINGS.sensitivity,
         SENSITIVITY_RANGE.min,
@@ -96,6 +108,7 @@ export function loadSettings(): Settings {
       autoStep: parsed.autoStep ?? DEFAULT_SETTINGS.autoStep,
       creative: parsed.creative ?? DEFAULT_SETTINGS.creative,
       speed: nearestSpeed(parsed.speed ?? DEFAULT_SETTINGS.speed),
+      mapZoom: clamp(parsed.mapZoom ?? DEFAULT_SETTINGS.mapZoom, MAP_ZOOM_RANGE.min, MAP_ZOOM_RANGE.max),
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

@@ -3,6 +3,7 @@ import { Block, blockDef } from '../../world/blocks';
 import { CHUNK_HEIGHT } from '../../world/chunk';
 import type { World } from '../../world/world';
 import { applyDamage, applyKnockback } from '../combat';
+import { Biome } from '../../world/generation/biome';
 import type { DayCycle } from '../daycycle';
 import { type DifficultyRules, difficultyRules } from '../difficulty';
 import type { ItemStack } from '../inventory';
@@ -30,6 +31,8 @@ export interface MobUpdateContext {
   difficulty?: DifficultyRules;
   /** Current in a cell, so mobs drift with moving water. */
   currentAt?(x: number, y: number, z: number): { x: number; z: number };
+  /** Biome at a surface position, used for biome-specific passive mobs. */
+  biomeAt?(x: number, z: number): number;
   /** Called when the player takes damage from a mob. */
   onPlayerHit(damage: number, fromX: number, fromZ: number): void;
   /** Called for every item a dying mob leaves behind. */
@@ -202,9 +205,15 @@ export class MobManager {
       for (let attempt = 0; attempt < 6; attempt++) {
         const spot = this.findSpawnSpot(player, 16, 44);
         if (!spot) continue;
-        if (this.world.getBlock(spot.x, spot.y - 1, spot.z) !== Block.GRASS) continue;
+        const biome = ctx.biomeAt?.(spot.x, spot.z);
+        const ground = this.world.getBlock(spot.x, spot.y - 1, spot.z);
+        const validGround = ground === Block.GRASS ||
+          (biome === Biome.DESERT && ground === Block.SAND) ||
+          (biome === Biome.SNOWY_PLAINS && ground === Block.SNOW) ||
+          (biome === Biome.TAIGA && (ground === Block.SNOW || ground === Block.GRASS));
+        if (!validGround) continue;
         if (this.world.getSkyLight(spot.x, spot.y, spot.z) < 9) continue;
-        const kind = PASSIVE_KINDS[Math.floor(this.rng() * PASSIVE_KINDS.length)];
+        const kind = this.passiveKindAt(biome);
         if (!this.fits(kind, spot.x, spot.y, spot.z)) continue;
         const groupSize = 1 + Math.floor(this.rng() * 3);
         for (let i = 0; i < groupSize; i++) {
@@ -213,6 +222,22 @@ export class MobManager {
         break;
       }
     }
+  }
+
+  private passiveKindAt(biome: number | undefined): MobKind {
+    // Cats and dogs are common near temperate grasslands and woodland. The remaining
+    // entries are deliberately biome-gated so discovering a new climate also means
+    // discovering a new animal.
+    const choices = biome === Biome.DESERT
+      ? ['camel', 'rabbit'] as const
+      : biome === Biome.SNOWY_PLAINS
+        ? ['rabbit', 'dog'] as const
+        : biome === Biome.TAIGA
+          ? ['fox', 'dog', 'sheep'] as const
+          : biome === Biome.FOREST || biome === Biome.SWAMP
+            ? ['cat', 'dog', 'fox', 'cow'] as const
+            : PASSIVE_KINDS;
+    return choices[Math.floor(this.rng() * choices.length)];
   }
 
   /** Picks a random loaded surface position in a ring around the player. */

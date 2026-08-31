@@ -86,14 +86,19 @@ export interface OreSpec {
   size: number;
 }
 
+/** The bands moved down with the sea, twelve blocks, so each ore sits at the same depth
+ *  under the player's feet as it did before. Coal is the exception and keeps its old
+ *  ceiling: mountains now stand higher than they used to, and a seam that stopped at the
+ *  old skyline would leave every peak hollow rock. Nothing else changed — `tries` and
+ *  `size` are what a hand with a pickaxe feels, and that was not the thing being retuned. */
 export const ORES: readonly OreSpec[] = [
-  { block: Block.COAL_ORE, tries: 22, minY: 6, maxY: 112, size: 14 },
-  { block: Block.IRON_ORE, tries: 16, minY: 5, maxY: 66, size: 9 },
-  { block: Block.GOLD_ORE, tries: 4, minY: 4, maxY: 34, size: 7 },
-  { block: Block.DIAMOND_ORE, tries: 2, minY: 3, maxY: 17, size: 6 },
-  { block: Block.EMERALD_ORE, tries: 3, minY: 6, maxY: 48, size: 3 },
-  { block: Block.GRAVEL, tries: 6, minY: 24, maxY: 100, size: 22 },
-  { block: Block.DIRT, tries: 6, minY: 24, maxY: 110, size: 18 },
+  { block: Block.COAL_ORE, tries: 22, minY: 4, maxY: 114, size: 14 },
+  { block: Block.IRON_ORE, tries: 16, minY: 4, maxY: 56, size: 9 },
+  { block: Block.GOLD_ORE, tries: 4, minY: 3, maxY: 26, size: 7 },
+  { block: Block.DIAMOND_ORE, tries: 2, minY: 3, maxY: 14, size: 6 },
+  { block: Block.EMERALD_ORE, tries: 3, minY: 4, maxY: 38, size: 3 },
+  { block: Block.GRAVEL, tries: 6, minY: 16, maxY: 90, size: 22 },
+  { block: Block.DIRT, tries: 6, minY: 16, maxY: 98, size: 18 },
 ];
 
 /** A seam of ore breaking the surface.
@@ -119,9 +124,16 @@ export interface OutcropSpec {
   depth: number;
 }
 
+/** Half as many as there used to be, and each one exactly as good.
+ *
+ *  What the chance controls is how far apart the places worth building a mine are, and
+ *  halving it is the whole of "fewer mines": the radius and the depth are what a single
+ *  find is worth, and shrinking those would have made prospecting less rewarding rather
+ *  than rarer. Both kinds are halved by the same factor, so `outcropIn`, which tests them
+ *  against one shared roll in order, still splits coal and iron the way it did. */
 export const OUTCROPS: readonly OutcropSpec[] = [
-  { block: Block.COAL_ORE, chance: 0.05, minRadius: 3, maxRadius: 6, depth: 4 },
-  { block: Block.IRON_ORE, chance: 0.035, minRadius: 3, maxRadius: 5, depth: 4 },
+  { block: Block.COAL_ORE, chance: 0.025, minRadius: 3, maxRadius: 6, depth: 4 },
+  { block: Block.IRON_ORE, chance: 0.018, minRadius: 3, maxRadius: 5, depth: 4 },
 ];
 
 /** Where a chunk's outcrop is, if it has one. Deterministic from the seed and the chunk,

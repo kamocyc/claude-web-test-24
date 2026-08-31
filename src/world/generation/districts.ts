@@ -159,6 +159,94 @@ export const BLOCKS_PER_STAGE = 3;
 /** The last stage that builds anything. Matches the ranks in `villages.ts`. */
 export const MAX_TOWN_STAGE = 4;
 
+/** How many new town blocks one development stage attempts to raise. */
+export const GROWTH_BLOCKS_PER_STAGE = BLOCKS_PER_STAGE;
+/** Extra rings searched when the expected frontier happens to be cliffs or water. */
+export const GROWTH_SEARCH_RINGS = 3;
+
+/** The side reserved for a compact belt of fields. Buildings grow around the other
+ *  three sides, so farms remain recognisably farms instead of becoming isolated scraps
+ *  between later houses. 0 north, then clockwise. */
+export function farmSideFor(seed: number, site: { x: number; z: number }): number {
+  return hashInts(seed ^ 0x4fa21, site.x, site.z) & 3;
+}
+
+export type TownPlotSurvey = (plot: { x0: number; z0: number; w: number; d: number }) => boolean;
+
+/** Blocks raised by one arbitrary growth stage.
+ *
+ *  Unlike `townBlocks`, this has no outer grid boundary. It walks square rings forever,
+ *  skips the agricultural side from the second ring onward, and takes the next three
+ *  usable plots. A bounded three-ring detour makes a town search around a local cliff
+ *  without letting one stage teleport a district across a mountain range. */
+export function townGrowthBlocks(
+  seed: number,
+  site: { x: number; z: number },
+  stage: number,
+  survey?: TownPlotSurvey,
+): TownBlock[] {
+  if (stage <= 0) return [];
+  // Keep the authored five-rank town byte-for-byte stable. Infinite expansion begins
+  // outside that complete 4x4 core at stage five.
+  if (stage <= MAX_TOWN_STAGE) {
+    return townBlocks(seed, site).filter(
+      (block) => block.stage === stage && (!survey || survey(block)),
+    );
+  }
+  const worksSide = Math.floor(mulberry32(hashInts(seed ^ 0x70b7, site.x, site.z))() * 4);
+  const farmSide = farmSideFor(seed, site);
+  const core = new Set(townBlocks(seed, site).map((block) => `${block.i},${block.j}`));
+  const wantedThrough = (stage - MAX_TOWN_STAGE) * GROWTH_BLOCKS_PER_STAGE;
+  let expectedRing = 2;
+  let eligible = 0;
+  while (eligible < wantedThrough) {
+    const low = -expectedRing - 1;
+    const high = expectedRing;
+    for (let j = low; j <= high; j++) {
+      for (let i = low; i <= high; i++) {
+        if (ringOf(i, j) !== expectedRing || sideOf(i, j) === farmSide) continue;
+        eligible++;
+      }
+    }
+    expectedRing++;
+  }
+  const candidates: TownBlock[] = [];
+  for (let ring = 0; ring <= expectedRing - 1 + GROWTH_SEARCH_RINGS; ring++) {
+    const low = -ring - 1;
+    const high = ring;
+    const around: TownBlock[] = [];
+    for (let j = low; j <= high; j++) {
+      for (let i = low; i <= high; i++) {
+        if (ringOf(i, j) !== ring) continue;
+        if (ring >= 2 && !survey && sideOf(i, j) === farmSide) continue;
+        const plot = blockRect(site, i, j);
+        if (!core.has(`${i},${j}`) && survey && !survey(plot)) continue;
+        around.push({
+          i,
+          j,
+          ...plot,
+          ring,
+          zone: zoneFor(i, j, ring, worksSide),
+          stage: 0,
+        });
+      }
+    }
+    around.sort((a, b) => order(a) - order(b));
+    candidates.push(...around);
+  }
+  // The complete authored 4x4 core belongs to stages zero through four. Expansion starts
+  // beyond it, so none of those stable plots participates in the open-ended sequence.
+  const growth = candidates.filter((block) => !core.has(`${block.i},${block.j}`));
+  const start = (stage - MAX_TOWN_STAGE - 1) * GROWTH_BLOCKS_PER_STAGE;
+  return growth.slice(start, start + GROWTH_BLOCKS_PER_STAGE).map((block) => ({ ...block, stage }));
+}
+
+function sideOf(i: number, j: number): number {
+  const dx = i + 0.5;
+  const dz = j + 0.5;
+  return Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? 1 : 3) : dz > 0 ? 2 : 0;
+}
+
 /** Every street column of a town, as the lines they run along.
  *
  *  Returned as spans rather than cells: a town has about a thousand street columns and the

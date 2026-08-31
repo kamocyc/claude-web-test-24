@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   FIELD_RING,
+  FIELD_PITCH,
   FIELD_SIZE,
   FIELD_SLOTS,
   fieldArea,
   fieldCount,
+  fieldSideFor,
   fieldTarget,
   fieldsAt,
   isChannel,
@@ -20,15 +22,15 @@ describe('a town and its fields', () => {
     for (let stage = 0; stage <= MAX_TOWN_STAGE; stage++) {
       const target = fieldTarget(stage);
       const area = fieldArea(stage);
-      // Within half a parcel of the target: the parcels are whole things and the target is
-      // a ratio, so this is as close as the two can be made to agree.
-      expect(Math.abs(area - target)).toBeLessThanOrEqual((FIELD_SIZE * FIELD_SIZE) / 2);
+      // Rounded upward because every development stage must visibly add a whole parcel.
+      expect(area).toBeGreaterThanOrEqual(target);
+      expect(area - target).toBeLessThan(FIELD_SIZE * FIELD_SIZE);
     }
   });
 
   it('grows with the town and never shrinks', () => {
     for (let stage = 1; stage <= MAX_TOWN_STAGE; stage++) {
-      expect(fieldCount(stage)).toBeGreaterThanOrEqual(fieldCount(stage - 1));
+      expect(fieldCount(stage)).toBeGreaterThan(fieldCount(stage - 1));
     }
     expect(fieldCount(MAX_TOWN_STAGE)).toBeGreaterThan(fieldCount(0));
     expect(fieldCount(MAX_TOWN_STAGE)).toBeLessThanOrEqual(FIELD_SLOTS);
@@ -65,15 +67,22 @@ describe('a town and its fields', () => {
     }
   });
 
-  it('takes the four sides before any corner', () => {
+  it('keeps its first parcels together on one agricultural side', () => {
     const first = fieldsAt(SEED, SITE, 0);
     expect(first.length).toBeGreaterThanOrEqual(3);
-    // Slots 0-3 are the sides, where the plateau is flat. A town's first fields are all on
-    // them, whichever way the seed turned the belt.
     expect(first.every((parcel) => parcel.slot < 4)).toBe(true);
-    expect(new Set(first.map((p) => p.slot)).size).toBe(first.length);
+    expect(new Set(first.map((p) => p.slot)).size).toBe(1);
+    const centres = first.map((p) => ({ x: p.x0 + 11, z: p.z0 + 11 }));
+    for (let i = 1; i < centres.length; i++) {
+      expect(Math.hypot(centres[i].x - centres[i - 1].x, centres[i].z - centres[i - 1].z))
+        .toBe(FIELD_PITCH);
+    }
     const grown = fieldsAt(SEED, SITE, MAX_TOWN_STAGE);
-    expect(grown.some((parcel) => parcel.slot >= 4)).toBe(true);
+    expect(grown.every((parcel) => parcel.slot === first[0].slot)).toBe(true);
+    expect(grown.some((parcel) => {
+      const centre = { x: parcel.x0 + 11, z: parcel.z0 + 11 };
+      return Math.max(Math.abs(centre.x), Math.abs(centre.z)) > FIELD_RING;
+    })).toBe(true);
   });
 
   it('is the same fields however often a town is asked', () => {
@@ -104,12 +113,42 @@ describe('a town and its fields', () => {
     }
   });
 
-  it('stands on a square belt, one parcel out from the grid', () => {
+  it('extends in rows away from town without changing agricultural side', () => {
     const half = (FIELD_SIZE - 1) / 2;
     for (const parcel of townFields(SEED, SITE)) {
-      // The town is a square grid, so the belt around it is measured the same way.
-      const middle = Math.max(Math.abs(parcel.x0 + half), Math.abs(parcel.z0 + half));
-      expect(middle).toBe(FIELD_RING);
+      const x = parcel.x0 + half;
+      const z = parcel.z0 + half;
+      const outward = parcel.slot === 0 ? -z : parcel.slot === 1 ? x : parcel.slot === 2 ? z : -x;
+      expect(outward).toBeGreaterThanOrEqual(FIELD_RING);
+      expect((outward - FIELD_RING) % FIELD_PITCH).toBe(0);
     }
+  });
+
+  it('has no numeric parcel cap', () => {
+    const distant = fieldsAt(SEED, SITE, 30);
+    expect(distant.length).toBe(fieldCount(30));
+    expect(distant.length).toBeGreaterThan(FIELD_SLOTS);
+    expect(distant[distant.length - 1].stage).toBeLessThanOrEqual(30);
+  });
+
+  it('searches farther along the farm belt, then reports exhaustion', () => {
+    const detoured = fieldsAt(SEED, SITE, 1, (parcel) => {
+      const centre = { x: parcel.x0 + 11, z: parcel.z0 + 11 };
+      return Math.max(Math.abs(centre.x), Math.abs(centre.z)) > FIELD_RING;
+    });
+    expect(detoured).toHaveLength(fieldCount(1));
+    expect(detoured.every((parcel) => {
+      const centre = { x: parcel.x0 + 11, z: parcel.z0 + 11 };
+      return Math.max(Math.abs(centre.x), Math.abs(centre.z)) > FIELD_RING;
+    })).toBe(true);
+    expect(fieldsAt(SEED, SITE, 30, () => false)).toHaveLength(0);
+  });
+
+  it('chooses another single side when the seeded side has no workable land', () => {
+    const preferred = fieldSideFor(SEED, SITE);
+    const available = (preferred + 1) & 3;
+    const parcels = fieldsAt(SEED, SITE, 8, (parcel) => parcel.slot === available);
+    expect(parcels).toHaveLength(fieldCount(8));
+    expect(new Set(parcels.map((parcel) => parcel.slot))).toEqual(new Set([available]));
   });
 });

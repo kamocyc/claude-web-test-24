@@ -4,6 +4,12 @@
 
 export interface VoxelCollider {
   isSolidAt(x: number, y: number, z: number): boolean;
+  /** Optional non-grid collision such as a tree trunk. */
+  intersectsBox?(box: EntityBox): boolean;
+}
+
+export interface ObjectCollider {
+  intersectsBox(box: EntityBox): boolean;
 }
 
 /** Something to stand on that is not in the block grid.
@@ -39,7 +45,7 @@ const EPSILON = 1e-3;
 /** Longest distance resolved in one pass; longer moves are split so nothing tunnels. */
 const MAX_STEP = 0.4;
 
-function overlapsSolid(world: VoxelCollider, box: EntityBox): boolean {
+function overlapsVoxels(world: VoxelCollider, box: EntityBox): boolean {
   const minX = Math.floor(box.x - box.width / 2 + EPSILON);
   const maxX = Math.floor(box.x + box.width / 2 - EPSILON);
   const minY = Math.floor(box.y + EPSILON);
@@ -56,6 +62,10 @@ function overlapsSolid(world: VoxelCollider, box: EntityBox): boolean {
   return false;
 }
 
+function overlapsSolid(world: VoxelCollider, box: EntityBox): boolean {
+  return overlapsVoxels(world, box) || (world.intersectsBox?.(box) ?? false);
+}
+
 /** True when a box placed here would intersect terrain. */
 export function boxIntersectsWorld(world: VoxelCollider, box: EntityBox): boolean {
   return overlapsSolid(world, box);
@@ -66,6 +76,13 @@ function moveAxis(world: VoxelCollider, box: EntityBox, axis: 'x' | 'y' | 'z', a
   const original = box[axis];
   box[axis] = original + amount;
   if (!overlapsSolid(world, box)) return false;
+
+  // A trunk or another free-positioned object has no integer face to snap to.
+  // Roll this axis back and let the remaining axes slide around it.
+  if (world.intersectsBox?.(box)) {
+    box[axis] = original;
+    return true;
+  }
 
   // Snap back to the face we ran into.
   if (axis === 'y') {

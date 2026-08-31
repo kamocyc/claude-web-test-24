@@ -6,6 +6,11 @@ export type MobKind =
   | 'cow'
   | 'chicken'
   | 'sheep'
+  | 'cat'
+  | 'dog'
+  | 'fox'
+  | 'rabbit'
+  | 'camel'
   | 'villager'
   | 'porter'
   | 'cart'
@@ -91,6 +96,36 @@ const DEFS: Record<MobKind, MobDef> = {
       { id: 'wool', min: 1, max: 1, chance: 1 },
     ],
   },
+  cat: {
+    kind: 'cat', label: 'ネコ', hostile: false, maxHealth: 8,
+    width: 0.45, height: 0.7, speed: 2.1, attackDamage: 0, attackRange: 0,
+    attackCooldown: 0, sightRange: 12, burnsInDaylight: false, ranged: false,
+    drops: [],
+  },
+  dog: {
+    kind: 'dog', label: 'イヌ', hostile: false, maxHealth: 10,
+    width: 0.55, height: 0.85, speed: 2.4, attackDamage: 0, attackRange: 0,
+    attackCooldown: 0, sightRange: 14, burnsInDaylight: false, ranged: false,
+    drops: [],
+  },
+  fox: {
+    kind: 'fox', label: 'キツネ', hostile: false, maxHealth: 10,
+    width: 0.55, height: 0.75, speed: 2.3, attackDamage: 0, attackRange: 0,
+    attackCooldown: 0, sightRange: 14, burnsInDaylight: false, ranged: false,
+    drops: [{ id: 'leather', min: 0, max: 1, chance: 0.25 }],
+  },
+  rabbit: {
+    kind: 'rabbit', label: 'ウサギ', hostile: false, maxHealth: 3,
+    width: 0.35, height: 0.5, speed: 2.8, attackDamage: 0, attackRange: 0,
+    attackCooldown: 0, sightRange: 10, burnsInDaylight: false, ranged: false,
+    drops: [{ id: 'raw_chicken', min: 1, max: 1, chance: 0.45 }],
+  },
+  camel: {
+    kind: 'camel', label: 'ラクダ', hostile: false, maxHealth: 18,
+    width: 1.1, height: 2.1, speed: 1.7, attackDamage: 0, attackRange: 0,
+    attackCooldown: 0, sightRange: 12, burnsInDaylight: false, ranged: false,
+    drops: [{ id: 'leather', min: 0, max: 2, chance: 0.8 }],
+  },
   villager: {
     kind: 'villager', label: '村人', hostile: false, maxHealth: 20,
     width: 0.6, height: 1.95, speed: 1.4, attackDamage: 0, attackRange: 0,
@@ -133,4 +168,4 @@ export function mobDef(kind: MobKind): MobDef {
 }
 
 export const HOSTILE_KINDS: readonly MobKind[] = ['zombie', 'skeleton', 'spider'];
-export const PASSIVE_KINDS: readonly MobKind[] = ['pig', 'cow', 'chicken', 'sheep'];
+export const PASSIVE_KINDS: readonly MobKind[] = ['pig', 'cow', 'chicken', 'sheep', 'cat', 'dog'];

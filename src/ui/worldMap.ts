@@ -26,7 +26,7 @@
 
 import type { Atlas } from '../render/textures';
 import type { MapSurface } from '../game/cartography';
-import { canvasPixel, dragBlocks } from './mapView';
+import { canvasPixel, dragBlocks, zoomStepFor } from './mapView';
 import { el, show } from './dom';
 import { Minimap, ZOOM_STEPS, type MinimapOverlay } from './minimap';
 
@@ -42,6 +42,13 @@ const CLICK_SLACK = 4;
 /** What the map does when somebody asks to be sent to a place on it. */
 export type WarpFromMap = (x: number, z: number) => void;
 
+export interface WorldMapOptions {
+  /** Blocks per pixel to open at. Snapped to the nearest offered step. */
+  zoom?: number;
+  /** Called with the new zoom whenever the player changes it, so it can be remembered. */
+  onZoom?: (zoom: number) => void;
+}
+
 export class WorldMap {
   readonly root = el('div', 'worldmap');
   private readonly map: Minimap;
@@ -51,7 +58,8 @@ export class WorldMap {
   private readonly warpButton = el('button', 'worldmap-warp', 'ここへワープ');
   private readonly closeButton = el('button', 'worldmap-close', '閉じる (M)');
   private open = false;
-  private step = ZOOM_STEPS.indexOf(DEFAULT_ZOOM);
+  private readonly onZoom?: (zoom: number) => void;
+  private step: number;
   /** How far the view has been dragged from the player, in blocks. Zero is the player,
    *  which is where every opening of the map starts from. */
   private panX = 0;
@@ -73,8 +81,10 @@ export class WorldMap {
   private readonly onWindowMove = (event: MouseEvent): void => this.dragTo(event);
   private readonly onWindowUp = (event: MouseEvent): void => this.endDrag(event);
 
-  constructor(atlas: Atlas, private readonly onClose: () => void) {
-    this.map = new Minimap(atlas, { size: SIZE, scale: DEFAULT_ZOOM, className: 'worldmap-canvas-wrap' });
+  constructor(atlas: Atlas, private readonly onClose: () => void, options: WorldMapOptions = {}) {
+    this.step = zoomStepFor(ZOOM_STEPS, options.zoom ?? DEFAULT_ZOOM);
+    this.onZoom = options.onZoom;
+    this.map = new Minimap(atlas, { size: SIZE, scale: ZOOM_STEPS[this.step], className: 'worldmap-canvas-wrap' });
     const bar = el('div', 'worldmap-bar');
     const out = el('button', 'worldmap-zoom', '−');
     const into = el('button', 'worldmap-zoom', '＋');
@@ -229,6 +239,7 @@ export class WorldMap {
     if (next === this.step) return;
     this.step = next;
     this.map.setZoom(ZOOM_STEPS[next]);
+    this.onZoom?.(ZOOM_STEPS[next]);
   }
 
   update(

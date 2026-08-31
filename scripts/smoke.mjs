@@ -821,7 +821,14 @@ const bite = await evaluate(() => {
   const b = g.villages.get(q.target);
   const mx = Math.round((a.x + b.x) / 2);
   const mz = Math.round((a.z + b.z) / 2);
-  const near = window.voxelcraft.roadColumnsNear(mx, mz, 6);
+  // Widening rather than a fixed reach: what this needs is a column of the finished road
+  // somewhere in the middle of it, and a road that goes round a rise does not pass the
+  // straight-line midpoint of the two towns at all.
+  let near = [];
+  for (const reach of [6, 12, 24, 48]) {
+    near = window.voxelcraft.roadColumnsNear(mx, mz, reach);
+    if (near.length) break;
+  }
   if (!near.length) return null;
   let best = near[0];
   for (const c of near) {
@@ -853,7 +860,10 @@ const breakAt = async (place) => {
   await advance(`${QUEST_ROUTE}?.connected === false`);
   return {
     at,
-    faults: await evaluate((c) => window.voxelcraft.roadFaults(24)
+    // The sweep is asked for from where the player is standing, and the player is not
+    // standing on the piece of road being broken — so it has to reach the whole road, and
+    // the filter, not the radius, is what scopes this to the column just broken.
+    faults: await evaluate((c) => window.voxelcraft.roadFaults(400)
       .filter((f) => Math.hypot(f.x - c.x, f.z - c.z) < 24), bite),
     note: await page.locator('.route-note').first().innerText().catch(() => null),
   };
@@ -933,6 +943,7 @@ const runAround = async (x, z, radius = 40) =>
  *  ground under the player, so the test has to pick ground rather than hope. */
 const strips = await evaluate(() => {
   const gen = window.voxelcraft.game.generator;
+  const sea = window.voxelcraft.seaLevel;
   const v = window.voxelcraft.village();
   const found = [];
   for (let radius = 70; radius <= 150; radius += 10) {
@@ -947,7 +958,7 @@ const strips = await evaluate(() => {
         low = Math.min(low, h);
         high = Math.max(high, h);
       }
-      if (low <= 47) continue;
+      if (low <= sea + 1) continue;
       found.push({ x, z, spread: high - low });
     }
   }
@@ -1611,7 +1622,10 @@ if (ghost === 'none') throw new Error('a start is down and nothing is being prev
 // it is past the 96 blocks the tool lays in one go. Lift the head a little at a time
 // until the shape being offered is one it will build — which is what a player does when
 // the readout tells them the span is wrong.
-for (let i = 0; i < 14 && await evaluate(() => window.voxelcraft.trackView().ghost) === 'invalid'; i++) {
+// Forty steps rather than fourteen, and the head is allowed past level: where the ground
+// ahead rises, every downward aim lands a few blocks away and the curve doubles back on
+// its own start, so the only way out is to look over the rise.
+for (let i = 0; i < 40 && await evaluate(() => window.voxelcraft.trackView().ghost) === 'invalid'; i++) {
   await evaluate(() => { window.voxelcraft.game.player.pitch += 0.02; });
   await frame();
   await frame();
@@ -2734,11 +2748,12 @@ console.log(
 // --- water ------------------------------------------------------------------
 const shore = await evaluate(() => {
   const g = window.voxelcraft.game;
+  const sea = window.voxelcraft.seaLevel;
   for (let r = 20; r < 400; r += 8) {
     for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
       const x = Math.round(g.player.x + Math.cos(a) * r);
       const z = Math.round(g.player.z + Math.sin(a) * r);
-      if (g.generator.height(x, z) < 42) {
+      if (g.generator.height(x, z) < sea - 4) {
         window.voxelcraft.teleport(x, z);
         g.player.pitch = -0.2;
         return { x, z };
@@ -2761,14 +2776,17 @@ console.log('in water:', await evaluate(() => window.voxelcraft.player.inWater))
 // standing on dry land rather than bobbing against the bank forever.
 const swim = await evaluate(() => {
   const g = window.voxelcraft.game;
-  // Face the nearest dry ground.
+  const sea = window.voxelcraft.seaLevel;
+  // Face the nearest dry ground. Eighty blocks of reach because the shelf off a coast is
+  // shallow for a long way, so the first water deep enough to drop into can be a proper
+  // swim from the beach rather than a paddle.
   let best = null;
-  for (let r = 3; r < 40 && !best; r += 1) {
+  for (let r = 3; r < 80 && !best; r += 1) {
     for (let a = 0; a < Math.PI * 2; a += Math.PI / 16) {
       const x = Math.round(g.player.x + Math.cos(a) * r);
       const z = Math.round(g.player.z + Math.sin(a) * r);
       const top = g.world.heightAt(x, z);
-      if (top > 46 && g.world.getWater(x, top + 1, z) === 0) { best = { x, z, top, r }; break; }
+      if (top > sea && g.world.getWater(x, top + 1, z) === 0) { best = { x, z, top, r }; break; }
     }
   }
   if (!best) return null;
@@ -2782,7 +2800,7 @@ if (swim) {
   await page.waitForFunction(
     () => {
       const p = window.voxelcraft?.player;
-      return p ? p.onGround && !p.inWater && p.y > 47 : false;
+      return p ? p.onGround && !p.inWater && p.y > window.voxelcraft.seaLevel + 1 : false;
     },
     null,
     { timeout: 40000 },

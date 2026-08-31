@@ -10,21 +10,19 @@
  *
  *  They are *big*. A town's fields cover about twice the ground its blocks stand on — the
  *  built town is the small part of a town, which is true of every real one and was not true
- *  of this game's. And they are *outside*: a ring of parcels beyond the outermost street,
- *  spread around the compass so the town keeps its shape at the middle and spills into
- *  farmland at the edge.
+ *  of this game's. And they are *outside*: a compact strip beyond the outermost street,
+ *  kept on the best of four sides so the town stays legible at the middle and agriculture
+ *  remains a district rather than scattered decoration.
  *
  *  Pure geometry and one hash, exactly like `districts.ts`. No blocks are written and no
  *  world is read, so the layout is the same layout however and whenever it is asked for —
  *  which is what lets the economy count acres for a town whose chunks are nowhere near
  *  loaded. */
 
-import { hashInts, mulberry32 } from '../../core/rng';
 import {
   BLOCKS_PER_STAGE,
   BLOCK_SIZE,
-  GRID_HIGH,
-  GRID_LOW,
+  farmSideFor,
   INITIAL_BLOCKS,
   MAX_TOWN_STAGE,
 } from './districts';
@@ -32,7 +30,7 @@ import {
 /** One parcel, square. Twenty-three across, which is what fits between the outermost
  *  street and the edge of the plateau. */
 export const FIELD_SIZE = 23;
-/** Places around a town a parcel can stand: the four sides and the four corners. */
+/** Parcels visible by the old named-rank milestone. Kept as a useful scale constant. */
 export const FIELD_SLOTS = 8;
 /** How far out a parcel's middle sits, measured along the axis rather than as the crow
  *  flies — the town it stands outside of is a square grid, so the belt around it is a
@@ -44,18 +42,24 @@ export const FIELD_RING = 44;
 export const CHANNEL_EVERY = 8;
 export const CHANNEL_OFFSET = 3;
 
-/** The four sides, then the four corners. A town's first fields go along its sides, where
- *  the plateau is flat; the corners are earned, and are the ones that end up draped over
- *  whatever the land outside was doing. */
-const SLOT_DIRS: readonly (readonly [number, number])[] = [
-  [1, 0], [0, 1], [-1, 0], [0, -1],
-  [1, 1], [-1, 1], [-1, -1], [1, -1],
+/** Four parcels across makes one readable agricultural strip; further growth adds rows
+ *  beyond it instead of scattering lone squares around every side of town. */
+const FIELD_ROW = 4;
+export const FIELD_PITCH = FIELD_SIZE + 1;
+const FIELD_CROSS: readonly number[] = [-36, -12, 12, 36];
+const FIELD_SEARCH_AHEAD = FIELD_ROW * 8;
+const FIELD_SIDE_SURVEY = FIELD_ROW * 8;
+const SIDE_DIRS: readonly (readonly [number, number])[] = [
+  [0, -1], [1, 0], [0, 1], [-1, 0],
 ];
 
 /** Blocks of the street grid a town at this stage has built on. */
 export function builtBlocks(stage: number): number {
-  const total = (GRID_HIGH - GRID_LOW + 1) ** 2;
-  return Math.min(total, INITIAL_BLOCKS + BLOCKS_PER_STAGE * Math.max(0, stage));
+  const grown = Math.max(0, Math.floor(stage));
+  if (grown <= MAX_TOWN_STAGE) {
+    return Math.min(16, INITIAL_BLOCKS + BLOCKS_PER_STAGE * grown);
+  }
+  return 16 + BLOCKS_PER_STAGE * (grown - MAX_TOWN_STAGE);
 }
 
 /** Columns of field a town at this stage wants: twice the ground its blocks stand on.
@@ -69,7 +73,7 @@ export function fieldTarget(stage: number): number {
 /** Parcels ploughed by this stage. Rounded, so the fields land within half a parcel of
  *  twice the built area at every stage. */
 export function fieldCount(stage: number): number {
-  return Math.min(FIELD_SLOTS, Math.round(fieldTarget(stage) / (FIELD_SIZE * FIELD_SIZE)));
+  return Math.ceil(fieldTarget(stage) / (FIELD_SIZE * FIELD_SIZE));
 }
 
 /** Columns those parcels actually cover, before the ground has its say. */
@@ -80,7 +84,7 @@ export function fieldArea(stage: number): number {
 export interface FieldParcel {
   /** Build order, 0 first. */
   index: number;
-  /** Which of the eight places round the belt it stands in: 0-3 a side, 4-7 a corner. */
+  /** Agricultural side: 0 north, then clockwise. */
   slot: number;
   x0: number;
   z0: number;
@@ -90,49 +94,97 @@ export interface FieldParcel {
   stage: number;
 }
 
+export type FieldSurvey = (parcel: FieldParcel) => boolean;
+
+function candidateParcel(
+  site: { x: number; z: number },
+  side: number,
+  candidate: number,
+  index: number,
+): FieldParcel {
+  const half = (FIELD_SIZE - 1) / 2;
+  const [dx, dz] = SIDE_DIRS[side];
+  const px = -dz;
+  const pz = dx;
+  const row = Math.floor(candidate / FIELD_ROW);
+  const cross = FIELD_CROSS[candidate % FIELD_ROW];
+  const outward = FIELD_RING + row * FIELD_PITCH;
+  const cx = site.x + dx * outward + px * cross;
+  const cz = site.z + dz * outward + pz * cross;
+  return {
+    index,
+    slot: side,
+    x0: cx - half,
+    z0: cz - half,
+    w: FIELD_SIZE,
+    d: FIELD_SIZE,
+    stage: stageOf(index),
+  };
+}
+
+/** One side for the whole agricultural district. With no terrain survey it is seeded;
+ *  with one, the town compares four equally sized strips and chooses the side with the
+ *  most workable parcels. The comparison window is fixed, so the district never rotates
+ *  when the town reaches another stage. */
+export function fieldSideFor(
+  seed: number,
+  site: { x: number; z: number },
+  survey?: FieldSurvey,
+): number {
+  const preferred = farmSideFor(seed, site);
+  if (!survey) return preferred;
+  let best = preferred;
+  let bestScore = -1;
+  for (let offset = 0; offset < 4; offset++) {
+    const side = (preferred + offset) & 3;
+    let score = 0;
+    for (let candidate = 0; candidate < FIELD_SIDE_SURVEY; candidate++) {
+      if (survey(candidateParcel(site, side, candidate, candidate))) score++;
+    }
+    if (score > bestScore) {
+      best = side;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
 /** Every parcel a town will ever plough, in the order it ploughs them.
  *
- *  The one roll is which way round the ring the sequence starts, so two towns of the same
- *  size are not the same picture. Its own stream, off its own constant: the fields must
- *  not shift a single number in the streams that place the town itself. */
-export function townFields(seed: number, site: { x: number; z: number }): FieldParcel[] {
-  // A quarter turn, so two towns of the same size are not the same picture. Quarter turns
-  // only: the sides have to stay sides, or a town's first field lands on its corner where
-  // the ground is worst.
-  const turn = Math.floor(mulberry32(hashInts(seed ^ 0x71e1d5, site.x, site.z))() * 4);
-  const half = (FIELD_SIZE - 1) / 2;
+ *  One seeded side is preferred, but a terrain-aware caller chooses the most workable of
+ *  the four. Rows then extend forever along that same side, keeping the district compact
+ *  and stable however often it is regenerated. */
+export function townFields(
+  seed: number,
+  site: { x: number; z: number },
+  stage = MAX_TOWN_STAGE,
+  survey?: FieldSurvey,
+): FieldParcel[] {
+  const side = fieldSideFor(seed, site, survey);
   const out: FieldParcel[] = [];
-  const ever = fieldCount(MAX_TOWN_STAGE);
-  for (let index = 0; index < ever; index++) {
-    const group = index < 4 ? 0 : 4;
-    const slot = group + ((index % 4) + turn) % 4;
-    const [dx, dz] = SLOT_DIRS[slot];
-    const cx = site.x + dx * FIELD_RING;
-    const cz = site.z + dz * FIELD_RING;
-    out.push({
-      index,
-      slot,
-      x0: cx - half,
-      z0: cz - half,
-      w: FIELD_SIZE,
-      d: FIELD_SIZE,
-      stage: stageOf(index),
-    });
+  const wanted = fieldCount(stage);
+  for (let candidate = 0; candidate < wanted + FIELD_SEARCH_AHEAD && out.length < wanted; candidate++) {
+    const parcel = candidateParcel(site, side, candidate, out.length);
+    if (!survey || survey(parcel)) out.push(parcel);
   }
   return out;
 }
 
 /** The parcels standing at a stage. */
-export function fieldsAt(seed: number, site: { x: number; z: number }, stage: number): FieldParcel[] {
-  return townFields(seed, site).filter((parcel) => parcel.stage <= stage);
+export function fieldsAt(
+  seed: number,
+  site: { x: number; z: number },
+  stage: number,
+  survey?: FieldSurvey,
+): FieldParcel[] {
+  return townFields(seed, site, stage, survey).filter((parcel) => parcel.stage <= stage);
 }
 
 /** Which stage ploughs the `n`-th parcel. */
 function stageOf(index: number): number {
-  for (let stage = 0; stage <= MAX_TOWN_STAGE; stage++) {
-    if (index < fieldCount(stage)) return stage;
-  }
-  return MAX_TOWN_STAGE;
+  let stage = 0;
+  while (index >= fieldCount(stage)) stage++;
+  return stage;
 }
 
 /** Whether a column is a watercourse rather than soil. Lines down the parcel, stopping one

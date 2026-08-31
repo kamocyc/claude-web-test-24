@@ -15,6 +15,7 @@ import type { Atlas } from './textures';
 function toGeometry(data: GeometryArrays): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(data.position, 3));
+  geometry.setAttribute('normal', new THREE.BufferAttribute(data.normal, 3));
   geometry.setAttribute('uv', new THREE.BufferAttribute(data.uv, 2));
   geometry.setAttribute('aLight', new THREE.BufferAttribute(data.light, 2));
   geometry.setAttribute('aShade', new THREE.BufferAttribute(data.shade, 1));
@@ -34,11 +35,13 @@ export class ChunkRenderer {
   private readonly meshes = new Map<string, THREE.Mesh[]>();
   /** Water is tracked separately so it can be rebuilt without touching the terrain. */
   private readonly waterMeshes = new Map<string, THREE.Mesh>();
+  private readonly lods = new Map<string, 'near' | 'far'>();
 
   constructor(
     private readonly world: World,
     private readonly atlas: Atlas,
     private readonly materials: ChunkMaterials,
+    private roundedBlocks = true,
   ) {
     this.group.name = 'chunks';
     this.group.matrixAutoUpdate = false;
@@ -48,9 +51,10 @@ export class ChunkRenderer {
     return this.meshes.size;
   }
 
-  build(chunk: Chunk): void {
+  build(chunk: Chunk, lod: 'near' | 'far' = 'near'): void {
+    // Build first and swap afterwards so an LOD transition never leaves a hole.
+    const data = buildChunkMesh(this.world, chunk, this.atlas, { lod, roundedBlocks: this.roundedBlocks });
     this.remove(chunk.key);
-    const data = buildChunkMesh(this.world, chunk, this.atlas);
     const created: THREE.Mesh[] = [];
     const passes = [
       { data: data[PASS_OPAQUE], material: this.materials.opaque, order: 0 },
@@ -62,6 +66,7 @@ export class ChunkRenderer {
       created.push(this.addMesh(chunk, pass.data, pass.material, pass.order));
     }
     this.meshes.set(chunk.key, created);
+    this.lods.set(chunk.key, lod);
     this.setWaterMesh(chunk, data[PASS_WATER]);
     chunk.dirty = false;
     chunk.waterDirty = false;
@@ -94,6 +99,7 @@ export class ChunkRenderer {
     const mesh = new THREE.Mesh(toGeometry(data), material);
     mesh.position.set(chunk.originX, 0, chunk.originZ);
     mesh.renderOrder = renderOrder;
+    mesh.receiveShadow = renderOrder === 0;
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
     this.group.add(mesh);
@@ -108,6 +114,7 @@ export class ChunkRenderer {
         mesh.geometry.dispose();
       }
       this.meshes.delete(key);
+      this.lods.delete(key);
     }
     const water = this.waterMeshes.get(key);
     if (water) {
@@ -121,8 +128,20 @@ export class ChunkRenderer {
     return this.meshes.has(key);
   }
 
+  /** Switches nearby terrain between bevelled and ordinary cube geometry. Existing
+   *  chunks are queued instead of rebuilt in one frame so the pause menu stays responsive. */
+  setRoundedBlocks(enabled: boolean): void {
+    if (enabled === this.roundedBlocks) return;
+    this.roundedBlocks = enabled;
+    for (const key of this.meshes.keys()) this.world.dirtyChunks.add(key);
+  }
+
   /** Rebuilds up to `budget` dirty chunks, nearest to the camera first. */
   processDirty(budget: number, cameraX: number, cameraZ: number): number {
+    for (const [key, lod] of this.lods) {
+      const desired = distanceOf(key, cameraX, cameraZ) <= 24 * 24 ? 'near' : 'far';
+      if (desired !== lod) this.world.dirtyChunks.add(key);
+    }
     if (this.world.dirtyChunks.size === 0) return 0;
     const keys = [...this.world.dirtyChunks];
     keys.sort((a, b) => distanceOf(a, cameraX, cameraZ) - distanceOf(b, cameraX, cameraZ));
@@ -132,7 +151,7 @@ export class ChunkRenderer {
       const chunk = this.world.chunks.get(key);
       this.world.dirtyChunks.delete(key);
       if (!chunk || !chunk.generated) continue;
-      this.build(chunk);
+      this.build(chunk, distanceOf(key, cameraX, cameraZ) <= 24 * 24 ? 'near' : 'far');
       built++;
     }
     return built;

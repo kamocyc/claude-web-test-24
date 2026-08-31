@@ -22,6 +22,7 @@ import {
   type VillagerMarker,
 } from '../world/generation/village';
 import type { VillageRecord } from './villages';
+import type { TownPlotSurvey } from '../world/generation/districts';
 
 /** What growth is allowed to build over. Anything else — a chest, a torch, a wall the
  *  player raised, the village's own original houses — is left where it is. The worst this
@@ -82,23 +83,19 @@ export function growthFor(
   village: VillageRecord,
   stage: number,
   occupied: readonly { x0: number; z0: number; w: number; d: number }[],
+  survey?: TownPlotSurvey,
 ): GrowthPlan {
-  const key = `${village.id},${stage}`;
+  const key = `${village.id},${stage},${survey ? 'land' : 'open'}`;
   let plan = cache.get(key);
   if (!plan) {
-    // Every earlier stage's plots count as taken too. Without this a village that grew
-    // twice would try to raise its second pair of houses through its first pair.
-    const taken = [...occupied];
-    for (let earlier = 1; earlier < stage; earlier++) {
-      taken.push(...growthFor(seed, village, earlier, occupied).footprints);
-    }
     plan = planGrowth(
       seed,
       { cellX: 0, cellZ: 0, x: village.x, z: village.z },
       village.baseY,
       village.variant,
       stage,
-      taken,
+      occupied,
+      survey,
     );
     cache.set(key, plan);
   }
@@ -352,11 +349,12 @@ export function applyGrowth(
   chunk: Chunk,
   occupied: readonly { x0: number; z0: number; w: number; d: number }[],
   roadAt?: RoadLookup,
+  survey?: TownPlotSurvey,
 ): GrowthResult {
   const result: GrowthResult = { villagers: [], chests: [], changed: 0 };
   const surface = padSurface(village);
-  const plans = plansFor(seed, village, occupied);
-  const own = roadAt ? ownPaving(seed, village, occupied) : undefined;
+  const plans = plansFor(seed, village, occupied, survey);
+  const own = roadAt ? ownPaving(seed, village, occupied, survey) : undefined;
   for (const { plan, floorY, optional } of plans) {
     // A road through a plot means the village builds somewhere else instead. A hamlet is
     // exempt: it is somewhere the game sends the player, so it has to exist.
@@ -386,14 +384,15 @@ export function ownPaving(
   seed: number,
   village: VillageRecord,
   occupied: readonly { x0: number; z0: number; w: number; d: number }[],
+  survey?: TownPlotSurvey,
 ): ReadonlyMap<string, BlockId> {
   // Kept, because the caller is on the path the player walks: the building list is thrown
   // away whenever the road network moves, and the road network moves on every block a
   // shovel treads. What it is made of only changes when the village does.
-  const key = `${village.id},${village.stage},${village.outpost ? 'h' : 'v'}`;
+  const key = `${village.id},${village.stage},${village.outpost ? 'h' : 'v'},${survey ? 'land' : 'open'}`;
   const cached = paving.get(key);
   if (cached) return cached;
-  const built = ownBlocks(plansFor(seed, village, occupied).map((p) => p.plan));
+  const built = ownBlocks(plansFor(seed, village, occupied, survey).map((p) => p.plan));
   paving.set(key, built);
   return built;
 }
@@ -410,6 +409,7 @@ function plansFor(
   seed: number,
   village: VillageRecord,
   occupied: readonly { x0: number; z0: number; w: number; d: number }[],
+  survey?: TownPlotSurvey,
 ): { plan: GrowthPlan; floorY: number; optional: boolean }[] {
   const out: { plan: GrowthPlan; floorY: number; optional: boolean }[] = [];
   // A hamlet has no generated buildings at all, so its own two houses are what it is
@@ -418,7 +418,7 @@ function plansFor(
     out.push({ plan: outpostBuildings(seed, village), floorY: village.baseY, optional: false });
   }
   for (let stage = 1; stage <= village.stage; stage++) {
-    out.push({ plan: growthFor(seed, village, stage, occupied), floorY: village.baseY + 1, optional: true });
+    out.push({ plan: growthFor(seed, village, stage, occupied, survey), floorY: village.baseY + 1, optional: true });
   }
   return out;
 }
@@ -432,10 +432,11 @@ export function growthVillagers(
   occupied: readonly { x0: number; z0: number; w: number; d: number }[],
   world?: BlockSource,
   roadAt?: RoadLookup,
+  survey?: TownPlotSurvey,
 ): VillagerMarker[] {
   const out: VillagerMarker[] = [];
-  const plans = plansFor(seed, village, occupied);
-  const own = roadAt && world ? ownPaving(seed, village, occupied) : undefined;
+  const plans = plansFor(seed, village, occupied, survey);
+  const own = roadAt && world ? ownPaving(seed, village, occupied, survey) : undefined;
   for (const { plan, floorY, optional } of plans) {
     const dropped = optional && world ? givenUp(plan, floorY, world, roadAt, own) : [];
     for (const v of plan.villagers) if (!within(dropped, v.x, v.z)) out.push(v);
@@ -449,13 +450,14 @@ export function growthChunks(
   seed: number,
   village: VillageRecord,
   occupied: readonly { x0: number; z0: number; w: number; d: number }[],
+  survey?: TownPlotSurvey,
 ): { cx: number; cz: number }[] {
   const seen = new Set<string>();
   const out: { cx: number; cz: number }[] = [];
   const plans: GrowthPlan[] = [];
   if (village.outpost) plans.push(outpostBuildings(seed, village));
   for (let stage = 1; stage <= village.stage; stage++) {
-    plans.push(growthFor(seed, village, stage, occupied));
+    plans.push(growthFor(seed, village, stage, occupied, survey));
   }
   const reach = (x: number, z: number): void => {
     const cx = Math.floor(x / CHUNK_SIZE);

@@ -1,5 +1,6 @@
 import { CHUNK_VOLUME } from '../world/chunk';
 import type { World } from '../world/world';
+import type { TreeMapSurface } from './cartography';
 import { createChest, createFurnace, isChest, isFurnace } from './blockEntities';
 import type { MapMemory } from './cartography';
 import type { DayCycle } from './daycycle';
@@ -33,11 +34,13 @@ export interface SnapshotSource {
   quest: SaveData['quest'];
   pendingVillagers: NonNullable<SaveData['pendingVillagers']>;
   tracks: SaveData['tracks'];
+  removedTrees: readonly string[];
+  trees: TreeMapSurface;
 }
 
 /** Builds the portable representation of a running game without owning its lifecycle. */
 export function createGameSnapshot(source: SnapshotSource): SaveData {
-  for (const chunk of source.world.chunks.values()) source.mapMemory.record(chunk);
+  for (const chunk of source.world.chunks.values()) source.mapMemory.record(chunk, source.trees);
 
   const edits: Record<string, string> = {};
   const water: Record<string, string> = {};
@@ -105,6 +108,7 @@ export function createGameSnapshot(source: SnapshotSource): SaveData {
     pendingVillagers: [...source.pendingVillagers],
     tracks: source.tracks,
     explored: source.mapMemory.toJSON(),
+    removedTrees: [...source.removedTrees],
   };
 }
 

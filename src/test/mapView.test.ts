@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ZOOM_STEPS } from '../ui/minimap';
-import { canvasPixel, dragBlocks, originOf, placeOn, worldAt } from '../ui/mapView';
+import { canvasPixel, dragBlocks, originOf, placeOn, worldAt, zoomStepFor } from '../ui/mapView';
 
 const SIZE = 512;
 
@@ -131,3 +131,24 @@ function cursorAt(clientX: number, clientY: number): [number, number] {
   const at = canvasPixel(RECT, clientX, clientY, SIZE)!;
   return [at.px, at.py];
 }
+
+describe('the zoom the map opens at', () => {
+  const STEPS = [1, 2, 4, 8, 16];
+
+  it('comes back to the step it was left on', () => {
+    for (let i = 0; i < STEPS.length; i++) expect(zoomStepFor(STEPS, STEPS[i])).toBe(i);
+  });
+
+  it('snaps a zoom that is no longer offered onto the nearest that is', () => {
+    expect(zoomStepFor(STEPS, 3)).toBe(1);
+    expect(zoomStepFor(STEPS, 12)).toBe(3);
+    expect(zoomStepFor(STEPS, 1000)).toBe(4);
+    expect(zoomStepFor(STEPS, 0)).toBe(0);
+  });
+
+  it('falls back to the closest rather than refusing a value it cannot read', () => {
+    // A settings file somebody edited by hand, or one an older build wrote.
+    expect(zoomStepFor(STEPS, Number.NaN)).toBe(0);
+    expect(zoomStepFor(STEPS, -5)).toBe(0);
+  });
+});

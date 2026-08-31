@@ -114,14 +114,28 @@ export interface BiomeParams {
   temperature: number;
   humidity: number;
   seaLevel: number;
+  /** How rugged the terrain generator decided this part of the world is, 0..1. The same
+   *  number that gated the relief, so it is free to read here. */
+  rugged: number;
 }
 
 /** Biome is derived from the already-computed height plus climate noise, which keeps
  *  the terrain surface continuous (height never depends on the biome choice). */
-export function classifyBiome({ height, temperature, humidity, seaLevel }: BiomeParams): BiomeId {
+export function classifyBiome({
+  height,
+  temperature,
+  humidity,
+  seaLevel,
+  rugged,
+}: BiomeParams): BiomeId {
   if (height < seaLevel - 1) return Biome.OCEAN;
   if (height <= seaLevel + 1) return Biome.BEACH;
-  if (height > seaLevel + 32) return Biome.MOUNTAINS;
+  // Mountain is what the ground is doing, not how far up it is. A height rule alone calls
+  // a wide high plateau a mountain and paints it bare stone, and misses the rock face at
+  // the bottom of the same range — which is the part that actually looks like one. The
+  // height floor keeps the foot of a range in grass so a valley still reads as a valley.
+  if (rugged > 0.55 && height > seaLevel + 14) return Biome.MOUNTAINS;
+  if (height > seaLevel + 46) return Biome.MOUNTAINS;
   if (temperature < -0.58) return humidity > 0.0 ? Biome.TAIGA : Biome.SNOWY_PLAINS;
   if (temperature > 0.25 && humidity < 0.0) return Biome.DESERT;
   if (humidity > 0.35 && temperature > 0.05) return Biome.SWAMP;

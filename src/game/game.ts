@@ -4,6 +4,9 @@ import { mulberry32 } from '../core/rng';
 import { ChunkRenderer } from '../render/chunkRenderer';
 import { Effects } from '../render/effects';
 import { EntityRenderer } from '../render/entityRenderer';
+import { CargoRenderer, type CargoDisplay } from '../render/cargoRenderer';
+import { TreeRenderer } from '../render/treeRenderer';
+import { buildTreeModels, type TreeModel, type TreeSpecies } from '../render/treeModels';
 import { RouteGuide, type GuideBeam, type GuideLine, type GuidePoint, type GuideView } from '../render/routeGuide';
 import {
   SAMPLE_STEP,
@@ -23,6 +26,7 @@ import { buildAtlas, type Atlas } from '../render/textures';
 import {
   RideDecks,
   TRAIL_STEP,
+  clearanceCells,
   consistLength,
   consistOf,
   decksOf,
@@ -52,6 +56,7 @@ import { WaterSimulator } from '../world/waterSim';
 import { raycastVoxels, type RaycastHit } from '../world/raycast';
 import { TICK_INTERVAL, randomTickChunk } from '../world/ticks';
 import { World } from '../world/world';
+import { TreeStore, type TreeId, type TreeRayHit } from '../world/trees';
 import { ChunkWorkerPool } from '../workers/pool';
 import type { ChunkReadyMessage } from '../workers/chunkMessages';
 import { Hud, type NavigationInfo } from '../ui/hud';
@@ -81,7 +86,7 @@ import {
   writeSave,
 } from './save';
 import { findSpawn } from './seeds';
-import { SPEEDS, nearestSpeed } from './settings';
+import { SPEEDS, nearestSpeed, saveSettings } from './settings';
 import { tickFurnace } from './smelting';
 import { generateTrades, restockTrades } from './trading';
 import { VILLAGE_RADIUS, type Footprint, type HouseRecord } from '../world/generation/village';
@@ -131,11 +136,11 @@ import {
   FARMED,
   PASSENGER,
   PASSENGER_LABEL,
-  STAGE_POINTS,
   VillageRegistry,
   displayName,
   radiusOf,
   rankLabel,
+  stagePoints,
   villageId,
   type GoodId,
   type VillageId,
@@ -158,8 +163,15 @@ import type { RouteIdle } from '../ui/routePanel';
 import type { LineActions, LinePanelView } from '../ui/linePanel';
 import { helpView, type HelpView } from '../ui/help';
 import { applyFields, countFields } from './villageFields';
-import { fieldArea, fieldTarget, fieldsAt } from '../world/generation/fields';
+import {
+  fieldArea,
+  fieldSideFor,
+  fieldTarget,
+  fieldsAt,
+  type FieldSurvey,
+} from '../world/generation/fields';
 import { applyGrowth, growthChunks, growthFor, growthVillagers, outpostBuildings, ownPaving, roadCrosses } from './villageGrowth';
+import type { TownPlotSurvey } from '../world/generation/districts';
 import {
   buildingAt,
   buildingsOf,
@@ -201,6 +213,8 @@ import {
   PAVE_INTERVAL,
   PIER_MIN_GAP,
   PIER_STEP,
+  PLOUGH_PARTICLES,
+  PLOUGH_STEP,
   PORT_MARK_OUT,
   REACH,
   ROAD_GRADE,
@@ -273,6 +287,12 @@ export class Game {
   private readonly materials: ChunkMaterials;
   private readonly chunkRenderer: ChunkRenderer;
   private readonly entityRenderer: EntityRenderer;
+  /** Physical piles and placards showing what is waiting and what each visible carrier
+   *  has aboard. Like the carrier mobs, this is a view of the economy, never its state. */
+  private readonly cargoRenderer = new CargoRenderer();
+  private readonly treeModels: Record<TreeSpecies, TreeModel[]>;
+  readonly trees: TreeStore;
+  private readonly treeRenderer: TreeRenderer;
   private readonly routeGuide = new RouteGuide();
   private readonly trackRenderer = new TrackRenderer();
   /** The free-form railway. Not readonly: a save replaces it wholesale. */
@@ -358,6 +378,7 @@ export class Game {
   private fps = 60;
   /** Block being mined and how far along it is. */
   private miningTarget: { x: number; y: number; z: number } | null = null;
+  private treeMiningTarget: TreeId | null = null;
   private miningProgress = 0;
   /** Where the shovel last trod, so a sweep can fill in the blocks the crosshair skipped
    *  over rather than leaving a dotted line behind. */
@@ -414,8 +435,12 @@ export class Game {
 
   constructor(private readonly options: GameOptions) {
     this.world = new World(options.seed);
-    this.surveyed = new SurveyedTerrain(this.world, this.mapMemory);
     this.generator = new TerrainGenerator(options.seed);
+    this.treeModels = buildTreeModels(options.seed);
+    this.trees = new TreeStore(this.generator, this.treeModels, options.save?.removedTrees ?? []);
+    this.world.objectCollider = this.trees;
+    this.world.treeSurveyor = (x, z, radius) => this.trees.survey(x, z, radius);
+    this.surveyed = new SurveyedTerrain(this.world, this.mapMemory, this.trees);
     this.light = new LightEngine(this.world);
     this.water = new WaterSimulator(this.world);
     // The town is built first and handed to the registry, so a delivery reaches the
@@ -428,7 +453,12 @@ export class Game {
         return village ? this.buildingsFor(village) : [];
       },
     });
-    this.villages = new VillageRegistry(options.seed, this.generator, this.towns);
+    this.villages = new VillageRegistry(
+      options.seed,
+      this.generator,
+      this.towns,
+      (village, nextStage) => this.canVillageGrow(village, nextStage),
+    );
     this.roads = new RoadNetwork(this.world);
     this.world.onBlockChange((x, y, z, previous, next) => {
       this.light.onBlockChanged(x, y, z, previous, next);
@@ -439,18 +469,30 @@ export class Game {
 
     this.renderer = new THREE.WebGLRenderer({ canvas: options.canvas, antialias: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = 1.08;
+    // Terrain uses a custom baked-light shader and cannot receive three.js shadow maps;
+    // rendering a shadow pass here costs a frame without changing a pixel.
+    this.renderer.shadowMap.enabled = false;
     this.renderDistance = options.settings.renderDistance;
     this.camera = new THREE.PerspectiveCamera(75, 1, 0.1, this.renderDistance * CHUNK_SIZE * 1.4);
 
     this.atlas = buildAtlas();
     this.materials = createChunkMaterials(this.atlas.texture);
-    this.chunkRenderer = new ChunkRenderer(this.world, this.atlas, this.materials);
+    this.chunkRenderer = new ChunkRenderer(
+      this.world,
+      this.atlas,
+      this.materials,
+      options.settings.roundedBlocks,
+    );
     this.entityRenderer = new EntityRenderer(this.atlas);
+    this.treeRenderer = new TreeRenderer(this.trees, this.treeModels);
     this.effects = new Effects(this.atlas);
     this.sky = new Sky(this.scene, this.renderDistance * CHUNK_SIZE);
     this.scene.add(
-      this.chunkRenderer.group, this.entityRenderer.group, this.effects.group,
-      this.routeGuide.group, this.trackRenderer.group,
+      this.chunkRenderer.group, this.treeRenderer.group, this.entityRenderer.group, this.effects.group,
+      this.cargoRenderer.group, this.routeGuide.group, this.trackRenderer.group,
     );
 
     this.mobs = new MobManager(this.world, options.seed);
@@ -504,7 +546,16 @@ export class Game {
       },
     );
     this.hud = new Hud(this.atlas);
-    this.worldMap = new WorldMap(this.atlas, () => this.toggleWorldMap());
+    this.worldMap = new WorldMap(this.atlas, () => this.toggleWorldMap(), {
+      // The span the map was last read at, remembered across worlds with the other view
+      // preferences: opening the map on a railway somebody laid across a continent and
+      // finding it back at one screen of ground is the map forgetting, not the world.
+      zoom: options.settings.mapZoom,
+      onZoom: (zoom) => {
+        options.settings.mapZoom = zoom;
+        saveSettings(options.settings);
+      },
+    });
     this.worldMap.bindWarp((x, z) => this.warpFromMap(x, z));
     this.screens = new ScreenManager(
       this.player,
@@ -551,7 +602,9 @@ export class Game {
     if (this.lockHandler) document.removeEventListener('pointerlockchange', this.lockHandler);
     this.pool.dispose();
     this.chunkRenderer.dispose();
+    this.treeRenderer.dispose();
     this.trackRenderer.dispose();
+    this.cargoRenderer.dispose();
     this.hud.root.remove();
     this.worldMap.dispose();
     this.worldMap.root.remove();
@@ -589,6 +642,7 @@ export class Game {
     this.light.update(20000);
     this.chunkRenderer.processDirty(MESH_BUDGET, this.player.x, this.player.z);
     this.chunkRenderer.processWaterDirty(WATER_MESH_BUDGET);
+    this.treeRenderer.update();
 
     if (!this.ready) {
       // Wait until the ground under the player exists before handing over control.
@@ -643,6 +697,7 @@ export class Game {
     // is worked out from where they now are.
     this.carryRider();
     this.materials.setSun(Math.max(0.06, this.day.sunLight));
+    this.materials.setTime(this.day.time * 1200);
 
     // Only mouse look needs pointer lock; keyboard and clicks keep working without it
     // so the game stays playable if the browser refuses to lock the cursor.
@@ -671,6 +726,7 @@ export class Game {
     );
     this.effects.update(dt);
     this.entityRenderer.sync(this.mobs.mobs, this.drops.drops, this.mobs.arrows, performance.now() / 1000);
+    this.cargoRenderer.sync(this.cargoDisplays());
     this.screens.refresh();
     const navigation = this.navigationInfo();
     this.hud.update(dt, this.player, this.debugInfo(), navigation);
@@ -735,6 +791,10 @@ export class Game {
     // from where they started it. At more than single speed the world takes several steps
     // a frame, and a trail that only saw the last of them would be a train that jumped.
     this.updateTrains();
+    for (const tree of this.trees.update(dt)) {
+      this.drops.spawn(tree.x, tree.y + 0.5, tree.z, { id: 'oak_log', count: tree.logs });
+      this.drops.spawn(tree.x + 0.2, tree.y + 0.45, tree.z + 0.2, { id: 'stick', count: 2 });
+    }
   }
 
   /** Runs the world's clock forward without waiting for the frames it would take.
@@ -957,8 +1017,9 @@ export class Game {
       const distance = (chunk.cx - pcx) ** 2 + (chunk.cz - pcz) ** 2;
       if (distance <= limit) continue;
       // Last look at it: whatever the player did here is what the map should remember.
-      this.mapMemory.record(chunk);
+      this.mapMemory.record(chunk, this.trees);
       this.chunkRenderer.remove(chunk.key);
+      this.trees.unloadChunk(chunk.cx, chunk.cz);
       this.world.removeChunk(chunk.cx, chunk.cz);
     }
   }
@@ -967,6 +1028,7 @@ export class Game {
     const chunk = new Chunk(message.cx, message.cz, message.blocks, message.water);
     chunk.generated = true;
     this.world.addChunk(chunk);
+    this.trees.ensureChunk(message.cx, message.cz);
     // Before lighting is seeded, so a village that grew while this chunk was away has its
     // new walls in place when the light is baked against them.
     for (const village of this.villages.byId.values()) {
@@ -981,7 +1043,7 @@ export class Game {
     this.water.registerChunk(chunk, message.springs ?? []);
     // Surveyed as it arrives as well as as it leaves, so a chunk that is loaded now is
     // already on the map of a world saved before the player walks away from it.
-    this.mapMemory.record(chunk);
+    this.mapMemory.record(chunk, this.trees);
 
     const key = chunkKey(message.cx, message.cz);
     if (!this.populatedChunks.has(key)) {
@@ -1311,7 +1373,9 @@ export class Game {
   private updateInteraction(dt: number): void {
     const eye = { x: this.player.x, y: this.player.eyeY, z: this.player.z };
     const look = this.player.lookVector();
-    const hit = raycastVoxels(this.world, eye, look, { maxDistance: REACH });
+    const voxelHit = raycastVoxels(this.world, eye, look, { maxDistance: REACH });
+    const treeHit = this.trees.raycast(eye, look, REACH);
+    const hit = treeHit && (!voxelHit || treeHit.distance < voxelHit.distance) ? null : voxelHit;
     this.effects.setSelection(hit);
     // Kept for the guide, which runs in the render loop and has to know where a stop in
     // the player's hand would land.
@@ -1358,7 +1422,9 @@ export class Game {
 
     this.updatePaving(dt, hit);
 
-    if (input.buttons[0] && hit) {
+    if (input.buttons[0] && treeHit && !hit) {
+      this.updateTreeMining(dt, treeHit);
+    } else if (input.buttons[0] && hit) {
       this.updateMining(dt, hit);
     } else {
       this.resetMining();
@@ -1471,6 +1537,7 @@ export class Game {
       this.miningTarget.z !== hit.z
     ) {
       this.miningTarget = { x: hit.x, y: hit.y, z: hit.z };
+      this.treeMiningTarget = null;
       this.miningProgress = 0;
       this.selectBestTool(hit.block);
     }
@@ -1488,6 +1555,24 @@ export class Game {
     }
   }
 
+  /** Natural trees are mined as one target rather than as a column of log blocks. */
+  private updateTreeMining(dt: number, hit: TreeRayHit): void {
+    if (this.treeMiningTarget !== hit.tree.id) {
+      this.treeMiningTarget = hit.tree.id;
+      this.miningTarget = null;
+      this.miningProgress = 0;
+      this.selectBestTool(Block.OAK_LOG);
+    }
+    const seconds = miningTime(Block.OAK_LOG, heldTool(this.player.inventory.held)) * 2;
+    if (!Number.isFinite(seconds)) return;
+    this.miningProgress += dt / seconds;
+    this.effects.setBreakProgress(null, this.miningProgress);
+    if (this.miningProgress < 1) return;
+    const fallYaw = Math.atan2(hit.tree.x - this.player.x, hit.tree.z - this.player.z);
+    this.trees.fell(hit.tree, fallYaw);
+    this.resetMining();
+  }
+
   /** Puts the right tool in hand for whatever the crosshair just landed on. */
   private selectBestTool(block: BlockId): void {
     if (!this.options.settings.autoTool) return;
@@ -1500,6 +1585,7 @@ export class Game {
 
   private resetMining(): void {
     this.miningTarget = null;
+    this.treeMiningTarget = null;
     this.miningProgress = 0;
     this.effects.setBreakProgress(null, 0);
   }
@@ -1789,6 +1875,7 @@ export class Game {
       day: this.day,
       difficulty: this.player.rules,
       currentAt: (x, y, z) => this.water.flowAt(x, y, z),
+      biomeAt: (x, z) => this.generator.biomeAt(Math.floor(x), Math.floor(z)),
       onPlayerHit: (damage, fromX, fromZ) => {
         // Every blow a mob lands passes through here, arrows included, so the difficulty
         // only has to be applied in one place.
@@ -2802,6 +2889,47 @@ export class Game {
   private readonly roadLevelAt = (x: number, z: number): number | undefined =>
     this.roads.columns.get(`${x},${z}`);
 
+  private growthSurvey(village: VillageRecord): TownPlotSurvey | undefined {
+    if (village.outpost) return undefined;
+    const farmSide = fieldSideFor(
+      this.options.seed, village, this.fieldSurvey(village),
+    );
+    return (plot) => {
+      if (!this.generator.canBuildVillagePlot(village, plot)) return false;
+      const dx = plot.x0 + (plot.w - 1) / 2 - village.x;
+      const dz = plot.z0 + (plot.d - 1) / 2 - village.z;
+      // The authored 4x4 core predates district separation and remains untouched. Beyond
+      // it, the chosen agricultural side is a permanent reservation for contiguous fields.
+      if (Math.max(Math.abs(dx), Math.abs(dz)) <= 30) return true;
+      const side = Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? 1 : 3) : dz > 0 ? 2 : 0;
+      return side !== farmSide;
+    };
+  }
+
+  private fieldSurvey(village: VillageRecord): FieldSurvey | undefined {
+    if (village.outpost) return undefined;
+    return (parcel) => this.generator.canFarmVillageParcel(village, parcel);
+  }
+
+  /** A stage is earned only when both halves of visible growth have somewhere to go.
+   *  The planners search several extra rows/rings first, so false means the local land is
+   *  genuinely exhausted rather than that the first compass slot happened to be a pond. */
+  private canVillageGrow(village: VillageRecord, nextStage: number): boolean {
+    const occupied = village.outpost ? [] : this.generator.villageBuildings(village.x, village.z);
+    const buildings = growthFor(
+      this.options.seed,
+      village,
+      nextStage,
+      occupied,
+      this.growthSurvey(village),
+    );
+    if (buildings.footprints.length === 0) return false;
+    if (village.outpost) return true;
+    const farms = this.fieldSurvey(village);
+    return fieldsAt(this.options.seed, village, nextStage, farms).length
+      > fieldsAt(this.options.seed, village, village.stage, farms).length;
+  }
+
   /** A stop at a town, made if there is not one there already.
    *
    *  Refusing to put a second stop on top of the first is the right answer to a player
@@ -2832,9 +2960,11 @@ export class Game {
     if (village.outpost) houses.push(...outpostBuildings(this.options.seed, village).buildings);
     else houses.push(...this.generator.villageBuildings(village.x, village.z));
     const occupied = village.outpost ? [] : this.generator.villageBuildings(village.x, village.z);
-    const paved = ownPaving(this.options.seed, village, occupied);
+    const paved = ownPaving(this.options.seed, village, occupied, this.growthSurvey(village));
     for (let stage = 1; stage <= village.stage; stage++) {
-      for (const house of growthFor(this.options.seed, village, stage, occupied).buildings) {
+      for (const house of growthFor(
+        this.options.seed, village, stage, occupied, this.growthSurvey(village),
+      ).buildings) {
         if (roadCrosses(house, village.baseY + 1, this.world, this.roadLevelAt, paved)) continue;
         houses.push(house);
       }
@@ -3313,7 +3443,9 @@ export class Game {
     if (!village) return;
     this.hud.toast(`${village.name}が発展して${rankLabel(stage)}になった`);
     const occupied = this.generator.villageBuildings(village.x, village.z);
-    for (const { cx, cz } of growthChunks(this.options.seed, village, occupied)) {
+    for (const { cx, cz } of growthChunks(
+      this.options.seed, village, occupied, this.growthSurvey(village),
+    )) {
       const chunk = this.world.getChunk(cx, cz);
       if (chunk) this.buildGrowth(village, chunk);
     }
@@ -3328,14 +3460,17 @@ export class Game {
    *  Cheap when there is nothing to do, which is almost always: one look at the middle of
    *  each parcel says whether it has been turned over already. */
   private buildFields(village: VillageRecord): void {
-    applyFields(this.world, this.options.seed, village, this.roadLevelAt);
+    applyFields(this.world, this.options.seed, village, this.roadLevelAt, this.fieldSurvey(village));
   }
 
   /** Builds whatever growth this village owes into one loaded chunk, and moves its new
    *  villagers in. */
   private buildGrowth(village: VillageRecord, chunk: Chunk): void {
     const occupied = this.generator.villageBuildings(village.x, village.z);
-    const result = applyGrowth(this.world, this.options.seed, village, chunk, occupied, this.roadLevelAt);
+    const survey = this.growthSurvey(village);
+    const result = applyGrowth(
+      this.world, this.options.seed, village, chunk, occupied, this.roadLevelAt, survey,
+    );
     for (const chest of result.chests) {
       if (this.world.getBlockEntity(chest.x, chest.y, chest.z)) continue;
       this.world.setBlockEntity(
@@ -3354,7 +3489,9 @@ export class Game {
     // share would leave the others behind, because this line closes the gate for good.
     const staffed = Math.max(village.stage, village.outpost ? 1 : 0);
     if (village.spawnedStage >= staffed) return;
-    for (const villager of growthVillagers(this.options.seed, village, occupied, this.world, this.roadLevelAt)) {
+    for (const villager of growthVillagers(
+      this.options.seed, village, occupied, this.world, this.roadLevelAt, survey,
+    )) {
       this.spawnOrQueueVillager(villager.x, villager.y, villager.z, villager.profession, village.stage);
     }
     village.spawnedStage = staffed;
@@ -3554,6 +3691,7 @@ export class Game {
             stage: village.stage,
             points: next.points,
             toNext: next.needed,
+            growthStopped: next.stopped === true,
             received: village.received,
             distance: Math.hypot(village.x - this.player.x, village.z - this.player.z),
             starved: this.villages.starvedOf(village) !== null,
@@ -3610,7 +3748,7 @@ export class Game {
       people: this.towns.populationOf(here.id),
       waiting: town.waiting,
       fields: {
-        parcels: fieldsAt(this.options.seed, here, here.stage).length,
+        parcels: fieldsAt(this.options.seed, here, here.stage, this.fieldSurvey(here)).length,
         area: fieldArea(here.stage),
         harvest: here.harvest,
       },
@@ -3659,6 +3797,90 @@ export class Game {
     return good === PASSENGER ? PASSENGER_LABEL : itemLabel(good);
   }
 
+  /** Everything close enough to deserve a physical cargo readout.
+   *
+   *  Waiting goods stand beside the doorway they actually leave through. A moving readout
+   *  follows the mob drawing that shipment rather than the abstract route point, so a
+   *  porter hurrying to catch up never leaves their label floating down the road ahead. */
+  private cargoDisplays(): CargoDisplay[] {
+    const displays: CargoDisplay[] = [];
+
+    for (const route of this.transport.routes) {
+      for (const porter of route.porters) {
+        if (porter.mobId === null || porter.cargo <= 0) continue;
+        const mob = this.livePorter(porter.mobId);
+        if (!mob) continue;
+        let pose: { x: number; y: number; z: number; yaw: number } = mob;
+        if (mob.kind === 'train') {
+          // The first coach is always for the player. Freight is named over the first
+          // wagon; travellers are named over the first coach, which is where they sit.
+          const wanted = porter.good === PASSENGER ? 'coach' : 'wagon';
+          pose = mob.consist.find((car) => car.kind === wanted) ?? mob.consist[0] ?? mob;
+        }
+        displays.push({
+          key: `moving:${porter.mobId}`,
+          good: porter.good,
+          label: this.goodName(porter.good),
+          count: porter.cargo,
+          kind: mob.kind === 'train' ? 'train' : mob.kind === 'cart' ? 'cart' : 'porter',
+          x: pose.x,
+          y: pose.y,
+          z: pose.z,
+          yaw: pose.yaw,
+        });
+      }
+    }
+
+    for (const village of this.villages.byId.values()) {
+      if (!village.discovered) continue;
+      if (Math.hypot(village.x - this.player.x, village.z - this.player.z) > LINK_VISIBLE + radiusOf(village)) continue;
+      const depot = this.depotFor(village);
+      const outside = depot?.outside ?? { x: village.x, y: village.baseY + 1, z: village.z };
+      const stepX = depot ? depot.outside.x - depot.door.x : 0;
+      const stepZ = depot ? depot.outside.z - depot.door.z : 1;
+      const sideX = -stepZ;
+      const sideZ = stepX;
+      const waiting: { key: string; good: GoodId; count: number }[] = [];
+      if (village.stock > 0) waiting.push({ key: 'stock', good: village.produces, count: village.stock });
+      if (village.harvest > 0) waiting.push({ key: 'harvest', good: 'wheat', count: village.harvest });
+      const people = this.towns.waitingAt(village.id);
+      if (people > 0) waiting.push({ key: 'people', good: PASSENGER, count: people });
+      for (let i = 0; i < waiting.length; i++) {
+        const cargo = waiting[i];
+        const across = (i - (waiting.length - 1) / 2) * 2.2;
+        displays.push({
+          key: `waiting:${village.id}:${cargo.key}`,
+          good: cargo.good,
+          label: this.goodName(cargo.good),
+          count: cargo.count,
+          kind: 'waiting',
+          x: outside.x + 0.5 + sideX * across + stepX * 0.25,
+          y: outside.y + 1,
+          z: outside.z + 0.5 + sideZ * across + stepZ * 0.25,
+          yaw: Math.atan2(stepX, stepZ),
+          labelLift: i * 0.62,
+        });
+      }
+    }
+
+    for (const works of this.industries.all()) {
+      if (works.stock <= 0) continue;
+      if (Math.hypot(works.x - this.player.x, works.z - this.player.z) > LINK_VISIBLE) continue;
+      displays.push({
+        key: `waiting:${works.id}`,
+        good: works.good,
+        label: this.goodName(works.good),
+        count: works.stock,
+        kind: 'waiting',
+        // The shed opens south onto its cleared yard.
+        x: works.x + 0.5,
+        y: works.y,
+        z: works.z + 2.5,
+      });
+    }
+    return displays;
+  }
+
   /** Where every train's cars are, and what there is to stand on because of them.
    *
    *  The engine is the mob and nothing here moves it; the cars are placed behind it from
@@ -3696,8 +3918,55 @@ export class Game {
       const engine: CarPose = { kind: 'loco', x: mob.x, y: mob.y, z: mob.z, yaw: mob.yaw };
       const cars = [engine, ...mob.consist];
       for (let i = 0; i < cars.length; i++) decks.push(...decksOf(`${mob.id}:${i}`, cars[i]));
+      // A train standing at a platform is running into nothing, and asking the same
+      // question of the same blocks every frame is the one way this gets expensive.
+      const cut = mob.ploughedFrom;
+      if (!cut || Math.hypot(mob.x - cut.x, mob.y - cut.y, mob.z - cut.z) >= PLOUGH_STEP) {
+        mob.ploughedFrom = { x: mob.x, y: mob.y, z: mob.z };
+        this.plough(cars);
+      }
     }
     this.rideDecks.update(decks);
+  }
+
+  /** Cuts whatever a train has run into out of the world.
+   *
+   *  Every car does it, not only the engine. The cars follow the engine's own trail, so on
+   *  a clear run they find nothing left to do — but a player who builds across the line
+   *  behind a train that has already passed would otherwise watch the wagons slide through
+   *  the wall, and the point of the whole thing is that a train is the heaviest object in
+   *  the world.
+   *
+   *  Nothing drops. A train is not mining: it is a hundred tonnes going past, and a
+   *  hillside that paid out its own weight in cobblestone every time a line ran through it
+   *  would be a quarry with a timetable. What a chest in the way gives up is its contents,
+   *  because a container the player filled is theirs and losing it silently is a bug
+   *  wearing a feature's clothes. */
+  private plough(cars: readonly CarPose[]): void {
+    let shown = 0;
+    for (const pose of cars) {
+      for (const cell of clearanceCells(pose)) {
+        const block = this.world.getBlock(cell.x, cell.y, cell.z);
+        if (block === Block.AIR) continue;
+        // Bedrock and water are the two things a train does not win against: one because
+        // nothing breaks it, the other because it is not in the way to begin with.
+        if (blockDef(block).hardness < 0) continue;
+        const entity = this.world.getBlockEntity(cell.x, cell.y, cell.z);
+        if (isChest(entity) || isFurnace(entity)) {
+          for (const slot of entity.slots.slots) {
+            if (slot) this.drops.spawn(cell.x + 0.5, cell.y + 0.5, cell.z + 0.5, slot);
+          }
+        }
+        if (entity) this.world.removeBlockEntity(cell.x, cell.y, cell.z);
+        this.world.setBlock(cell.x, cell.y, cell.z, Block.AIR);
+        // Enough of a burst to see what happened. A train through a mountain would
+        // otherwise spend the whole particle pool on the first metre of it.
+        if (shown < PLOUGH_PARTICLES) {
+          this.effects.spawnBlockParticles(cell.x, cell.y, cell.z, block);
+          shown++;
+        }
+      }
+    }
   }
 
   /** Moves whoever is standing on a carriage along with it.
@@ -4256,6 +4525,12 @@ export class Game {
     this.sky.setRenderDistance(chunks * CHUNK_SIZE);
   }
 
+  /** Applies the terrain shape preference without restarting the world. */
+  setRoundedBlocks(enabled: boolean): void {
+    this.options.settings.roundedBlocks = enabled;
+    this.chunkRenderer.setRoundedBlocks(enabled);
+  }
+
   togglePause(): void {
     this.paused = !this.paused;
     this.options.menus.showPause(this.paused);
@@ -4551,9 +4826,16 @@ export class Game {
   // --- persistence -----------------------------------------------------------
 
   save(announce = true): boolean {
-    const ok = writeSave(this.snapshot());
-    if (announce) this.hud.toast(ok ? 'セーブしました' : 'セーブに失敗しました');
-    return ok;
+    const outcome = writeSave(this.snapshot(), this.player);
+    // A trimmed save is said out loud even when nobody asked for one, which an ordinary
+    // autosave is. What it costs is the far edge of the map, and the player is the only
+    // one who can do anything about it — by keeping the world in a file instead.
+    if (outcome === 'trimmed') {
+      this.hud.toast('セーブしました（保存領域が足りず、遠くの地図を一部忘れた）');
+    } else if (announce) {
+      this.hud.toast(outcome === 'saved' ? 'セーブしました' : 'セーブに失敗しました');
+    }
+    return outcome !== 'failed';
   }
 
   /** Everything worth keeping about this world, in the shape a save file has. Written to
@@ -4575,6 +4857,8 @@ export class Game {
       quest: this.questline.toJSON(),
       pendingVillagers: this.pendingVillagers,
       tracks: this.trackNet.toJSON(),
+      removedTrees: this.trees.removedIds,
+      trees: this.trees,
     });
   }
 
@@ -4593,6 +4877,9 @@ export class Game {
     return {
       game: this,
       player: this.player,
+      /** Where the water surface is. Exposed so the browser smoke test can say "above the
+       *  sea" and "under the sea" without hard-coding a number that a terrain change moves. */
+      seaLevel: SEA_LEVEL,
       isReady: (): boolean => this.ready,
       waterAt: (x: number, y: number, z: number): number => this.world.getWater(x, y, z),
       waterDepth: (x: number, y: number, z: number): number => this.water.depthAt(x, y, z),
@@ -4796,13 +5083,17 @@ export class Game {
             x: village.x,
             z: village.z,
             stage: village.stage,
-            parcels: fieldsAt(this.options.seed, village, village.stage).length,
+            parcels: fieldsAt(
+              this.options.seed, village, village.stage, this.fieldSurvey(village),
+            ).length,
             area: fieldArea(village.stage),
             target: fieldTarget(village.stage),
             harvest: village.harvest,
             distance: Math.round(Math.hypot(village.x - this.player.x, village.z - this.player.z)),
             // What the ground actually allowed, which is never quite what was planned.
-            standing: countFields(this.world, this.options.seed, village),
+            standing: countFields(
+              this.world, this.options.seed, village, this.fieldSurvey(village),
+            ),
             // And where the crop got to. The depot is usually empty because it is a
             // doorway rather than a barn: what is cut is carried in the same breath.
             food: this.foodHeld(village),
@@ -4814,7 +5105,9 @@ export class Game {
         const here = this.villages.at(this.player.x, this.player.z)
           ?? this.nearestTownWithin(this.player.x, this.player.z, VILLAGE_RADIUS * 2);
         if (!here) return { ok: false as const, why: 'no-town' as const };
-        const work = applyFields(this.world, this.options.seed, here, this.roadLevelAt);
+        const work = applyFields(
+          this.world, this.options.seed, here, this.roadLevelAt, this.fieldSurvey(here),
+        );
         return { ok: true as const, town: displayName(here), ...work };
       },
       /** Every industry the player has sited. */
@@ -5003,18 +5296,22 @@ export class Game {
         const occupied = this.generator.villageBuildings(here.x, here.z);
         const plots: Footprint[] = [];
         while (here.stage < stage) {
-          const grew = this.villages.addPoints(here.id, STAGE_POINTS[here.stage]);
+          const grew = this.villages.addPoints(here.id, stagePoints(here.stage));
           if (grew === null) break;
           // Banking the points is only half of it: a delivery raises the buildings too,
           // and that is the half this is here to look at.
           this.onVillageGrew(here.id, grew);
-          plots.push(...growthFor(this.options.seed, here, grew, occupied).footprints);
+          plots.push(...growthFor(
+            this.options.seed, here, grew, occupied, this.growthSurvey(here),
+          ).footprints);
         }
         // The plots the stage after this one would fill, so a test can put something on
         // one before the village gets there. Planning a stage does not build it.
-        const next = here.stage >= STAGE_POINTS.length
+        const next = here.growthStopped
           ? []
-          : growthFor(this.options.seed, here, here.stage + 1, occupied).footprints;
+          : growthFor(
+            this.options.seed, here, here.stage + 1, occupied, this.growthSurvey(here),
+          ).footprints;
         return { name: here.name, stage: here.stage, plots, next };
       },
       /** Every block one growth stage wants to put down, for working out why one of them
@@ -5023,7 +5320,9 @@ export class Game {
         const here = this.villages.at(this.player.x, this.player.z);
         if (!here) return [];
         const occupied = this.generator.villageBuildings(here.x, here.z);
-        return growthFor(this.options.seed, here, stage, occupied).placements;
+        return growthFor(
+          this.options.seed, here, stage, occupied, this.growthSurvey(here),
+        ).placements;
       },
       /** State of the road index, for working out why a road is not joining up. */
       roadIndex: () => ({ columns: this.roads.columns.size, revision: this.roads.revision }),

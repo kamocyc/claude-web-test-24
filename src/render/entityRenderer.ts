@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import type { ItemDrop } from '../game/drops';
 import type { CarKind } from '../game/consist';
 import type { Mob } from '../game/mobs/ai';
@@ -26,7 +27,7 @@ interface CarView {
   material: THREE.MeshLambertMaterial[];
 }
 
-const BOX = new THREE.BoxGeometry(1, 1, 1);
+const BOX = new RoundedBoxGeometry(1, 1, 1, 3, 0.16);
 
 /** Draws mobs, dropped items and arrows. Meshes are created lazily and reused. */
 export class EntityRenderer {
@@ -110,6 +111,8 @@ export class EntityRenderer {
     for (const part of modelFor(mob.kind)) {
       const material = new THREE.MeshLambertMaterial({ color: part.color });
       const mesh = new THREE.Mesh(BOX, material);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
       mesh.scale.set(part.size[0], part.size[1], part.size[2]);
       mesh.position.set(part.offset[0], part.offset[1], part.offset[2]);
       group.add(mesh);
@@ -147,6 +150,8 @@ export class EntityRenderer {
     for (const part of carModel(kind)) {
       const material = new THREE.MeshLambertMaterial({ color: part.color });
       const mesh = new THREE.Mesh(BOX, material);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
       mesh.scale.set(part.size[0], part.size[1], part.size[2]);
       mesh.position.set(part.offset[0], part.offset[1], part.offset[2]);
       group.add(mesh);
