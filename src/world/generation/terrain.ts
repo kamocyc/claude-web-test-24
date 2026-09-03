@@ -176,8 +176,16 @@ export class TerrainGenerator {
     return (this.lazyVillages ??= new VillageField(this.field, (x, z) => this.climate(x, z)));
   }
 
-  /** The two numbers every copy of this generator has to agree on, or null on a
-   *  world whose ground is not measured from anything. */
+  /**
+   * The two numbers every copy of this generator has to agree on, or null on a
+   * world whose ground is not measured from anything.
+   *
+   * Null is only safe while nothing on a showcase world asks `field` a question:
+   * were anything to, every worker would measure its own calibration from its own
+   * two probe super-chunks and they would not agree, which is the exact failure
+   * `InitMessage.constants` exists to prevent. Anything added here that needs the
+   * height field has to make this return the real numbers again.
+   */
   constants(): WorldConstants | null {
     return this.showcase ? null : this.field.constants();
   }
@@ -190,6 +198,10 @@ export class TerrainGenerator {
    * frame the chunk arrives.
    */
   acceptHeights(cx: number, cz: number, heights: Int16Array): void {
+    // Nothing to remember on a world of one height: `height` and `rawHeight`
+    // answer before they ever reach the cache, so keeping it would be a couple of
+    // megabytes of the number 40.
+    if (this.showcase) return;
     this.chunkHeights.set(chunkKey(cx, cz), heights);
     while (this.chunkHeights.size > 4096) {
       this.chunkHeights.delete(this.chunkHeights.keys().next().value as string);
@@ -578,9 +590,14 @@ export class TerrainGenerator {
     const originX = cx * CHUNK_SIZE;
     const originZ = cz * CHUNK_SIZE;
 
+    // One column worked out and then copied, rather than `flatBlockAt` called ten
+    // thousand times per chunk for an answer that does not depend on where the
+    // chunk is.
+    const column = new Uint16Array(FLAT_GROUND_Y + 1);
+    for (let y = 0; y <= FLAT_GROUND_Y; y++) column[y] = flatBlockAt(y);
     for (let lz = 0; lz < CHUNK_SIZE; lz++) {
       for (let lx = 0; lx < CHUNK_SIZE; lx++) {
-        for (let y = 0; y <= FLAT_GROUND_Y; y++) blocks[blockIndex(lx, y, lz)] = flatBlockAt(y);
+        for (let y = 0; y <= FLAT_GROUND_Y; y++) blocks[blockIndex(lx, y, lz)] = column[y];
         heights[lz * CHUNK_SIZE + lx] = FLAT_GROUND_Y;
       }
     }

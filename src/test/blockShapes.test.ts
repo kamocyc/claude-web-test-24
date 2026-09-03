@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { coversFace } from '../render/mesher';
 import {
   FACE_NY,
   FACE_PX,
@@ -70,6 +71,18 @@ describe('architectural block shapes', () => {
     // leave a hole to see the world through from any lower angle.
     expect(buildSlabTemplate(1 << FACE_PY).triangleCount).toBe(12);
     expect(buildSlabTemplate(1 << FACE_NY).triangleCount).toBe(10);
+  });
+
+  it('does not cull a slab against the slab under it', () => {
+    // The one below fills the bottom half of its own cell, so it covers nothing.
+    // Culling here is what put see-through holes in the temple's steps.
+    expect(coversFace('slab', FACE_NY, Block.MARBLE_SLAB, Block.MARBLE_SLAB)).toBe(false);
+    expect(coversFace('slab', FACE_NY, Block.MARBLE_SLAB, Block.MARBLE)).toBe(true);
+    // Sideways it is a flat face against a flat face, and the seam is not drawn.
+    expect(coversFace('slab', FACE_PX, Block.MARBLE_SLAB, Block.MARBLE_SLAB)).toBe(true);
+    // A run of wedges or of glazing still meets itself cleanly.
+    expect(coversFace('slope_east', FACE_NY, Block.SLATE_ROOF_EAST, Block.SLATE_ROOF_EAST)).toBe(true);
+    expect(coversFace('cylinder', FACE_PX, Block.MARBLE_COLUMN, Block.AIR)).toBe(false);
   });
 
   it('maps a slab onto the lower half of its own texture', () => {

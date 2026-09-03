@@ -50,6 +50,12 @@ await page.evaluate(() => {
   window.voxelcraft.player.flying = true;
 });
 
+// The HUD is in the way of the thing being photographed: the click prompt sits
+// exactly where the middle of a facade is, and the hotbar covers its doorstep.
+const bareScreen = () => page.addStyleTag({
+  content: '.hud, .menu-layer, .toast, .compass, .minimap { display: none !important; }',
+});
+
 const settle = async () => {
   await page.waitForFunction(() => window.voxelcraft.backlog() === 0, null, { timeout: 240000 });
   await page.waitForTimeout(1200);
@@ -78,6 +84,7 @@ for (const view of VIEWS) {
   const px = cx - (cx / length) * view.back;
   const pz = cz - (cz / length) * view.back;
   await stand(px, GROUND + view.eye, pz, cx - px, cz - pz, view.pitch);
+  await bareScreen();
   await page.screenshot({ path: `${out}/${view.id}.png` });
   console.log(`shot ${view.id}`);
 }
@@ -86,8 +93,12 @@ for (const view of VIEWS) {
 // Not the whole of it: the game's fog closes in well before 200 blocks, and a
 // viewpoint far enough back to hold all nine lots holds them all in haze.
 await stand(0, GROUND + 4, 26, 0, -1, 0.05);
+await bareScreen();
 await page.screenshot({ path: `${out}/plaza.png` });
-await stand(-72, GROUND + 62, 72, 1, -1, -0.42);
+// Over the avenue crossing rather than over a lot: from above an exhibit, that
+// exhibit is the whole photograph.
+await stand(-29, GROUND + 58, 29, 1, -1, -0.36);
+await bareScreen();
 await page.screenshot({ path: `${out}/overview.png` });
 
 console.log(await page.evaluate(() => ({

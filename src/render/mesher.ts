@@ -4,6 +4,7 @@ import { waterFraction } from '../world/water';
 import type { World } from '../world/world';
 import type { Atlas, TileUv } from './textures';
 import {
+  FACE_NY,
   FACE_OFFSETS,
   buildCylinderTemplateSet,
   buildSlabTemplateSet,
@@ -208,6 +209,25 @@ const CUSTOM_FAR: Record<CustomShape, BlockTemplate[]> = {
   slab: SLAB_TEMPLATES,
 };
 
+/**
+ * Whether a neighbour hides one face of a non-cube block.
+ *
+ * An opaque cube covers whatever it is against. Two of the same see-through
+ * block — a run of glazing, a course of wedges — meet face to face and neither
+ * needs to draw the seam between them.
+ *
+ * The exception is what a slab is: half a cell, sitting on the floor of it. The
+ * slab *below* one reaches only to the middle of its own cell and so covers
+ * nothing at all, and culling that face leaves a hole to see the world through
+ * from any angle low enough. The template already refuses to cull the top face
+ * for the same reason; this is the same rule from underneath.
+ */
+export function coversFace(shape: BlockShape, face: number, id: BlockId, neighbor: BlockId): boolean {
+  if (blockDef(neighbor).opaque) return true;
+  if (neighbor !== id || blockDef(id).opaque) return false;
+  return !(shape === 'slab' && face === FACE_NY);
+}
+
 /** Builds the geometry for one chunk, reading neighbouring chunks through the world so
  *  faces along a chunk seam are culled correctly. */
 export function buildChunkMesh(
@@ -324,8 +344,7 @@ export function buildChunkMesh(
               mask |= 1 << face;
               continue;
             }
-            const neighbor = blockAt(x + dx, y + dy, z + dz);
-            if (blockDef(neighbor).opaque || (neighbor === id && !def.opaque)) mask |= 1 << face;
+            if (coversFace(def.shape, face, id, blockAt(x + dx, y + dy, z + dz))) mask |= 1 << face;
           }
           const templates = options.lod === 'far' ? CUSTOM_FAR : CUSTOM_NEAR;
           emitRounded(
@@ -348,8 +367,7 @@ export function buildChunkMesh(
               mask |= 1 << face;
               continue;
             }
-            const neighbor = blockAt(x + dx, y + dy, z + dz);
-            if (blockDef(neighbor).opaque || (neighbor === id && !def.opaque)) mask |= 1 << face;
+            if (coversFace(def.shape, face, id, blockAt(x + dx, y + dy, z + dz))) mask |= 1 << face;
           }
           emitRounded(
             builder,

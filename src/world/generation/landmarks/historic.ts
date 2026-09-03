@@ -1,7 +1,7 @@
 import { Block, type BlockId } from '../../blocks';
 import {
   COPPER_ROOF, SLATE_ROOF,
-  box, ellipse, fill, gableRoof, hipRoof, hollowOut, post, ring, slabAt, walls,
+  box, ellipse, fill, gableRoof, hipRoof, hollowOut, post, pyramid, ring, slabAt, verticalDisc, walls,
   type Brush,
 } from './brush';
 import type { Landmark } from './types';
@@ -20,7 +20,8 @@ import type { Landmark } from './types';
 /**
  * A roof too shallow for the one-block-per-course wedges: each course steps in by
  * `run` instead of by one, with a slab on its outer edge to take the corner off.
- * A temple pediment is about 1 in 4, and a 45-degree one reads as a barn.
+ * At `run = 2` that is a pitch of 1 in 2, which is as shallow as a stepped roof
+ * gets before the treads read as terraces; a 45-degree one reads as a barn.
  */
 function shallowGable(
   brush: Brush,
@@ -132,13 +133,19 @@ export const GREEK_TEMPLE: Landmark = {
     }
 
     // --- roof and pediments ------------------------------------------------
-    const ridge = shallowGable(brush, 3, 3, 20, 35, arch + 3, 2, Block.MARBLE, Block.MARBLE_SLAB);
+    // Terracotta over marble. A white roof on a white building is one lump; the
+    // pediment only becomes a triangle once the roof behind it is another colour,
+    // and a Greek temple's tiles were fired clay in any case.
+    const ridge = shallowGable(brush, 3, 3, 20, 35, arch + 3, 2, Block.ROOF_TILE, Block.MARBLE_SLAB);
     // The tympanum: the triangle the gable encloses at each end. Filled behind the
     // raking cornice, because a pediment with daylight through it is scaffolding.
     for (const z of [3, 35]) {
       for (let y = arch + 3; y <= ridge; y++) {
         const inset = (y - (arch + 3)) * 2;
-        for (let x = 3 + inset; x <= 20 - inset; x++) brush.set(x, y, z, Block.MARBLE);
+        // Inside the rake, not over it. Filling the full width repainted the
+        // slab on each raking edge with a whole block and turned the two faces
+        // anybody actually looks at into a staircase.
+        for (let x = 4 + inset; x <= 19 - inset; x++) brush.set(x, y, z, Block.MARBLE);
       }
     }
     // Acroteria: the ornaments on the three corners of each pediment.
@@ -194,7 +201,7 @@ export const CATHEDRAL: Landmark = {
   kind: 'historic',
   width: 27,
   depth: 44,
-  height: 48,
+  height: 53,
   depthBelow: 2,
   build(brush) {
     const c = 13;
@@ -226,9 +233,20 @@ export const CATHEDRAL: Landmark = {
       buttress(brush, bodyX0, z, 2, 15, -1, 'x');
       buttress(brush, bodyX1, z, 2, 15, 1, 'x');
     }
-    for (const x of [4, 8, 18, 22]) {
+    for (const x of [3, 10, 16, 23]) {
       lancet(brush, 'x', transZ0, x, 5, 9);
       lancet(brush, 'x', transZ1, x, 5, 9);
+    }
+    // The ends of the arms: two 27-block gable walls that were completely blank,
+    // and are the first thing seen from the avenue the transept faces.
+    for (const z of [transZ0 + 2, transZ1 - 2]) {
+      for (const side of [0, 26]) {
+        lancet(brush, 'z', side, z, 5, 9);
+      }
+    }
+    for (const side of [0, 26]) {
+      verticalDisc(brush, 'z', side, (transZ0 + transZ1) >> 1, 17, 3.4, Block.MARBLE);
+      verticalDisc(brush, 'z', side, (transZ0 + transZ1) >> 1, 17, 2.4, Block.STAINED_GLASS);
     }
     for (const x of [1, 6, 20, 25]) {
       buttress(brush, x, transZ0, 2, 21, -1, 'z');
@@ -250,25 +268,31 @@ export const CATHEDRAL: Landmark = {
       lancet(brush, 'z', naveX0, z, 17, 6);
       lancet(brush, 'z', naveX1, z, 17, 6);
     }
-    // The aisle roofs lean back against the nave wall.
-    for (let x = bodyX0; x <= naveX0; x++) {
-      const y = 16 - (x - bodyX0);
+    // The aisle roofs lean *up* against the nave wall. Sloping the other way —
+    // high at the outer wall, low at the nave — makes a valley down the middle of
+    // the church and reads as a parapet rather than as a lean-to. They also stop
+    // one block short of the nave wall and skip the transept, or they write slate
+    // into both.
+    const aisle = (x: number, rise: number, wedge: number): void => {
       for (let z = bodyZ0; z <= bodyZ1; z++) {
-        brush.set(x, y, z, x === bodyX0 ? Block.SLATE : Block.SLATE_ROOF_WEST);
+        if (z >= transZ0 && z <= transZ1) continue;
+        brush.set(x, 11 + rise, z, wedge);
       }
+    };
+    for (let x = bodyX0; x < naveX0; x++) {
+      aisle(x, x - bodyX0, x === bodyX0 ? Block.SLATE : Block.SLATE_ROOF_EAST);
     }
-    for (let x = bodyX1; x >= naveX1; x--) {
-      const y = 16 - (bodyX1 - x);
-      for (let z = bodyZ0; z <= bodyZ1; z++) {
-        brush.set(x, y, z, x === bodyX1 ? Block.SLATE : Block.SLATE_ROOF_EAST);
-      }
+    for (let x = bodyX1; x > naveX1; x--) {
+      aisle(x, bodyX1 - x, x === bodyX1 ? Block.SLATE : Block.SLATE_ROOF_WEST);
     }
 
     // --- apse ---------------------------------------------------------------
     const apseZ = 36;
     for (let y = 2; y <= 15; y++) ellipse(brush, y, c, apseZ, 5.6, 5.6, Block.STONE_BRICKS, true);
-    for (let y = 1; y <= 1; y++) ellipse(brush, y, c, apseZ, 5.6, 5.6, Block.MARBLE);
-    for (const dx of [-4, 0, 4]) lancet(brush, 'x', apseZ + 5, c + dx, 5, 7);
+    ellipse(brush, 1, c, apseZ, 5.6, 5.6, Block.MARBLE);
+    // Three, inside the apse's own arc: at four blocks out the wall has already
+    // curved away and the window stands in open air behind the building.
+    for (const dx of [-3, 0, 3]) lancet(brush, 'x', apseZ + 5, c + dx, 5, 7);
     hipRoof(brush, SLATE_ROOF, c - 6, apseZ - 6, c + 6, apseZ + 6, 16);
     hollowOut(brush, box(naveX0 + 1, 2, bodyZ1, naveX1 - 1, 9, bodyZ1));
 
@@ -279,29 +303,47 @@ export const CATHEDRAL: Landmark = {
     ring(brush, 8, c - 3, front - 1, c + 3, front, Block.MARBLE);
     for (const dx of [-3, 3]) post(brush, c + dx, front, 2, 7, Block.MARBLE);
     // The rose window: the one circular thing on the building, and the reason the
-    // front is symmetrical about it.
-    for (let y = 12; y <= 20; y++) {
-      ellipse(brush, y, c, front, 4.2, 0, Block.STAINED_GLASS);
-    }
-    for (let y = 11; y <= 21; y++) ellipse(brush, y, c, front, 5.2, 0, Block.MARBLE);
-    for (let y = 12; y <= 20; y++) ellipse(brush, y, c, front, 4.2, 0, Block.STAINED_GLASS);
+    // front is symmetrical about it. `ellipse` is horizontal and cannot draw a
+    // disc standing up in a wall — stacked with a zero radius it makes a square,
+    // which is what this was until somebody looked at it.
+    verticalDisc(brush, 'x', front, c, 16, 5.4, Block.MARBLE);
+    verticalDisc(brush, 'x', front, c, 16, 4.4, Block.STAINED_GLASS);
+    // The tracery: a hub and four spokes, because a rose window is not a porthole.
     brush.set(c, 16, front, Block.MARBLE);
+    for (let d = 2; d <= 4; d++) {
+      brush.set(c + d, 16, front, Block.MARBLE);
+      brush.set(c - d, 16, front, Block.MARBLE);
+      brush.set(c, 16 + d, front, Block.MARBLE);
+      brush.set(c, 16 - d, front, Block.MARBLE);
+    }
 
-    for (const tx of [6, 20]) {
+    // Set wide apart, so the rose window between them is a whole circle rather
+    // than one with its edges buried in two towers.
+    for (const tx of [4, 22]) {
       const t0 = tx - 3, t1 = tx + 3;
       walls(brush, box(t0, 2, front - 3, t1, 40, front + 3), Block.STONE_BRICKS);
       for (const [qx, qz] of [[t0, front - 3], [t1, front - 3], [t0, front + 3], [t1, front + 3]] as const) {
         post(brush, qx, qz, 2, 40, Block.MARBLE);
       }
-      for (const y of [10, 20, 30]) ring(brush, y, t0 - 1, front - 4, t1 + 1, front + 4, Block.MARBLE_SLAB);
+      // Two string courses, not three, and full-height shafts on the corners: a
+      // tower on a building whose every other line is vertical must not be the
+      // most horizontal thing on it.
+      for (const y of [14, 28]) ring(brush, y, t0 - 1, front - 4, t1 + 1, front + 4, Block.MARBLE_SLAB);
+      for (const [sx, sz] of [[t0 - 1, front - 4], [t1 + 1, front - 4], [t0 - 1, front + 4], [t1 + 1, front + 4]] as const) {
+        post(brush, sx, sz, 2, 40, Block.STONE_COLUMN);
+      }
       for (const y of [12, 22, 32]) {
         lancet(brush, 'x', front - 3, tx, y, 6);
         lancet(brush, 'z', t0, front, y, 6);
         lancet(brush, 'z', t1, front, y, 6);
       }
-      ring(brush, 41, t0 - 1, front - 4, t1 + 1, front + 4, Block.MARBLE);
-      const apex = hipRoof(brush, COPPER_ROOF, t0 - 1, front - 4, t1 + 1, front + 4, 42);
-      brush.set(tx, apex + 1, front, Block.GOLD_BLOCK);
+      slabAt(brush, 41, t0 - 1, front - 4, t1 + 1, front + 4, Block.MARBLE);
+      // A spire, not a cap. A hip roof over nine blocks closes in four courses
+      // and comes out a pyramid hat; stepping it in one course at a time gives
+      // the eight the silhouette needs.
+      const apex = pyramid(brush, t0 - 1, front - 4, t1 + 1, front + 4, 42, Block.COPPER_PANEL);
+      post(brush, tx, front, apex + 1, apex + 4, Block.COPPER_PANEL);
+      brush.set(tx, apex + 5, front, Block.GOLD_BLOCK);
       // Corner pinnacles, which is what keeps a spire from reading as a party hat.
       for (const [px, pz] of [[t0, front - 3], [t1, front - 3], [t0, front + 3], [t1, front + 3]] as const) {
         post(brush, px, pz, 41, 44, Block.STONE_COLUMN);
@@ -319,9 +361,11 @@ export const CATHEDRAL: Landmark = {
     // --- inside --------------------------------------------------------------
     slabAt(brush, 1, naveX0, bodyZ0, naveX1, bodyZ1, Block.OAK_PLANKS);
     fill(brush, box(c - 1, 2, apseZ - 2, c + 1, 3, apseZ), Block.GOLD_BLOCK);
+    // On the arcade wall itself. One block in is the middle of the nave floor,
+    // where a lamp has nothing to hang from.
     for (let z = bodyZ0 + 3; z <= bodyZ1 - 3; z += 6) {
-      brush.set(naveX0 + 1, 6, z, Block.LANTERN);
-      brush.set(naveX1 - 1, 6, z, Block.LANTERN);
+      brush.set(naveX0, 6, z, Block.LANTERN);
+      brush.set(naveX1, 6, z, Block.LANTERN);
     }
     for (const [lx, lz] of [[c - 3, front - 2], [c + 3, front - 2]] as const) {
       post(brush, lx, lz, 2, 3, Block.STONE_COLUMN);

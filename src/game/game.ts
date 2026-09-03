@@ -49,7 +49,7 @@ import {
   toChunkCoord,
   toLocalCoord,
 } from '../world/chunk';
-import { DEFAULT_WORLD_KIND } from '../world/generation/kind';
+import { DEFAULT_WORLD_KIND, hasSettlements, isPersistent } from '../world/generation/kind';
 import { TerrainGenerator } from '../world/generation/terrain';
 import { LightEngine } from '../world/lighting';
 import { WATER_FULL } from '../world/water';
@@ -748,10 +748,12 @@ export class Game {
       this.claimMilestones();
     }
 
-    this.autosaveTimer += dt;
-    if (this.autosaveTimer >= AUTOSAVE_SECONDS) {
-      this.autosaveTimer = 0;
-      this.save(false);
+    if (isPersistent(this.generator.kind)) {
+      this.autosaveTimer += dt;
+      if (this.autosaveTimer >= AUTOSAVE_SECONDS) {
+        this.autosaveTimer = 0;
+        this.save(false);
+      }
     }
   }
 
@@ -896,7 +898,7 @@ export class Game {
       markers.push({ kind: 'village', x: this.nearestVillage.x, z: this.nearestVillage.z });
     }
     const questRoute = this.focusRoute();
-    const objective = this.questline.objective(this.villages, questRoute, this.networkState());
+    const objective = this.objectiveNow(questRoute);
     // Whatever the objective is pointing at gets its own marker. The village being
     // carried to has not been walked into yet, so it is not in `found` — without this the
     // player is told to take the wool to 朝の炭 and given no idea which way that is. A
@@ -3619,10 +3621,18 @@ export class Game {
     this.openScreen(() => this.screens.openHelp(() => this.helpView()));
   }
 
+  /** What the player is being asked to do next, or nothing at all on a world with no
+   *  towns in it. On the showcase the tutorial would otherwise sit on 「町を見つける」
+   *  for ever, pointing at a village that cannot exist. */
+  private objectiveNow(route: ReturnType<Game['focusRoute']>): ReturnType<Questline['objective']> {
+    if (!hasSettlements(this.generator.kind)) return null;
+    return this.questline.objective(this.villages, route, this.networkState());
+  }
+
   /** The live half of the manual: where the tutorial has got to, and which goals are in.
    *  Everything else on that page is read straight out of the systems it describes. */
   private helpView(): HelpView {
-    const objective = this.questline.objective(this.villages, this.focusRoute(), this.networkState());
+    const objective = this.objectiveNow(this.focusRoute());
     return helpView({
       step: this.questline.step,
       milestone: this.questline.milestone,
@@ -3718,7 +3728,7 @@ export class Game {
 
   /** Everything the ledger shows, gathered on demand. */
   private ledgerView(): LedgerView {
-    const objective = this.questline.objective(this.villages, this.focusRoute(), this.networkState());
+    const objective = this.objectiveNow(this.focusRoute());
     return {
       earnings: this.freightEarned,
       objective: objective ? { title: objective.title, detail: objective.detail } : null,
@@ -4927,6 +4937,12 @@ export class Game {
   // --- persistence -----------------------------------------------------------
 
   save(announce = true): boolean {
+    if (!isPersistent(this.generator.kind)) {
+      // Said out loud when they asked for it, and silent on the autosave, which is
+      // the one that would otherwise quietly overwrite the world they came from.
+      if (announce) this.hud.toast('テスト用ワールドは保存しません（書き出しはできます）');
+      return false;
+    }
     const outcome = writeSave(this.snapshot(), this.player);
     // A trimmed save is said out loud even when nobody asked for one, which an ordinary
     // autosave is. What it costs is the far edge of the map, and the player is the only

@@ -104,6 +104,15 @@ blockItem('tinted_glass', Block.TINTED_GLASS);
 blockItem('stained_glass', Block.STAINED_GLASS);
 blockItem('gold_block', Block.GOLD_BLOCK);
 blockItem('lantern', Block.LANTERN);
+// The half-height courses. A player who mines a cornice in the world whose whole
+// purpose is the block palette has to be able to put it back — and without an item
+// of their own they dropped their material instead, which made a marble slab a free
+// source of marble. The wedges and columns stay directional and are placed as their
+// material, as `stone_bricks` already is.
+blockItem('stone_brick_slab', Block.STONE_BRICK_SLAB);
+blockItem('marble_slab', Block.MARBLE_SLAB);
+blockItem('oak_slab', Block.OAK_SLAB);
+blockItem('concrete_slab', Block.CONCRETE_SLAB);
 
 // Cobblestone smelts back into smooth stone.
 ITEMS.get('cobblestone')!.smeltsTo = 'stone';

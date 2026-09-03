@@ -34,6 +34,10 @@ function sashWindow(
   h: number,
   glazing: BlockId,
   trim: BlockId,
+  /** Whether to run the trim over the head as well as under the sill. Off on a
+   *  timber-framed wall: four windows with a lintel each put oak across two of
+   *  the storey's four courses and turn the plaster panels back into a band. */
+  head = true,
 ): void {
   for (let i = 0; i < w; i++) {
     for (let j = 0; j < h; j++) {
@@ -42,11 +46,11 @@ function sashWindow(
       brush.set(x, y + j, z, glazing);
     }
   }
-  for (let i = -1; i <= w; i++) {
+  for (let i = 0; i < w; i++) {
     const x = axis === 'x' ? along + i : at;
     const z = axis === 'x' ? at : along + i;
     brush.set(x, y - 1, z, trim);
-    brush.set(x, y + h, z, trim);
+    if (head) brush.set(x, y + h, z, trim);
   }
 }
 
@@ -80,8 +84,10 @@ export const MANOR_HOUSE: Landmark = {
     // that turns two brick walls into one building.
     walls(brush, box(x0, 1, z0, x1, 1, z1), Block.STONE_BRICKS);
     walls(brush, box(x0, 2, z0, x1, 5, z1), Block.BRICKS);
+    // Only as far as the brick goes: above the jetty the wall has moved out a
+    // block and the quoins would be buried inside the storey above.
     for (const [qx, qz] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1]] as const) {
-      post(brush, qx, qz, 1, 9, Block.STONE_BRICKS);
+      post(brush, qx, qz, 1, 5, Block.STONE_BRICKS);
     }
 
     // The jetty: the upper floor oversails by a block all round, carried on the
@@ -89,11 +95,14 @@ export const MANOR_HOUSE: Landmark = {
     // type, and it is also what stops the two storeys reading as one wall.
     ring(brush, 6, x0 - 1, z0 - 1, x1 + 1, z1 + 1, Block.OAK_SLAB);
     walls(brush, box(x0 - 1, 7, z0 - 1, x1 + 1, 10, z1 + 1), Block.TIMBER_FRAME);
-    // Plaster between the posts, on the long walls only — the gable ends keep
-    // their timber, where the bracing would be.
+    // Plaster panels between the posts, over the whole height of the storey and on
+    // the long walls only — the gable ends keep their timber, where the bracing
+    // would be. The panels have to run the full height: leave a course of timber
+    // at the top and bottom of the wall and the elevation reads as a brown band
+    // with white in it rather than as white panels in a frame.
     for (let x = x0; x <= x1; x++) {
-      for (let y = 8; y <= 9; y++) {
-        if ((x - x0) % 4 === 0) continue;
+      if ((x - x0) % 4 === 0) continue;
+      for (let y = 7; y <= 10; y++) {
         brush.set(x, y, z0 - 1, Block.PLASTER);
         brush.set(x, y, z1 + 1, Block.PLASTER);
       }
@@ -103,12 +112,14 @@ export const MANOR_HOUSE: Landmark = {
     ring(brush, 11, x0 - 1, z0 - 1, x1 + 1, z1 + 1, Block.OAK_LOG);
 
     // --- windows -----------------------------------------------------------
-    for (let i = 0; i < 4; i++) {
-      const at = x0 + 3 + i * 4;
+    // Two windows either side of the door rather than four at an even pitch: at
+    // four the second one runs into the doorway and loses a pane, and a facade
+    // with one lopsided window on it is a facade nobody trusts.
+    for (const at of [x0 + 2, x0 + 6, x1 - 7, x1 - 3]) {
       sashWindow(brush, 'x', z0, at, 3, 2, 2, Block.GLASS, Block.STONE_BRICKS);
       sashWindow(brush, 'x', z1, at, 3, 2, 2, Block.GLASS, Block.STONE_BRICKS);
-      sashWindow(brush, 'x', z0 - 1, at, 8, 2, 2, Block.GLASS, Block.OAK_LOG);
-      sashWindow(brush, 'x', z1 + 1, at, 8, 2, 2, Block.GLASS, Block.OAK_LOG);
+      sashWindow(brush, 'x', z0 - 1, at, 8, 2, 2, Block.GLASS, Block.OAK_LOG, false);
+      sashWindow(brush, 'x', z1 + 1, at, 8, 2, 2, Block.GLASS, Block.OAK_LOG, false);
     }
     for (const wall of [x0, x1]) {
       sashWindow(brush, 'z', wall, z0 + 5, 3, 3, 2, Block.GLASS, Block.STONE_BRICKS);
@@ -119,7 +130,9 @@ export const MANOR_HOUSE: Landmark = {
     hollowOut(brush, box(doorX - 1, 2, z0, doorX + 1, 4, z0));
     ring(brush, 5, doorX - 2, z0 - 3, doorX + 2, z0, Block.OAK_LOG);
     slabAt(brush, 5, doorX - 1, z0 - 2, doorX + 1, z0 - 1, Block.OAK_PLANKS);
-    gableRoof(brush, SLATE_ROOF, doorX - 2, z0 - 3, doorX + 2, z0, 6, 'z');
+    // Stopping a block short of the house: run it to `z0` and the ridge climbs to
+    // eight, which is a grey wedge driven through the middle of the timbered storey.
+    gableRoof(brush, SLATE_ROOF, doorX - 2, z0 - 3, doorX + 2, z0 - 1, 6, 'z');
     for (const x of [doorX - 2, doorX + 2]) post(brush, x, z0 - 3, 1, 4, Block.WOOD_COLUMN);
     brush.set(doorX - 3, 2, z0 - 2, Block.LANTERN);
     brush.set(doorX + 3, 2, z0 - 2, Block.LANTERN);
@@ -139,9 +152,13 @@ export const MANOR_HOUSE: Landmark = {
     // the roof, glazed on its face, with the slates cut back around it.
     for (const at of [x0 + 3, doorX, x1 - 3]) {
       const dz = z0 + 1;
-      hollowOut(brush, box(at - 1, 14, dz - 2, at + 1, 16, dz + 1));
-      walls(brush, box(at - 1, 14, dz - 2, at + 1, 15, dz), Block.PLASTER);
-      sashWindow(brush, 'x', dz - 2, at, 14, 1, 2, Block.GLASS, Block.OAK_LOG);
+      // Five wide rather than three. A dormer is mostly window — at three wide the
+      // frame is the whole of it and the roof grows three brown lumps instead of
+      // three little houses. The gables stay two blocks clear of one another.
+      hollowOut(brush, box(at - 2, 14, dz - 2, at + 2, 17, dz + 1));
+      walls(brush, box(at - 2, 14, dz - 2, at + 2, 15, dz), Block.PLASTER);
+      for (const corner of [at - 2, at + 2]) post(brush, corner, dz - 2, 14, 15, Block.OAK_LOG);
+      sashWindow(brush, 'x', dz - 2, at - 1, 14, 3, 2, Block.GLASS, Block.OAK_LOG);
       gableRoof(brush, SLATE_ROOF, at - 2, dz - 3, at + 2, dz, 16, 'z');
     }
     for (const at of [x0 + 1, x1 - 1]) {
@@ -182,8 +199,10 @@ export const TOWNHOUSE_ROW: Landmark = {
     fill(brush, box(x0, -1, z0, x1, 0, z1), Block.STONE_BRICKS);
     walls(brush, box(x0, 1, z0, x1, 1, z1), Block.STONE_BRICKS);
     walls(brush, box(x0, 2, z0, x1, 12, z1), Block.BRICKS);
-    slabAt(brush, 1, x0, z0, x1, z1, Block.OAK_PLANKS);
-    for (const y of [5, 9]) slabAt(brush, y, x0, z0, x1, z1, Block.OAK_PLANKS);
+    // Inside the walls. Laid over the full footprint they cut three bands of oak
+    // straight through the brick, which on a terrace seen down an avenue is the
+    // first thing anybody notices.
+    for (const y of [1, 5, 9]) slabAt(brush, y, x0 + 1, z0 + 1, x1 - 1, z1 - 1, Block.OAK_PLANKS);
 
     // Party walls carried up through the front: what makes four houses out of one
     // long building, and what the shared chimneys stand on.
@@ -203,12 +222,14 @@ export const TOWNHOUSE_ROW: Landmark = {
         for (let y = 2; y <= 4; y++) brush.set(x, y, z0, Block.GLASS);
       }
       hollowOut(brush, box(left, 2, z0, left + 1, 4, z0));
-      for (let x = left - 1; x <= left + bay - 1; x++) brush.set(x, 5, z0, Block.STONE_BRICK_SLAB);
       // Two upper storeys of paired sashes.
       for (const y of [6, 10]) {
         sashWindow(brush, 'x', z0, left + 1, y, 2, 3, Block.GLASS, Block.MARBLE);
         sashWindow(brush, 'x', z0, left + 4, y, 2, 3, Block.GLASS, Block.MARBLE);
       }
+      // The shopfront's lintel last: drawn before the sashes, their sills paint
+      // over the whole of it and the ground floor loses its top edge.
+      for (let x = left - 1; x <= left + bay - 1; x++) brush.set(x, 5, z0, Block.STONE_BRICK_SLAB);
       // Back windows, plainer, as they always are.
       for (const y of [6, 10]) sashWindow(brush, 'x', z1, mid - 1, y, 3, 2, Block.GLASS, Block.BRICKS);
       // The step up off the pavement.
@@ -234,9 +255,12 @@ export const TOWNHOUSE_ROW: Landmark = {
       for (let z = z0 + 3; z <= z0 + 4; z++) post(brush, px, z, 14, ridge + 3, Block.BRICKS);
       for (let z = z0 + 3; z <= z0 + 4; z++) brush.set(px, ridge + 4, z, Block.STONE_BRICK_SLAB);
     }
-    // Back yards, so the row has a behind as well as a front.
-    for (let x = x0; x <= x1; x += 8) {
-      ring(brush, 1, x, z1 + 1, Math.min(x + 7, x1), 16, Block.BRICKS);
+    // Back yards, so the row has a behind as well as a front. One per house, and
+    // the loop stops before it reaches the far party wall — running to `x1` adds
+    // a fifth yard one block wide.
+    for (let unit = 0; unit < units; unit++) {
+      const left = x0 + unit * bay;
+      ring(brush, 1, left, z1 + 1, left + bay, 16, Block.BRICKS);
     }
   },
 };

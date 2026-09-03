@@ -1,6 +1,6 @@
 import { Block } from '../../blocks';
 import {
-  box, corners, fill, hollowOut, opening, post, ring, slabAt, walls,
+  box, corners, fill, hollowOut, opening, perimeter, post, ring, setback, slabAt, walls,
   type Brush,
 } from './brush';
 import type { Landmark } from './types';
@@ -44,17 +44,13 @@ function curtainWall(
     // A deeper band at every floor slab: the edge of the floor plate, which is
     // what you actually see through the glass of a real tower.
     const band = (y - y0) % BAND_PITCH === 0;
-    for (let z = z0; z <= z1; z++) {
-      for (let x = x0; x <= x1; x++) {
-        if (x !== x0 && x !== x1 && z !== z0 && z !== z1) continue;
-        const corner = (x === x0 || x === x1) && (z === z0 || z === z1);
-        // Distance along the skin decides where a mullion goes, so the rhythm
-        // carries around the corner instead of restarting on each face.
-        const along = x === x0 || x === x1 ? z - z0 : x - x0;
-        const mullion = corner || along % mullionPitch === 0;
-        brush.set(x, y, z, band ? Block.STEEL : mullion ? Block.STEEL : Block.TINTED_GLASS);
-      }
-    }
+    perimeter(x0, z0, x1, z1, (x, z, along, corner) => {
+      const mullion = corner || along % mullionPitch === 0;
+      // Pale spandrel, dark mullion, glass between. Three tones rather than
+      // two: a skin of glass and steel alone goes uniformly grey at any
+      // distance, because the steel is the same value as the glass it holds.
+      brush.set(x, y, z, band ? Block.CONCRETE : mullion ? Block.STEEL : Block.TINTED_GLASS);
+    });
   }
 }
 
@@ -85,13 +81,9 @@ function floorPlates(
 function lobby(brush: Brush, x0: number, z0: number, x1: number, z1: number, y0: number, height: number): void {
   const top = y0 + height - 1;
   for (let y = y0; y <= top; y++) {
-    for (let z = z0; z <= z1; z++) {
-      for (let x = x0; x <= x1; x++) {
-        if (x !== x0 && x !== x1 && z !== z0 && z !== z1) continue;
-        const corner = (x === x0 || x === x1) && (z === z0 || z === z1);
-        brush.set(x, y, z, corner ? Block.CONCRETE : Block.TINTED_GLASS);
-      }
-    }
+    perimeter(x0, z0, x1, z1, (x, z, _along, corner) => {
+      brush.set(x, y, z, corner ? Block.CONCRETE : Block.TINTED_GLASS);
+    });
   }
   slabAt(brush, y0 - 1, x0, z0, x1, z1, Block.MARBLE);
   const mid = Math.floor((x0 + x1) / 2);
@@ -129,7 +121,7 @@ export const GLASS_TOWER: Landmark = {
     // --- podium: five storeys, 21 x 21 -------------------------------------
     const podiumTop = 12;
     lobby(brush, 1, 1, 21, 21, 1, 5);
-    curtainWall(brush, 1, 1, 21, 21, 6, podiumTop - 1, 4);
+    curtainWall(brush, 1, 1, 21, 21, 6, podiumTop - 1, 5);
     corners(brush, 1, 1, 21, 21, 1, podiumTop - 1, Block.CONCRETE);
     floorPlates(brush, 1, 1, 21, 21, 6, podiumTop - 1, null);
     // Podium roof: a terrace with a low parapet, which is the ledge that makes
@@ -140,22 +132,31 @@ export const GLASS_TOWER: Landmark = {
       brush.set(x, podiumTop + 1, z, Block.LANTERN);
     }
 
-    // --- shaft: 13 x 13 ----------------------------------------------------
+    // --- shaft ------------------------------------------------------------
+    // Rectangular in plan rather than square. Two square setback towers on
+    // neighbouring lots read as the same building in two materials; making one
+    // of them broader than it is deep separates them from any angle.
     const shaft0 = podiumTop + 1;
     const shaft1 = 48;
-    curtainWall(brush, c - 6, c - 6, c + 6, c + 6, shaft0, shaft1, 3);
-    corners(brush, c - 6, c - 6, c + 6, c + 6, shaft0, shaft1, Block.CONCRETE);
-    floorPlates(brush, c - 6, c - 6, c + 6, c + 6, shaft0, shaft1,
+    const SHAFT_X = 6, SHAFT_Z = 5;
+    curtainWall(brush, c - SHAFT_X, c - SHAFT_Z, c + SHAFT_X, c + SHAFT_Z, shaft0, shaft1, 4);
+    corners(brush, c - SHAFT_X, c - SHAFT_Z, c + SHAFT_X, c + SHAFT_Z, shaft0, shaft1, Block.CONCRETE);
+    floorPlates(brush, c - SHAFT_X, c - SHAFT_Z, c + SHAFT_X, c + SHAFT_Z, shaft0, shaft1,
       { x0: c - 2, z0: c - 2, x1: c + 2, z1: c + 2 });
-    ring(brush, shaft1 + 1, c - 7, c - 7, c + 7, c + 7, Block.CONCRETE_SLAB);
 
-    // --- upper stage: 9 x 9 ------------------------------------------------
+    // --- upper stage --------------------------------------------------------
+    // The terrace between the two is lidded before the moulding goes round it: a
+    // ring on its own leaves the stage above standing over its own footprint
+    // with nothing under it, which is visible from the ground as a slot of sky.
     const upper0 = shaft1 + 2;
     const upper1 = 63;
-    curtainWall(brush, c - 4, c - 4, c + 4, c + 4, upper0, upper1, 3);
-    corners(brush, c - 4, c - 4, c + 4, c + 4, upper0, upper1, Block.CONCRETE);
-    floorPlates(brush, c - 4, c - 4, c + 4, c + 4, upper0, upper1, null);
-    ring(brush, upper1 + 1, c - 5, c - 5, c + 5, c + 5, Block.CONCRETE_SLAB);
+    const UPPER = 4;
+    slabAt(brush, shaft1 + 1, c - SHAFT_X, c - SHAFT_Z, c + SHAFT_X, c + SHAFT_Z, Block.CONCRETE);
+    ring(brush, shaft1 + 1, c - SHAFT_X - 1, c - SHAFT_Z - 1, c + SHAFT_X + 1, c + SHAFT_Z + 1, Block.CONCRETE_SLAB);
+    curtainWall(brush, c - UPPER, c - UPPER, c + UPPER, c + UPPER, upper0, upper1, 4);
+    corners(brush, c - UPPER, c - UPPER, c + UPPER, c + UPPER, upper0, upper1, Block.CONCRETE);
+    floorPlates(brush, c - UPPER, c - UPPER, c + UPPER, c + UPPER, upper0, upper1, null);
+    setback(brush, c, c, UPPER, upper1 + 1, Block.CONCRETE, Block.CONCRETE_SLAB);
 
     // --- crown and mast ----------------------------------------------------
     const crown0 = upper1 + 2;
@@ -193,27 +194,28 @@ export const DECO_TOWER: Landmark = {
      *
      * The pilasters are what the whole style is: an unbroken stone line from the
      * pavement to the cornice, with the brick and the windows recessed between
-     * them. Drawn per stage so each setback picks the rhythm up again narrower.
+     * them. Two blocks of pier to two of bay, which is wide enough that the
+     * verticals are still verticals at sixty blocks away — a one-block rhythm
+     * dissolves into speckle at exactly the distance the building is looked at
+     * from.
+     *
+     * The bay is *brick* with one continuous strip of window up the middle of
+     * it, not window with brick between. Pale pier against pale glass is no
+     * contrast at all; pale pier against warm brick is the whole elevation.
      */
     const stage = (half: number, y0: number, y1: number): void => {
       const x0 = c - half, x1 = c + half, z0 = c - half, z1 = c + half;
       for (let y = y0; y <= y1; y++) {
-        for (let z = z0; z <= z1; z++) {
-          for (let x = x0; x <= x1; x++) {
-            if (x !== x0 && x !== x1 && z !== z0 && z !== z1) continue;
-            const corner = (x === x0 || x === x1) && (z === z0 || z === z1);
-            const along = x === x0 || x === x1 ? z - z0 : x - x0;
-            const pilaster = corner || along % 3 === 0;
-            if (pilaster) {
-              brush.set(x, y, z, corner ? Block.MARBLE : Block.STONE_BRICKS);
-              continue;
-            }
-            // Spandrel under each window and glass above it: a 1-in-3 vertical
-            // rhythm, which at a storey a block is what reads as "windows".
-            const inBay = (y - y0) % 3 !== 0;
-            brush.set(x, y, z, inBay ? Block.GLASS : Block.BRICKS);
+        perimeter(x0, z0, x1, z1, (x, z, along, corner) => {
+          if (corner || along % 4 < 2) {
+            brush.set(x, y, z, corner ? Block.MARBLE : Block.STONE_BRICKS);
+            return;
           }
-        }
+          // One of the bay's two cells is glazed all the way up, with a brick
+          // spandrel across it at each floor line.
+          const glazed = along % 4 === 2 && (y - y0) % 4 !== 0;
+          brush.set(x, y, z, glazed ? Block.GLASS : Block.BRICKS);
+        });
       }
       slabAt(brush, y0 - 1, x0 + 1, z0 + 1, x1 - 1, z1 - 1, Block.CONCRETE);
       for (let y = y0 + 4; y < y1; y += 6) {
@@ -221,11 +223,11 @@ export const DECO_TOWER: Landmark = {
       }
     };
 
-    /** The moulding a stage lands on: a projecting course and a slab lip. */
+    /** The moulding a stage lands on: a lidded terrace, a projecting course and
+     *  a slab lip over it. */
     const cornice = (half: number, y: number): void => {
-      ring(brush, y, c - half - 1, c - half - 1, c + half + 1, c + half + 1, Block.MARBLE);
+      setback(brush, c, c, half, y, Block.CONCRETE, Block.MARBLE);
       ring(brush, y + 1, c - half - 1, c - half - 1, c + half + 1, c + half + 1, Block.MARBLE_SLAB);
-      slabAt(brush, y, c - half, c - half, c + half, c + half, Block.CONCRETE);
     };
 
     stage(10, 1, 18);
@@ -268,12 +270,15 @@ export const DECO_TOWER: Landmark = {
     brush.set(c, 6, z0, Block.GOLD_BLOCK);
     brush.set(c - 4, 1, z0 - 1, Block.LANTERN);
     brush.set(c + 4, 1, z0 - 1, Block.LANTERN);
-    // A couple of the upper windows left lit, chosen from the lot's own stream so
-    // the pattern is stable but not a grid.
-    for (let i = 0; i < 8; i++) {
+    // A few of the upper windows left lit, chosen from the lot's own stream so
+    // the pattern is stable but not a grid. Only where there is a window: a lamp
+    // set into a stone pier is a hole in the pier.
+    for (let i = 0; i < 10; i++) {
       const y = 6 + Math.floor(ctx.rng() * 40);
-      const along = 2 + Math.floor(ctx.rng() * 17);
-      brush.set(c - 10 + along, y, z0, Block.LANTERN);
+      const along = Math.floor(ctx.rng() * 5) * 4 + 2;
+      if (brush.get(c - 10 + along, y, z0) === Block.GLASS) {
+        brush.set(c - 10 + along, y, z0, Block.LANTERN);
+      }
     }
   },
 };

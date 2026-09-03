@@ -97,6 +97,85 @@ export function corners(brush: Brush, x0: number, z0: number, x1: number, z1: nu
 }
 
 /**
+ * Walks the rim of a rectangle at one level, once per cell and once only.
+ *
+ * Every facade in this directory is the same loop — go round the outside,
+ * decide whether each cell is a corner, a pier or infill — and writing it out
+ * three times produced three chances to get the bay rhythm wrong at a corner.
+ * `along` is the distance travelled around the rim, so a rhythm carries round
+ * the corner instead of restarting on each face, which is the whole reason the
+ * rim is walked rather than four walls drawn.
+ */
+export function perimeter(
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  visit: (x: number, z: number, along: number, corner: boolean) => void,
+): void {
+  for (let z = z0; z <= z1; z++) {
+    for (let x = x0; x <= x1; x++) {
+      if (x !== x0 && x !== x1 && z !== z0 && z !== z1) continue;
+      const corner = (x === x0 || x === x1) && (z === z0 || z === z1);
+      const along = x === x0 || x === x1 ? z - z0 : x - x0;
+      visit(x, z, along, corner);
+    }
+  }
+}
+
+/**
+ * Closing one stage of a tower onto the narrower one above it.
+ *
+ * A setback is a *terrace*, not a hoop: the stage below has to be lidded, or the
+ * stage above stands over a one-block void and the moulding round it touches
+ * nothing. Both towers hand-rolled this and both got it wrong, in the same way.
+ * `y` is the level of the lid; the stage above starts at `y + 1`.
+ */
+export function setback(
+  brush: Brush,
+  cx: number,
+  cz: number,
+  half: number,
+  y: number,
+  lid: BlockId,
+  moulding: BlockId,
+): void {
+  slabAt(brush, y, cx - half, cz - half, cx + half, cz + half, lid);
+  ring(brush, y, cx - half - 1, cz - half - 1, cx + half + 1, cz + half + 1, moulding);
+}
+
+/**
+ * A disc standing up in a wall: the one round thing on a gothic front.
+ *
+ * `ellipse` is horizontal and cannot draw this — stacking it with `rz = 0` gives
+ * a rectangle, which is what the rose window was until somebody looked at it.
+ * `axis` is the axis the wall runs along and `at` its fixed coordinate.
+ */
+export function verticalDisc(
+  brush: Brush,
+  axis: 'x' | 'z',
+  at: number,
+  cAlong: number,
+  cy: number,
+  radius: number,
+  block: BlockId,
+  hollow = false,
+): void {
+  const r = Math.max(0.5, radius);
+  for (let dy = -Math.ceil(r); dy <= Math.ceil(r); dy++) {
+    const inner = r * r - dy * dy;
+    if (inner < 0) continue;
+    const halfWidth = Math.round(Math.sqrt(inner));
+    for (let d = -halfWidth; d <= halfWidth; d++) {
+      if (hollow && Math.hypot(d, dy) < r - 1) continue;
+      const x = axis === 'x' ? cAlong + d : at;
+      const z = axis === 'x' ? at : cAlong + d;
+      brush.set(x, cy + dy, z, block);
+    }
+  }
+}
+
+/**
  * A filled ellipse at one level, by the same half-axis test a circle of blocks
  * is usually drawn with. Domes, basins and round towers are all stacks of these.
  */

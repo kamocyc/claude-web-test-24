@@ -109,7 +109,9 @@ export function createPlaza(markers: readonly BlockId[]): Landmark {
         brush.set(tx, 4, tz, Block.OAK_LOG);
         brush.set(tx, 5, tz, Block.OAK_LOG);
       }
-      // Benches on the inner ring, facing the water.
+      // Benches on the inner ring, facing the water. With a back: a row of flat
+      // half-blocks on the ground reads as a doormat, and the back is the only
+      // part of a bench that is visible from standing height anyway.
       for (const [dx, dz] of MARKER_DIRS) {
         const len = Math.hypot(dx, dz);
         const bx = c + Math.round((dx / len) * 13);
@@ -119,6 +121,8 @@ export function createPlaza(markers: readonly BlockId[]): Landmark {
           const x = bx + alongX * a;
           const z = bz + (alongX === 1 ? 0 : a);
           brush.set(x, 1, z, Block.OAK_SLAB);
+          // Behind the seat, which is the side away from the fountain.
+          brush.set(x + Math.sign(dx) * (alongX === 1 ? 0 : 1), 2, z + (alongX === 1 ? Math.sign(dz) : 0), Block.OAK_PLANKS);
         }
       }
       for (let i = 0; i < 8; i++) {

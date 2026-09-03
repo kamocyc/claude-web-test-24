@@ -705,37 +705,38 @@ tile('plaster', (ctx, rng) => {
 tile('timber_frame', (ctx, rng) => {
   facets(ctx, rng, PLASTER_C, 2, 4);
   speckle(ctx, rng, shade(PLASTER_C, -12), 5, 0.7);
-  // Posts on the tile's own edges and one brace across it. Keeping the uprights at
-  // x = 0 and x = U means two blocks side by side share a post rather than growing
-  // a double-width one.
+  // Slimmer than they look on paper. The beams are what says half-timbered, but
+  // at one block to a storey a wide beam turns the whole wall brown, and the
+  // thing being drawn is white plaster held in a dark frame.
   const post = (x: number) => {
-    rect(ctx, x - 1.15, 0, 2.3, U, BEAM);
-    rect(ctx, x - 1.15, 0, 0.8, U, shade(BEAM, 16));
+    rect(ctx, x - 0.8, 0, 1.6, U, BEAM);
+    rect(ctx, x - 0.8, 0, 0.55, U, shade(BEAM, 18));
   };
-  rect(ctx, 0, 0, U, 2.1, BEAM);
-  rect(ctx, 0, U - 2.1, U, 2.1, BEAM);
-  rect(ctx, 0, U - 2.1, U, 0.7, shade(BEAM, 18));
-  poly(ctx, [[1.5, U - 2], [5.4, 1.9], [7.2, 1.9], [3.3, U - 2]], shade(BEAM, -6));
+  rect(ctx, 0, 0, U, 1.5, BEAM);
+  rect(ctx, 0, U - 1.5, U, 1.5, BEAM);
+  rect(ctx, 0, U - 1.5, U, 0.5, shade(BEAM, 20));
+  // One brace across the panel, which is what stops a row of these reading as a
+  // ladder. Drawn to meet the rails exactly, so it carries on into the block above.
+  poly(ctx, [[1.4, U - 1.5], [5.2, 1.5], [6.5, 1.5], [2.7, U - 1.5]], shade(BEAM, -6));
   post(0);
   post(U);
 });
 
 tile('marble', (ctx, rng) => {
   facets(ctx, rng, MARBLE_C, 2, 3);
-  // Two veins, drawn as thin quads that start and end on opposite edges so they
-  // carry across a wall instead of stopping at every block.
-  const vein = (y0: number, y1: number, width: number, tone: number, alpha: number) => {
+  // Two veins. Both enter and leave at the *same* height and ripple through a
+  // whole number of periods, so the stone carries on across the block boundary
+  // instead of jumping five units at every seam — which on a temple is fifteen
+  // hundred blocks of repeating chevron.
+  const vein = (y0: number, width: number, amp: number, periods: number, tone: number, alpha: number) => {
+    const at = (x: number): number => y0 + Math.sin((x / U) * Math.PI * 2 * periods) * amp;
     const pts: Pt[] = [];
-    for (let x = 0; x <= U; x += 1) {
-      pts.push([x, y0 + ((y1 - y0) * x) / U + Math.sin((x / U) * Math.PI * 2.2) * 1.5]);
-    }
-    for (let x = U; x >= 0; x -= 1) {
-      pts.push([x, y0 + ((y1 - y0) * x) / U + Math.sin((x / U) * Math.PI * 2.2) * 1.5 + width]);
-    }
+    for (let x = 0; x <= U; x += 1) pts.push([x, at(x)]);
+    for (let x = U; x >= 0; x -= 1) pts.push([x, at(x) + width]);
     poly(ctx, pts, shade(MARBLE_C, tone), alpha);
   };
-  vein(4.5, 10, 0.7, -34, 0.55);
-  vein(11, 3.5, 0.45, -22, 0.4);
+  vein(5.5, 0.7, 1.8, 1, -34, 0.55);
+  vein(11, 0.45, 1.1, 2, -22, 0.4);
   speckle(ctx, rng, shade(MARBLE_C, -10), 4, 0.6);
 });
 
@@ -755,14 +756,17 @@ tile('marble_fluted', (ctx, rng) => {
 tile('slate', (ctx, rng) => {
   rect(ctx, 0, 0, U, U, shade(SLATE_C, -26));
   // Four courses of overlapping shingles, staggered like the brick bond.
+  // Eight to the shingle and four to the course, both of which divide sixteen, so
+  // the bond closes on itself. At six the odd courses left a sliver at every
+  // block seam and a roof got a vertical break down half of its rows.
   for (let row = 0; row < 4; row++) {
     const y = row * 4;
-    const offset = row % 2 === 0 ? 0 : -3;
-    for (let x = offset; x < U; x += 6) {
+    const offset = row % 2 === 0 ? 0 : -4;
+    for (let x = offset; x < U; x += 8) {
       const tone = shade(SLATE_C, (rng() - 0.5) * 22);
-      roundRect(ctx, x + 0.3, y, 5.4, 4.6, 0.9, tone);
-      roundRect(ctx, x + 0.7, y + 0.3, 4.6, 1, 0.5, shade(tone, 18));
-      rect(ctx, x + 0.3, y + 4.1, 5.4, 0.6, shade(tone, -24), 0.7);
+      roundRect(ctx, x + 0.3, y, 7.4, 4.6, 0.9, tone);
+      roundRect(ctx, x + 0.7, y + 0.3, 6.6, 1, 0.5, shade(tone, 18));
+      rect(ctx, x + 0.3, y + 4.1, 7.4, 0.6, shade(tone, -24), 0.7);
     }
   }
 });
@@ -784,9 +788,11 @@ tile('roof_tile', (ctx, rng) => {
 
 tile('copper_panel', (ctx, rng) => {
   facets(ctx, rng, COPPER_C, 2, 6);
-  // Standing seams: the raised joints a copper roof is folded along.
+  // Standing seams: the raised joints a copper roof is folded along. Spaced on a
+  // whole division of the tile, so the seam interval is the same across a block
+  // boundary as it is inside one.
   for (let i = 0; i < 3; i++) {
-    const x = 2 + i * 5.4;
+    const x = 2 + i * (U / 3);
     rect(ctx, x, 0, 1.2, U, shade(COPPER_C, -30));
     rect(ctx, x, 0, 0.5, U, shade(COPPER_C, 22));
   }
@@ -826,9 +832,11 @@ tile('steel', (ctx, rng) => {
 tile('tinted_glass', (ctx) => {
   ctx.clearRect(0, 0, U, U);
   roundRect(ctx, 0, 0, U, U, 1.5, [96, 150, 186], 0.46);
-  // The sky, caught along the top of the pane.
-  poly(ctx, [[0, 0], [U, 0], [U, 5], [0, 8]], [186, 226, 245], 0.3);
-  poly(ctx, [[2.5, 3], [8, 3], [5.5, 6], [1.5, 6]], [255, 255, 255], 0.4);
+  // The sky, caught along the top of the pane, where it merges into the spandrel
+  // course the mesher puts above it rather than floating in the middle of a wall
+  // of two and a half thousand identical panes.
+  poly(ctx, [[0, 0], [U, 0], [U, 4.5], [0, 6]], [186, 226, 245], 0.34);
+  poly(ctx, [[1.5, 0.6], [7, 0.6], [4.5, 3.4], [0.8, 3.4]], [255, 255, 255], 0.32);
   rect(ctx, 0, 0, U, 1.2, [58, 74, 92], 0.85);
   rect(ctx, 0, 0, 1.2, U, [58, 74, 92], 0.85);
 });
@@ -841,22 +849,26 @@ tile('stained_glass', (ctx, rng) => {
     [214, 78, 82], [86, 122, 208], [238, 196, 92],
     [96, 178, 128], [176, 96, 190], [226, 132, 74],
   ];
-  for (let row = 0; row < 4; row++) {
-    for (let col = 0; col < 4; col++) {
+  // Four large panes rather than sixteen small ones. A lancet is this tile
+  // stacked six times and a rose is a hundred of them; at sixteen panes the
+  // whole window is coloured noise at every distance it is looked at from.
+  for (let row = 0; row < 2; row++) {
+    for (let col = 0; col < 2; col++) {
       const pane = panes[Math.floor(rng() * panes.length)];
-      roundRect(ctx, col * 4 + 0.4, row * 4 + 0.4, 3.2, 3.2, 1.2, pane, 0.78);
-      roundRect(ctx, col * 4 + 1, row * 4 + 1, 1.4, 1.1, 0.5, shade(pane, 40), 0.5);
+      roundRect(ctx, col * 8 + 1.2, row * 8 + 1.2, 5.6, 5.6, 1.8, pane, 0.82);
+      roundRect(ctx, col * 8 + 2.4, row * 8 + 2.4, 2.4, 1.8, 0.8, shade(pane, 44), 0.5);
     }
   }
-  // The lead cames between the panes.
-  ctx.strokeStyle = css([42, 44, 52], 0.85);
-  ctx.lineWidth = 0.7;
-  for (let i = 0; i <= 4; i++) {
+  // The lead cames, and the heavier bar around the tile's own edge that is the
+  // window's frame where two blocks meet.
+  ctx.strokeStyle = css([38, 40, 48], 0.9);
+  ctx.lineWidth = 1.4;
+  for (let i = 0; i <= 2; i++) {
     ctx.beginPath();
-    ctx.moveTo(i * 4, 0);
-    ctx.lineTo(i * 4, U);
-    ctx.moveTo(0, i * 4);
-    ctx.lineTo(U, i * 4);
+    ctx.moveTo(i * 8, 0);
+    ctx.lineTo(i * 8, U);
+    ctx.moveTo(0, i * 8);
+    ctx.lineTo(U, i * 8);
     ctx.stroke();
   }
 });
@@ -874,21 +886,24 @@ tile('gold_block', (ctx, rng) => {
  *  its own light, so the tile has to look like the source rather than like something
  *  a torch is shining on. */
 tile('lantern', (ctx) => {
-  rect(ctx, 0, 0, U, U, [48, 46, 52]);
+  // Pewter, not black. These stand every few blocks along an avenue, and a tile
+  // this dark makes the lamps the highest-contrast objects in a daylit street —
+  // a row of black cubes in front of the buildings they are lighting.
+  rect(ctx, 0, 0, U, U, [126, 124, 134]);
   // The glazed panel, warm rather than white: a street lamp seen from across a
   // square should read as a light source, and pure white reads as a blank block.
   roundRect(ctx, 2.6, 2.2, 10.8, 11.6, 1.4, [214, 176, 96]);
   roundRect(ctx, 3.6, 3.2, 8.8, 9.6, 1, [248, 226, 158]);
   disc(ctx, 8, 8, 2.8, [255, 248, 214], 0.9);
   // Cage bars, heavy enough to still be there at a distance.
-  rect(ctx, 7.2, 2.2, 1.6, 11.6, [40, 38, 44]);
-  rect(ctx, 2.6, 7.2, 10.8, 1.6, [40, 38, 44]);
-  rect(ctx, 2.6, 2.2, 10.8, 0.9, [40, 38, 44]);
-  rect(ctx, 2.6, 12.9, 10.8, 0.9, [40, 38, 44]);
+  rect(ctx, 7.4, 2.2, 1.2, 11.6, [72, 70, 78]);
+  rect(ctx, 2.6, 7.4, 10.8, 1.2, [72, 70, 78]);
+  rect(ctx, 2.6, 2.2, 10.8, 0.8, [72, 70, 78]);
+  rect(ctx, 2.6, 13, 10.8, 0.8, [72, 70, 78]);
   // Cap and foot, which is what it hangs between.
-  rect(ctx, 0.6, 0, 14.8, 2, [34, 32, 38]);
-  rect(ctx, 0.6, U - 2, 14.8, 2, [34, 32, 38]);
-  rect(ctx, 0.6, 0, 14.8, 0.7, [78, 74, 84]);
+  rect(ctx, 0.6, 0, 14.8, 1.8, [88, 86, 96]);
+  rect(ctx, 0.6, U - 1.8, 14.8, 1.8, [88, 86, 96]);
+  rect(ctx, 0.6, 0, 14.8, 0.6, [148, 146, 156]);
 });
 
 // --- cross-shaped plants -----------------------------------------------------

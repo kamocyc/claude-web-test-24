@@ -27,9 +27,10 @@ export function seedFromUrl(search: string): { text: string; seed: number } | nu
 
 /**
  * The generator named in the page URL (`?world=showcase`), so the test world can be
- * opened as a link and pinned by the browser smoke test. Returns null when the URL
- * does not name one, and for a name that is not a generator — a typo should open the
- * ordinary world rather than nothing at all.
+ * opened as a link and pinned by the browser smoke test. Returns null both when the
+ * URL names no generator and when it names one that does not exist, which the caller
+ * treats the same way: a mistyped `?world=` opens the title screen, exactly as a bare
+ * URL does, rather than dropping the player into a world they did not ask for.
  */
 export function worldKindFromUrl(search: string): WorldKind | null {
   const asked = new URLSearchParams(search).get('world');

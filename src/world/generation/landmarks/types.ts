@@ -1,9 +1,10 @@
 import type { Rng } from '../../../core/rng';
 import type { Brush } from './brush';
 
-/** What a landmark is an example of. The showcase groups its lots by this, so the
- *  four kinds stand on four sides of the square rather than in the order they
- *  happen to be declared in. */
+/** What a landmark is an example of. Only `'plaza'` is acted on — it is the one
+ *  lot that is never turned to face the square, being the square — but the rest
+ *  are what the README's table is written from, and what the tests check the
+ *  exhibition covers two of each of. Seating follows declaration order. */
 export type LandmarkKind = 'skyscraper' | 'western' | 'monument' | 'historic' | 'plaza';
 
 export interface LandmarkContext {

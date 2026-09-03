@@ -305,10 +305,10 @@ for (const roof of [
 // without them every ledge on a building is a whole block deep and a facade has no
 // scale to it. Like the wedges they collide as a full cell, which is the same bargain
 // the slopes already make.
-def({ id: B.STONE_BRICK_SLAB, name: 'stone_brick_slab', label: '石レンガの段', shape: 'slab', opaque: false, hardness: 2, tool: 'pickaxe', tier: 1, tex: { all: 'stone_bricks' }, drop: 'stone_bricks' });
-def({ id: B.MARBLE_SLAB, name: 'marble_slab', label: '大理石の段', shape: 'slab', opaque: false, hardness: 2.2, tool: 'pickaxe', tier: 1, tex: { all: 'marble' }, drop: 'marble' });
-def({ id: B.OAK_SLAB, name: 'oak_slab', label: '木材の段', shape: 'slab', opaque: false, hardness: 2, tool: 'axe', tex: { all: 'oak_planks' }, drop: 'oak_planks' });
-def({ id: B.CONCRETE_SLAB, name: 'concrete_slab', label: 'コンクリートの段', shape: 'slab', opaque: false, hardness: 2.4, tool: 'pickaxe', tier: 1, tex: { all: 'concrete' }, drop: 'concrete' });
+def({ id: B.STONE_BRICK_SLAB, name: 'stone_brick_slab', label: '石レンガの段', shape: 'slab', opaque: false, hardness: 2, tool: 'pickaxe', tier: 1, tex: { all: 'stone_bricks' } });
+def({ id: B.MARBLE_SLAB, name: 'marble_slab', label: '大理石の段', shape: 'slab', opaque: false, hardness: 2.2, tool: 'pickaxe', tier: 1, tex: { all: 'marble' } });
+def({ id: B.OAK_SLAB, name: 'oak_slab', label: '木材の段', shape: 'slab', opaque: false, hardness: 2, tool: 'axe', tex: { all: 'oak_planks' } });
+def({ id: B.CONCRETE_SLAB, name: 'concrete_slab', label: 'コンクリートの段', shape: 'slab', opaque: false, hardness: 2.4, tool: 'pickaxe', tier: 1, tex: { all: 'concrete' } });
 
 for (let i = 0; i < DEFS.length; i++) {
   if (!DEFS[i]) throw new Error(`block id ${i} has no definition`);

@@ -24,7 +24,15 @@ function legOffset(y: number, y0: number, y1: number, from: number, to: number):
   return Math.round(from + (to - from) * eased);
 }
 
-/** The four legs of one stage, plus the belts and zigzag bracing between them. */
+/**
+ * The four legs of one stage, and the members that tie them together.
+ *
+ * The bracing is walked *across* the face rather than up it. A member that rises
+ * one block per step advances three or four horizontally, so stepping in y left
+ * every cell of it out of reach of the last — 112 blocks of the first version
+ * hung in the air with no neighbour at all, which is exactly how it looked. Walk
+ * the long axis and each brace comes out a connected run.
+ */
 function lattice(
   brush: Brush,
   c: number,
@@ -39,27 +47,26 @@ function lattice(
     for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
       brush.set(c + sx * off, y, c + sz * off, Block.STEEL_COLUMN);
     }
-    // A belt every few levels ties the four legs into a tower rather than four
-    // poles, and is what the bracing hangs off.
-    if ((y - y0) % beltPitch === 0 && y > y0) {
-      ring(brush, y, c - off, c - off, c + off, c + off, Block.STEEL);
-    }
   }
-  // Zigzag bracing on each face: a member running corner to corner over each
-  // belt bay, mirrored on the next, which is the pattern that reads as lattice.
-  for (let belt = y0 + beltPitch; belt + beltPitch <= y1; belt += beltPitch) {
+  // One brace per bay, mirrored on the next, which is the pattern that reads as
+  // lattice. The belt at the top of each bay is drawn from the same walk, so it
+  // lands on the legs at that height rather than at some other stage's offset.
+  for (let bay = y0; bay + beltPitch <= y1; bay += beltPitch) {
     const rise = beltPitch;
-    for (let step = 0; step <= rise; step++) {
-      const y = belt + step;
+    const lean = ((bay - y0) / beltPitch) % 2 === 0 ? 1 : -1;
+    const top = bay + rise;
+    const beltOff = legOffset(top, y0, y1, from, to);
+    ring(brush, top, c - beltOff, c - beltOff, c + beltOff, c + beltOff, Block.STEEL);
+    const span = legOffset(bay, y0, y1, from, to);
+    for (let step = 0; step <= 2 * span; step++) {
+      const across = (-span + step) * lean;
+      // y from the position across the face, so consecutive cells touch.
+      const y = bay + Math.round((step / (2 * span)) * rise);
       const off = legOffset(y, y0, y1, from, to);
-      const t = step / rise;
-      const across = Math.round(-off + 2 * off * t);
-      const flip = ((belt - y0) / beltPitch) % 2 === 0 ? 1 : -1;
-      const a = across * flip;
-      brush.set(c + a, y, c - off, Block.STEEL);
-      brush.set(c + a, y, c + off, Block.STEEL);
-      brush.set(c - off, y, c + a, Block.STEEL);
-      brush.set(c + off, y, c + a, Block.STEEL);
+      brush.set(c + across, y, c - off, Block.STEEL);
+      brush.set(c + across, y, c + off, Block.STEEL);
+      brush.set(c - off, y, c + across, Block.STEEL);
+      brush.set(c + off, y, c + across, Block.STEEL);
     }
   }
 }
@@ -96,35 +103,50 @@ export const LATTICE_TOWER: Landmark = {
     }
 
     // --- first stage: 13 out at the ground, 5 out at the first platform -----
-    lattice(brush, c, 1, 26, 13, 5, 6);
-    // The arch under each face. Drawn from the span rather than from a radius so
-    // the springing lands exactly on the legs at ground level.
-    const span = 13;
-    for (let a = -span + 1; a <= span - 1; a++) {
-      const h = Math.round(13 * Math.sqrt(Math.max(0, 1 - (a / span) * (a / span))));
+    const STAGE1 = { y0: 1, y1: 26, from: 13, to: 5 };
+    lattice(brush, c, STAGE1.y0, STAGE1.y1, STAGE1.from, STAGE1.to, 6);
+    // The arch under each face. Its plane has to follow the legs as they lean in,
+    // or the springing lands two blocks inboard of the leg it is supposed to meet
+    // and the arch stands in the middle of nothing.
+    const ARCH_RISE = 13;
+    for (let a = -12; a <= 12; a++) {
+      const h = Math.round(ARCH_RISE * Math.sqrt(Math.max(0, 1 - (a / 13) * (a / 13))));
       if (h < 2) continue;
-      brush.set(c + a, h, c - span, Block.STEEL);
-      brush.set(c + a, h, c + span, Block.STEEL);
-      brush.set(c - span, h, c + a, Block.STEEL);
-      brush.set(c + span, h, c + a, Block.STEEL);
+      const off = legOffset(h, STAGE1.y0, STAGE1.y1, STAGE1.from, STAGE1.to);
+      if (Math.abs(a) > off) continue;
+      brush.set(c + a, h, c - off, Block.STEEL);
+      brush.set(c + a, h, c + off, Block.STEEL);
+      brush.set(c - off, h, c + a, Block.STEEL);
+      brush.set(c + off, h, c + a, Block.STEEL);
     }
     platform(brush, c, 27, 8, Block.STEEL);
 
     // --- second stage ------------------------------------------------------
-    lattice(brush, c, 30, 52, 5, 3, 6);
+    // Starting where the platform's railing ends rather than above it: leave the
+    // two courses the railing occupies and the whole upper half of the tower
+    // stands on a gap you can see daylight through.
+    lattice(brush, c, 28, 52, 5, 3, 6);
     platform(brush, c, 53, 4, Block.STEEL);
 
     // --- mast --------------------------------------------------------------
-    for (let y = 56; y <= 70; y++) {
+    for (let y = 54; y <= 70; y++) {
       brush.set(c, y, c, Block.STEEL_COLUMN);
-      if ((y - 56) % 5 === 0) ring(brush, y, c - 1, c - 1, c + 1, c + 1, Block.STEEL);
+      if ((y - 54) % 5 === 0) ring(brush, y, c - 1, c - 1, c + 1, c + 1, Block.STEEL);
     }
     brush.set(c, 71, c, Block.LANTERN);
     brush.set(c, 72, c, Block.GOLD_BLOCK);
   },
 };
 
-/** A clock face: a ring of stone around a gilded dial with two hands on it. */
+/**
+ * A clock face: a pale dial in a gilt ring, with dark hands on it.
+ *
+ * The first version had it the other way round — gold field, marble ring — and
+ * on a marble-quoined stone tower the ring vanished into the wall and the dial
+ * read as a yellow square. The dial has to be the *lightest* thing and the ring
+ * the brightest, because at fifty blocks a clock is a light circle with a mark
+ * across it and nothing else.
+ */
 function clockFace(brush: Brush, axis: 'x' | 'z', at: number, along: number, y: number): void {
   const put = (a: number, b: number, block: BlockId): void => {
     const x = axis === 'x' ? along + a : at;
@@ -133,16 +155,17 @@ function clockFace(brush: Brush, axis: 'x' | 'z', at: number, along: number, y: 
   };
   for (let b = -2; b <= 2; b++) {
     for (let a = -2; a <= 2; a++) {
+      // The corners are cut back to the wall and the edge midpoints kept, so the
+      // gilt ring comes out an octagon rather than a square.
+      if (Math.abs(a) === 2 && Math.abs(b) === 2) continue;
       const edge = Math.abs(a) === 2 || Math.abs(b) === 2;
-      // The corners of the 5x5 are cut back to stone so the dial reads round.
-      const corner = Math.abs(a) === 2 && Math.abs(b) === 2;
-      put(a, b, corner ? Block.STONE_BRICKS : edge ? Block.MARBLE : Block.GOLD_BLOCK);
+      put(a, b, edge ? Block.GOLD_BLOCK : Block.MARBLE);
     }
   }
   // Hands at ten past ten, which is where every clock in every photograph is.
-  put(0, 0, Block.STEEL);
-  put(0, 1, Block.STEEL);
-  put(-1, 1, Block.STEEL);
+  put(0, 0, Block.SLATE);
+  put(0, 1, Block.SLATE);
+  put(-1, 1, Block.SLATE);
 }
 
 export const CLOCK_TOWER: Landmark = {
@@ -177,11 +200,24 @@ export const CLOCK_TOWER: Landmark = {
     for (const y of [12, 20, 28]) {
       ring(brush, y, s0 - 1, s0 - 1, s1 + 1, s1 + 1, Block.MARBLE_SLAB);
     }
-    // Lancets up the middle of each face, paired between the string courses.
+    // One recessed panel per storey, in a second stone. Thirty blocks of one
+    // material with a slit in it is a chimney; the panel is what puts a shadow
+    // on the shaft at the distance the tower is actually looked at from.
+    for (const y of [6, 14, 22, 30]) {
+      for (const [ax, az] of [[c, s0], [c, s1], [s0, c], [s1, c]] as const) {
+        for (let d = -1; d <= 1; d++) {
+          const px = ax === c ? c + d : ax;
+          const pz = az === c ? c + d : az;
+          fill(brush, box(px, y, pz, px, y + 5, pz), Block.SLATE);
+        }
+      }
+    }
+    // A tall lancet up the middle of each panel, framed in marble.
     for (const y of [7, 15, 23, 31]) {
       for (const [ax, az] of [[c, s0], [c, s1], [s0, c], [s1, c]] as const) {
-        fill(brush, box(ax, y, az, ax, y + 2, az), Block.STAINED_GLASS);
-        brush.set(ax, y + 3, az, Block.MARBLE);
+        fill(brush, box(ax, y, az, ax, y + 4, az), Block.STAINED_GLASS);
+        brush.set(ax, y + 5, az, Block.MARBLE);
+        brush.set(ax, y - 1, az, Block.MARBLE);
       }
     }
     // A door at the foot, and the stair landing behind it.
@@ -197,13 +233,20 @@ export const CLOCK_TOWER: Landmark = {
     for (const [qx, qz] of [[k0, k0], [k1, k0], [k0, k1], [k1, k1]] as const) {
       post(brush, qx, qz, 38, 46, Block.MARBLE);
     }
-    clockFace(brush, 'x', k0, c, 42);
-    clockFace(brush, 'x', k1, c, 42);
-    clockFace(brush, 'z', k0, c, 42);
-    clockFace(brush, 'z', k1, c, 42);
+    // `at` is the wall's fixed coordinate on the other axis, which happens to be
+    // the same number on both axes only because the clock stage is square. Named
+    // rather than reused, so it stays right if it ever stops being.
+    const north = k0, south = k1, west = k0, east = k1;
+    clockFace(brush, 'x', north, c, 42);
+    clockFace(brush, 'x', south, c, 42);
+    clockFace(brush, 'z', west, c, 42);
+    clockFace(brush, 'z', east, c, 42);
 
     // --- belfry and balcony ------------------------------------------------
-    ring(brush, 47, k0 - 1, k0 - 1, k1 + 1, k1 + 1, Block.MARBLE);
+    // Decked, not merely edged. A ring on its own leaves the whole bell chamber
+    // and the spire above it standing over a two-course slot, and gives the
+    // balcony no floor to stand on.
+    slabAt(brush, 47, k0 - 1, k0 - 1, k1 + 1, k1 + 1, Block.MARBLE);
     ring(brush, 48, k0 - 1, k0 - 1, k1 + 1, k1 + 1, Block.MARBLE_SLAB);
     for (let i = 0; i <= (k1 + 1) - (k0 - 1); i += 2) {
       const a = k0 - 1 + i;

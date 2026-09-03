@@ -35,6 +35,12 @@ export const AVENUE = 12;
 export const PITCH = LOT + AVENUE;
 /** How far the grid reaches from the origin, lots and avenues together. */
 export const SHOWCASE_REACH = PITCH + (LOT - 1) / 2;
+/** Blocks between one street lamp and the next along a kerb. Sixteen rather than
+ *  eight: a lamp is a lit block and stands out in daylight, and at eight the
+ *  avenues had more lamp in them than they had avenue. */
+const LAMP_PITCH = 16;
+/** How far past a lot's edge nothing may self-seed. */
+const CLAIM_MARGIN = 3;
 /** How far above the ground a person may be put down: a doorstep or a plaza step,
  *  not a roof. Everything a landmark has above this is scenery to look at. */
 const STEP_UP = 2;
@@ -146,10 +152,15 @@ export class Showcase {
    *
    * Two rules, and the second one is the important one. There has to be room for
    * a person — two blocks of clear air — and the footing has to be at ground
-   * level. Without the second, the spawn search would happily put the player on
-   * the finial of the fountain, and the mob spawner would seed the roof of the
-   * cathedral: both are the topmost solid block in their column with plenty of
-   * sky over them. `STEP_UP` is what a flight of steps and a kerb are worth.
+   * level. Without the second, the spawn search would put the player on the
+   * finial of the fountain, which is the topmost solid block in its column with
+   * plenty of sky over it. `STEP_UP` is what a flight of steps and a kerb are
+   * worth.
+   *
+   * This governs where a *person* is set down — `findSpawn` and the generator's
+   * own answer. The mob spawner does not come through here: it reads the loaded
+   * world's own surface, so hostiles still appear on the exhibits' roofs after
+   * dark, as they do on a village's rooftops in an ordinary world.
    */
   standingY(x: number, z: number): number | null {
     const ceiling = FLAT_GROUND_Y + STEP_UP;
@@ -186,7 +197,11 @@ export class Showcase {
    */
   claims(x: number, z: number): boolean {
     if (avenueAt(x, z)) return true;
-    const half = (LOT - 1) / 2;
+    // Past the lot's own edge. A building whose footprint fills its lot in one
+    // axis — the cathedral is 44 deep in a 45 lot — otherwise leaves a single
+    // unclaimed row against its own wall, and an oak's canopy is wider than its
+    // trunk, so a tree seeded there grows straight through the nave.
+    const half = (LOT - 1) / 2 + CLAIM_MARGIN;
     for (const lot of this.lots) {
       if (Math.abs(x - lot.cx) <= half && Math.abs(z - lot.cz) <= half) return true;
     }
@@ -366,7 +381,7 @@ function avenueAt(x: number, z: number): AvenueColumn | null {
   const along = runsNorth ? z : x;
   const kerb = depth === 0 || depth === AVENUE - 1;
   if (!kerb) return ROADWAY;
-  return along % 8 === 0 ? LAMP : KERB;
+  return along % LAMP_PITCH === 0 ? LAMP : KERB;
 }
 
 /** Ground a person can be put down on. */

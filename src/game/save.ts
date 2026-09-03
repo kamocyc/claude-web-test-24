@@ -346,7 +346,11 @@ export function saveFileName(data: SaveData): string {
   const stamp =
     `${when.getFullYear()}${pad(when.getMonth() + 1)}${pad(when.getDate())}` +
     `-${pad(when.getHours())}${pad(when.getMinutes())}`;
-  return `voxelcraft-${data.seed}-${stamp}.json`;
+  // The generator is in the name as well as the seed: the same seed under two
+  // generators is two different worlds, and they would otherwise land in a folder
+  // under one filename.
+  const kind = data.kind && data.kind !== DEFAULT_WORLD_KIND ? `${data.kind}-` : '';
+  return `voxelcraft-${kind}${data.seed}-${stamp}.json`;
 }
 
 /** Hands the world to the browser as a download, and says what it called it. */

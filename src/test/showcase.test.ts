@@ -66,11 +66,14 @@ describe('showcase layout', () => {
   it('paves the avenues and lights their kerbs', () => {
     // Straight out of the plaza along +x: roadway, then a lamp somewhere on the kerb.
     expect(showcase.blockAt(28, FLAT_GROUND_Y, 0)).toBe(Block.CONCRETE);
+    // Evenly spaced along the kerb, and not so thick that the street is more
+    // lamp than street: over 121 blocks of one kerb there should be a handful.
     let lamps = 0;
     for (let z = -60; z <= 60; z++) {
       if (showcase.blockAt(23, FLAT_GROUND_Y + 3, z) === Block.LANTERN) lamps++;
     }
-    expect(lamps).toBeGreaterThan(8);
+    expect(lamps).toBeGreaterThanOrEqual(4);
+    expect(lamps).toBeLessThan(12);
   });
 });
 
