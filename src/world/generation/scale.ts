@@ -100,12 +100,16 @@ export const cellToBlock = (cell: number) => cell * CELL_BLOCKS;
  * A straight metric conversion gives a trunk river 30 blocks wide and 3 deep,
  * which reads as a flooded field rather than a river, and rounds the smallest
  * tributaries down to no water at all. Width is pulled in and depth is pushed
- * out until the cross-section is one a player recognises: roughly 3 to 17 wide
- * and 2 to 6 deep. The gains live here rather than in the ported river builder
- * so the meander wavelength, which is measured in channel widths, keeps the
- * proportions the reference tuned it for.
+ * out until the cross-section is one a player recognises: measured over
+ * super-chunk (0, 0) of the verification seed, 3.0 to 16.7 blocks wide and 2 to
+ * 5.6 deep, so the largest trunk is about three times as wide as it is deep and
+ * the smallest brook still holds two blocks of water.
+ *
+ * Depth is scaled on its own rather than through `BLOCKS_PER_METRE`, because
+ * the vertical scale is not the horizontal one — a metre of depth is worth more
+ * blocks than a metre of width, the same way a metre of mountain is.
  */
 const WIDTH_GAIN = 0.55;
-const DEPTH_GAIN = 2.2;
+const DEPTH_GAIN = 0.8;
 export const riverWidthBlocks = (widthM: number) => Math.max(3, widthM * BLOCKS_PER_METRE * WIDTH_GAIN);
 export const riverDepthBlocks = (depthM: number) => Math.max(2, depthM * DEPTH_GAIN);
