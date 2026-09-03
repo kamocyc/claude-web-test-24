@@ -15,6 +15,7 @@ function minimalSave(): SaveData {
   return {
     version: SAVE_VERSION,
     seed: 4242,
+    kind: 'terrain',
     time: 0,
     savedAt: Date.UTC(2026, 0, 2, 3, 4),
     player: {
@@ -59,6 +60,17 @@ describe('save files', () => {
   it('reads back a world the player kept as a file', () => {
     const save = minimalSave();
     expect(parseSave(JSON.stringify(save))).toEqual(save);
+  });
+
+  it('opens a world written before the generator was recorded as ordinary terrain', () => {
+    const { kind: _kind, ...older } = minimalSave();
+    expect(parseSave(JSON.stringify(older))?.kind).toBe('terrain');
+    // And an unrecognised one likewise, rather than refusing the world outright.
+    expect(parseSave(JSON.stringify({ ...minimalSave(), kind: 'moon' }))?.kind).toBe('terrain');
+  });
+
+  it('keeps the generator a showcase world was built by', () => {
+    expect(parseSave(JSON.stringify({ ...minimalSave(), kind: 'showcase' }))?.kind).toBe('showcase');
   });
 
   it('refuses anything that is not this build\'s save', () => {

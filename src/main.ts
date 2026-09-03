@@ -5,7 +5,8 @@ import { Input } from './ui/input';
 import { Menus } from './ui/menus';
 import { hasSave, readSave, readSaveFile } from './game/save';
 import { loadSettings, saveSettings } from './game/settings';
-import { VERIFICATION_SEED, seedFromUrl } from './game/seeds';
+import { SHOWCASE_SEED, VERIFICATION_SEED, seedFromUrl, worldKindFromUrl } from './game/seeds';
+import { DEFAULT_WORLD_KIND, type WorldKind } from './world/generation/kind';
 
 const canvas = document.createElement('canvas');
 canvas.id = 'viewport';
@@ -30,11 +31,16 @@ function quitToTitle(): void {
   menus.bindTitle(titleActions, hasSave());
 }
 
-function startGame(seed: number, save: ReturnType<typeof readSave>, sample = false): void {
+function startGame(
+  seed: number,
+  save: ReturnType<typeof readSave>,
+  sample = false,
+  kind: WorldKind = DEFAULT_WORLD_KIND,
+): void {
   menus.showTitle(false);
   menus.showPause(false);
   menus.showDeath(false);
-  game = new Game({ canvas, input, menus, seed, save, settings, sample, onQuit: quitToTitle });
+  game = new Game({ canvas, input, menus, seed, save, settings, sample, kind, onQuit: quitToTitle });
   menus.setSeed(seed);
   menus.bindSettings(settings, (next) => {
     input.sensitivity = next.sensitivity;
@@ -79,7 +85,7 @@ async function openFile(file: File): Promise<void> {
   // storage here either — the world is not finished being built, and a save taken now
   // would be one without its villagers in it. From the first autosave on, it is the
   // world 「続きから」 opens, like any other.
-  startGame(save.seed, save);
+  startGame(save.seed, save, false, save.kind);
 }
 
 const titleActions = {
@@ -95,20 +101,27 @@ const titleActions = {
       startGame(seedFromString(''), null);
       return;
     }
-    startGame(save.seed, save);
+    startGame(save.seed, save, false, save.kind);
   },
   onSampleWorld(): void {
     startGame(VERIFICATION_SEED, null, true);
+  },
+  onShowcaseWorld(): void {
+    startGame(SHOWCASE_SEED, null, false, 'showcase');
   },
 };
 
 menus.bindTitle(titleActions, hasSave());
 
-// `?seed=...` opens that exact world straight away, which is how a specific world
-// gets shared as a link and how the browser smoke test pins its terrain.
+// `?seed=...` opens that exact world straight away and `?world=showcase` picks the
+// generator, so either can be shared as a link and both are how the browser smoke
+// test pins what it is looking at.
+const requestedKind = worldKindFromUrl(window.location.search);
 const requested = seedFromUrl(window.location.search);
-if (requested) {
-  startGame(requested.seed, null);
+if (requested || requestedKind) {
+  const kind = requestedKind ?? DEFAULT_WORLD_KIND;
+  const fallback = kind === 'showcase' ? SHOWCASE_SEED : seedFromString('');
+  startGame(requested ? requested.seed : fallback, null, false, kind);
 } else {
   menus.showTitle(true);
 }

@@ -6,6 +6,7 @@ import type { Atlas, TileUv } from './textures';
 import {
   FACE_OFFSETS,
   buildCylinderTemplateSet,
+  buildSlabTemplateSet,
   buildSlopeTemplateSet,
   buildTemplateSet,
   type BlockTemplate,
@@ -131,7 +132,9 @@ const FACES: Face[] = RAW_FACES.map((face) => {
 
 const AO_LEVELS = [0.45, 0.68, 0.86, 1];
 
-const TRANSPARENT_BLOCKS = new Set<BlockId>([Block.GLASS, Block.ICE]);
+const TRANSPARENT_BLOCKS = new Set<BlockId>([
+  Block.GLASS, Block.ICE, Block.TINTED_GLASS, Block.STAINED_GLASS,
+]);
 
 export function passOf(id: BlockId): Pass {
   if (id === Block.WATER) return PASS_WATER;
@@ -184,6 +187,9 @@ export interface MeshOptions {
 }
 
 const ROUNDED_NEAR = buildTemplateSet({ radius: 0.18, segments: 2 });
+// Flat either way — a slab has no curved surface to spend triangles on, so the
+// near and far sets share one.
+const SLAB_TEMPLATES = buildSlabTemplateSet();
 type CustomShape = Exclude<BlockShape, 'cube'>;
 const CUSTOM_NEAR: Record<CustomShape, BlockTemplate[]> = {
   slope_east: buildSlopeTemplateSet('east'),
@@ -191,6 +197,7 @@ const CUSTOM_NEAR: Record<CustomShape, BlockTemplate[]> = {
   slope_south: buildSlopeTemplateSet('south'),
   slope_north: buildSlopeTemplateSet('north'),
   cylinder: buildCylinderTemplateSet(12),
+  slab: SLAB_TEMPLATES,
 };
 const CUSTOM_FAR: Record<CustomShape, BlockTemplate[]> = {
   slope_east: CUSTOM_NEAR.slope_east,
@@ -198,6 +205,7 @@ const CUSTOM_FAR: Record<CustomShape, BlockTemplate[]> = {
   slope_south: CUSTOM_NEAR.slope_south,
   slope_north: CUSTOM_NEAR.slope_north,
   cylinder: buildCylinderTemplateSet(8),
+  slab: SLAB_TEMPLATES,
 };
 
 /** Builds the geometry for one chunk, reading neighbouring chunks through the world so

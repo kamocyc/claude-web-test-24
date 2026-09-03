@@ -399,6 +399,47 @@ export function buildSlopeTemplateSet(direction: SlopeDirection): BlockTemplate[
   return set;
 }
 
+/**
+ * The bottom half of a voxel: a cornice course, a step, a parapet cap.
+ *
+ * Built on the unit half-extent rather than on its own, because `sharp` is
+ * normalised by the extent it was given — a half-height box would stretch the
+ * whole tile over half a block. On the unit cube the slab's side faces land on
+ * the lower half of the tile, which is the same half the lower half of a full
+ * block shows, so a course of slabs lines up with the wall it runs along.
+ *
+ * The top face is never culled. A neighbour above covers the *cell*, not the
+ * slab, and hiding that face would leave a hole to look through.
+ */
+export function buildSlabTemplate(faceMask = 0): BlockTemplate {
+  const b = new SharpMeshBuilder(0, UNIT_HALF);
+  const top = 0;
+  const quad = (
+    face: number | null,
+    normal: readonly [number, number, number],
+    points: readonly (readonly [number, number, number])[],
+  ): void => {
+    if (face !== null && !isExposed(faceMask, face)) return;
+    const [nx, ny, nz] = normal;
+    const ids = points.map((p) => b.vertex(p[0], p[1], p[2], nx, ny, nz));
+    b.quad(ids[0], ids[1], ids[2], ids[3]);
+  };
+
+  quad(null, [0, 1, 0], [[-0.5, top, -0.5], [-0.5, top, 0.5], [0.5, top, 0.5], [0.5, top, -0.5]]);
+  quad(FACE_NY, [0, -1, 0], [[-0.5, -0.5, -0.5], [-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, -0.5, -0.5]]);
+  quad(FACE_PX, [1, 0, 0], [[0.5, -0.5, -0.5], [0.5, -0.5, 0.5], [0.5, top, 0.5], [0.5, top, -0.5]]);
+  quad(FACE_NX, [-1, 0, 0], [[-0.5, -0.5, -0.5], [-0.5, -0.5, 0.5], [-0.5, top, 0.5], [-0.5, top, -0.5]]);
+  quad(FACE_PZ, [0, 0, 1], [[-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, top, 0.5], [-0.5, top, 0.5]]);
+  quad(FACE_NZ, [0, 0, -1], [[-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, top, -0.5], [-0.5, top, -0.5]]);
+  return finishTemplate(b);
+}
+
+export function buildSlabTemplateSet(): BlockTemplate[] {
+  const set: BlockTemplate[] = new Array(64);
+  for (let mask = 0; mask < 64; mask++) set[mask] = buildSlabTemplate(mask);
+  return set;
+}
+
 /** A vertical round post centred in one voxel. Side faces never touch the cell boundary,
  *  while the top and bottom disks can be omitted when another block covers them. */
 export function buildCylinderTemplate(segments = 12, radius = 0.34, faceMask = 0): BlockTemplate {

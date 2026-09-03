@@ -3,12 +3,15 @@ import { hashFloat, mulberry32, hashInts } from '../../core/rng';
 import { Block, type BlockId } from '../blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey } from '../chunk';
 import { WATER_FULL } from '../water';
-import { type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
+import { Biome, type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
 import { ORES, outcropDepth, outcropIn, placeCactus, placeSugarCane } from './features';
 import type { FieldParcel } from './fields';
 import { bankReach, channelHeight, leveeHeight } from './infinite/riverCarve';
 import type { RiverSample } from './infinite/riverField';
+import { FLAT_GROUND_Y, flatBlockAt } from './flat';
+import { DEFAULT_WORLD_KIND, type WorldKind } from './kind';
 import { MAX_HEIGHT, MIN_HEIGHT, ruggedFromSlope } from './scale';
+import { Showcase } from './showcase';
 import { VillageField, type VillageInfo } from './villageSites';
 import { WorldField } from './worldField';
 import type { WorldConstants } from './infinite/world';
@@ -132,8 +135,11 @@ export class TerrainGenerator {
   private readonly cave2: Noise;
   private readonly cavern: Noise;
 
-  readonly field: WorldField;
-  readonly villages: VillageField;
+  /** The exhibition, on a showcase world; null on a generated one. */
+  readonly showcase: Showcase | null;
+
+  private lazyField: WorldField | null = null;
+  private lazyVillages: VillageField | null = null;
 
   private readonly villagePlanCache = new Map<string, VillagePlan>();
   private readonly growthPlotCache = new Map<string, boolean>();
@@ -141,19 +147,39 @@ export class TerrainGenerator {
   /** Surface heights of the chunks that have been generated, by chunk key. */
   private readonly chunkHeights = new Map<string, Int16Array>();
 
-  constructor(readonly seed: number, known?: WorldConstants) {
+  constructor(
+    readonly seed: number,
+    private readonly known?: WorldConstants,
+    readonly kind: WorldKind = DEFAULT_WORLD_KIND,
+  ) {
     this.temperature = new Noise(seed ^ 0x5005);
     this.humidity = new Noise(seed ^ 0x6006);
     this.cave1 = new Noise(seed ^ 0x7007);
     this.cave2 = new Noise(seed ^ 0x8008);
     this.cavern = new Noise(seed ^ 0x9009);
-    this.field = new WorldField(seed, known);
-    this.villages = new VillageField(this.field, (x, z) => this.climate(x, z));
+    this.showcase = kind === 'showcase' ? new Showcase(seed) : null;
   }
 
-  /** The two numbers every copy of this generator has to agree on. */
-  constants(): WorldConstants {
-    return this.field.constants();
+  /**
+   * The drainage solution and the settlement lattice, built on first use.
+   *
+   * Lazy because measuring the calibration costs two probe super-chunks, and the
+   * showcase world never asks a single question that needs one — it has no
+   * hydrology, no villages, and one ground height everywhere. Paying for a river
+   * network to stand a temple on would be most of the cost of opening the world.
+   */
+  get field(): WorldField {
+    return (this.lazyField ??= new WorldField(this.seed, this.known));
+  }
+
+  get villages(): VillageField {
+    return (this.lazyVillages ??= new VillageField(this.field, (x, z) => this.climate(x, z)));
+  }
+
+  /** The two numbers every copy of this generator has to agree on, or null on a
+   *  world whose ground is not measured from anything. */
+  constants(): WorldConstants | null {
+    return this.showcase ? null : this.field.constants();
   }
 
   /**
@@ -176,6 +202,7 @@ export class TerrainGenerator {
 
   /** The ground before any town levelled it. */
   rawHeight(x: number, z: number): number {
+    if (this.showcase) return FLAT_GROUND_Y;
     return this.exactHeight(x, z) ?? this.field.estimate(x, z);
   }
 
@@ -195,6 +222,7 @@ export class TerrainGenerator {
    * plateau is applied, so a town's own streets are standable.
    */
   standingY(x: number, z: number): number | null {
+    if (this.showcase) return this.showcase.standingY(x, z);
     const plan = this.columnPlan(x, z);
     if (plan.waterTop >= 0) return null;
     if (plan.ground >= CHUNK_HEIGHT - 20) return null;
@@ -203,6 +231,7 @@ export class TerrainGenerator {
 
   /** The ground a player stands on, town plateaus included. */
   height(x: number, z: number): number {
+    if (this.showcase) return FLAT_GROUND_Y;
     const h = this.villages.flatten(x, z, this.rawHeight(x, z));
     return clamp(Math.round(h), MIN_HEIGHT, MAX_HEIGHT);
   }
@@ -228,6 +257,9 @@ export class TerrainGenerator {
   }
 
   biomeAt(x: number, z: number): BiomeId {
+    // One biome, and a mild one: the showcase's ground is the same everywhere and
+    // the exhibits supply all the colour there is to supply.
+    if (this.showcase) return Biome.PLAINS;
     const height = this.height(x, z);
     const { temperature, humidity } = this.climate(x, z);
     return classifyBiome({
@@ -274,6 +306,7 @@ export class TerrainGenerator {
 
   /** Every valid village within `cellRadius` village cells of a point. */
   villagesAround(x: number, z: number, cellRadius = 2): VillageSeed[] {
+    if (this.showcase) return [];
     return this.villages.around(x, z, cellRadius)
       .map(info => ({ x: info.site.x, z: info.site.z, baseY: info.baseY, variant: info.variant }));
   }
@@ -282,6 +315,7 @@ export class TerrainGenerator {
    *  doors are. Cheap and independent of what is loaded: a village plan is a pure function
    *  of the seed and is cached, so this can be asked about a village nobody has visited. */
   villageBuildings(x: number, z: number): HouseRecord[] {
+    if (this.showcase) return [];
     const info = this.villages.at(x, z);
     if (!info.valid) return [];
     return this.villagePlan(info).buildings;
@@ -364,6 +398,20 @@ export class TerrainGenerator {
     const height = new Int16Array(cols * rows);
     const block = new Uint16Array(cols * rows);
     const water = new Uint8Array(cols * rows);
+    if (this.showcase) {
+      // The exhibits are drawn, unlike a village's houses: on a world that is
+      // otherwise one flat colour they are the only thing a map has to say.
+      for (let j = 0; j < rows; j++) {
+        for (let i = 0; i < cols; i++) {
+          const surface = this.showcase.surfaceAt(x0 + i * step, z0 + j * step);
+          const index = j * cols + i;
+          height[index] = surface.y;
+          block[index] = surface.block;
+          water[index] = surface.block === Block.WATER ? WATER_FULL : 0;
+        }
+      }
+      return { x0, z0, cols, rows, step, height, block, water };
+    }
     const patch = Math.max(1, Math.round(SURVEY_PATCH / step));
     for (let j0 = 0; j0 < rows; j0 += patch) {
       for (let i0 = 0; i0 < cols; i0 += patch) {
@@ -385,6 +433,7 @@ export class TerrainGenerator {
   }
 
   generateChunk(cx: number, cz: number): ChunkGenResult {
+    if (this.showcase) return this.generateShowcaseChunk(cx, cz, this.showcase);
     const blocks = new Uint16Array(CHUNK_VOLUME);
     const water = new Uint8Array(CHUNK_VOLUME);
     const springs: { x: number; y: number; z: number }[] = [];
@@ -514,6 +563,42 @@ export class TerrainGenerator {
     return { blocks, water, springs, villagers, chests, heights };
   }
 
+  /**
+   * A superflat chunk, plus whatever of the exhibition falls inside it.
+   *
+   * Deliberately not a special case of `generateChunk`: that one is four passes
+   * of terrain, caves, ore and vegetation, and every one of them is exactly what
+   * a test world is supposed to be without. What is left is a stack of layers and
+   * one call into the showcase.
+   */
+  private generateShowcaseChunk(cx: number, cz: number, showcase: Showcase): ChunkGenResult {
+    const blocks = new Uint16Array(CHUNK_VOLUME);
+    const water = new Uint8Array(CHUNK_VOLUME);
+    const heights = new Int16Array(CHUNK_SIZE * CHUNK_SIZE);
+    const originX = cx * CHUNK_SIZE;
+    const originZ = cz * CHUNK_SIZE;
+
+    for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+      for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+        for (let y = 0; y <= FLAT_GROUND_Y; y++) blocks[blockIndex(lx, y, lz)] = flatBlockAt(y);
+        heights[lz * CHUNK_SIZE + lx] = FLAT_GROUND_Y;
+      }
+    }
+
+    showcase.writeChunk(cx, cz, (x, y, z, id) => {
+      const lx = x - originX;
+      const lz = z - originZ;
+      if (y < 0 || y >= CHUNK_HEIGHT || lx < 0 || lx >= CHUNK_SIZE || lz < 0 || lz >= CHUNK_SIZE) return;
+      const index = blockIndex(lx, y, lz);
+      blocks[index] = id;
+      // A fountain is poured full and then left alone. The simulator is woken by
+      // edits and by springs, so still water in a sealed basin stays where it is.
+      water[index] = id === Block.WATER ? WATER_FULL : 0;
+    });
+
+    return { blocks, water, springs: [], villagers: [], chests: [], heights };
+  }
+
   /** Villages whose block list can reach into this chunk (plateau radius plus slack). */
   private villagesForChunk(cx: number, cz: number): VillageInfo[] {
     const centerX = cx * CHUNK_SIZE + CHUNK_SIZE / 2;
@@ -641,6 +726,7 @@ export class TerrainGenerator {
     village: { x: number; z: number; baseY: number },
     plot: Footprint,
   ): boolean {
+    if (this.showcase) return false;
     const key = `${village.x},${village.z},${village.baseY}:${plot.x0},${plot.z0},${plot.w},${plot.d}`;
     const cached = this.growthPlotCache.get(key);
     if (cached !== undefined) return cached;
@@ -689,6 +775,7 @@ export class TerrainGenerator {
     village: { x: number; z: number },
     parcel: FieldParcel,
   ): boolean {
+    if (this.showcase) return false;
     const key = `${village.x},${village.z}:${parcel.x0},${parcel.z0},${parcel.w},${parcel.d}`;
     const cached = this.farmParcelCache.get(key);
     if (cached !== undefined) return cached;
@@ -719,6 +806,9 @@ export class TerrainGenerator {
 
   /** Public vegetation exclusion used by deterministic object-tree generation. */
   isInsideVillage(x: number, z: number): boolean {
+    // On the showcase this is what keeps an oak from growing through a nave: the
+    // exhibition's own ground is spoken for, and the lawn between lots is not.
+    if (this.showcase) return this.showcase.claims(x, z);
     return this.villages.inside(x, z);
   }
 }

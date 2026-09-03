@@ -2,6 +2,7 @@ import ChunkWorker from './chunk.worker?worker';
 import type { SurveyMessage, SurveyReadyMessage, WorkerRequest } from './chunkMessages';
 import type { RegionSurvey } from '../world/generation/terrain';
 import type { WorldConstants } from '../world/generation/infinite/world';
+import type { WorldKind } from '../world/generation/kind';
 
 /** Blocks of world one request covers.
  *
@@ -46,7 +47,8 @@ export class MapSurveyor {
 
   constructor(
     private readonly seed: number,
-    private readonly constants: WorldConstants,
+    private readonly constants: WorldConstants | null,
+    private readonly kind: WorldKind,
     private readonly size = Math.max(1, Math.min(3, Math.floor((navigator.hardwareConcurrency || 4) / 2))),
   ) {}
 
@@ -151,7 +153,7 @@ export class MapSurveyor {
         }
         this.pump();
       };
-      this.post(worker, { type: 'init', seed: this.seed, constants: this.constants });
+      this.post(worker, { type: 'init', seed: this.seed, constants: this.constants, kind: this.kind });
       this.workers.push(worker);
       this.idle.push(worker);
     }

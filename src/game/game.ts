@@ -49,6 +49,7 @@ import {
   toChunkCoord,
   toLocalCoord,
 } from '../world/chunk';
+import { DEFAULT_WORLD_KIND } from '../world/generation/kind';
 import { TerrainGenerator } from '../world/generation/terrain';
 import { LightEngine } from '../world/lighting';
 import { WATER_FULL } from '../world/water';
@@ -439,7 +440,7 @@ export class Game {
 
   constructor(private readonly options: GameOptions) {
     this.world = new World(options.seed);
-    this.generator = new TerrainGenerator(options.seed);
+    this.generator = new TerrainGenerator(options.seed, undefined, options.kind ?? DEFAULT_WORLD_KIND);
     this.treeModels = buildTreeModels(options.seed);
     this.trees = new TreeStore(this.generator, this.treeModels, options.save?.removedTrees ?? []);
     this.world.objectCollider = this.trees;
@@ -574,7 +575,7 @@ export class Game {
       () => this.closeWarpDialog(),
     );
 
-    this.pool = new ChunkWorkerPool(options.seed, this.generator.constants());
+    this.pool = new ChunkWorkerPool(options.seed, this.generator.constants(), this.generator.kind);
     this.pool.setHandler((message) => this.onChunkReady(message));
 
     if (options.save) {
@@ -4566,7 +4567,7 @@ export class Game {
     const z0 = (toChunkCoord(this.player.z) - (cols >> 1)) * CHUNK_SIZE;
     const covered = cols * CHUNK_SIZE;
     this.mapMemory.beginReveal(x0, z0, cols, cols, CHUNK_SIZE);
-    this.surveyor ??= new MapSurveyor(this.world.seed, this.generator.constants());
+    this.surveyor ??= new MapSurveyor(this.world.seed, this.generator.constants(), this.generator.kind);
     const started = Date.now();
     let announced = 0;
     this.surveyor.run(x0, z0, cols, cols, CHUNK_SIZE, {
@@ -4943,6 +4944,7 @@ export class Game {
   snapshot(): SaveData {
     return createGameSnapshot({
       seed: this.options.seed,
+      kind: this.generator.kind,
       time: this.day.time,
       world: this.world,
       mapMemory: this.mapMemory,

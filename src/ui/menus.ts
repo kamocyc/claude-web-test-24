@@ -7,7 +7,7 @@ import {
   SPEEDS,
   type Settings,
 } from '../game/settings';
-import { VERIFICATION_SEED_TEXT } from '../game/seeds';
+import { SHOWCASE_SEED_TEXT, VERIFICATION_SEED_TEXT } from '../game/seeds';
 import { KEYS } from './help';
 import { el, show } from './dom';
 
@@ -36,6 +36,9 @@ export interface TitleActions {
    *  running beside it — laid most of the way, with the last stretch, the tool and the
    *  rails for it left to the player. */
   onSampleWorld(): void;
+  /** The superflat test world: no terrain at all, and one of each kind of building
+   *  laid out around a square. What the block palette is checked against. */
+  onShowcaseWorld(): void;
 }
 
 /** Title, pause and death overlays. */
@@ -59,6 +62,7 @@ export class Menus {
   private onFile: ((file: File) => void) | null = null;
   private readonly sampleButton = el('button', 'menu-button subtle', '見本ワールド（道と鉄道）');
   private readonly verifyButton = el('button', 'menu-button subtle', '検証用ワールド');
+  private readonly showcaseButton = el('button', 'menu-button subtle', '建築見本ワールド（スーパーフラット）');
   private newButton!: HTMLButtonElement;
   private resumeButton!: HTMLButtonElement;
   private helpButton!: HTMLButtonElement;
@@ -115,6 +119,7 @@ export class Menus {
     this.verifyButton.title = '毎回まったく同じ地形で始まる、確認用の固定シード';
     this.sampleButton.title = '村と村を結ぶ 400 マスほどの道が、はじめから敷いてある世界';
     this.openButton.title = 'ファイルに書き出したワールドを、そのまま開く';
+    this.showcaseButton.title = '起伏のない平坦な世界に、高層ビル・洋館・記念建築・歴史的建造物が並ぶ';
     this.title.append(
       heading,
       subtitle,
@@ -124,6 +129,7 @@ export class Menus {
       this.openButton,
       this.sampleButton,
       this.verifyButton,
+      this.showcaseButton,
       this.titleNote,
       help,
     );
@@ -294,6 +300,10 @@ export class Menus {
     this.sampleButton.onclick = () => {
       this.seedInput.value = VERIFICATION_SEED_TEXT;
       actions.onSampleWorld();
+    };
+    this.showcaseButton.onclick = () => {
+      this.seedInput.value = SHOWCASE_SEED_TEXT;
+      actions.onShowcaseWorld();
     };
   }
 

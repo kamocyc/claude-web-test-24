@@ -1,6 +1,7 @@
 import ChunkWorker from './chunk.worker?worker';
 import type { ChunkReadyMessage, WorkerRequest, WorkerResponse } from './chunkMessages';
 import type { WorldConstants } from '../world/generation/infinite/world';
+import type { WorldKind } from '../world/generation/kind';
 import { chunkKey } from '../world/chunk';
 
 interface Job {
@@ -17,7 +18,7 @@ export class ChunkWorkerPool {
   private readonly queue = new Map<string, Job>();
   private readonly inFlight = new Set<string>();
   private onChunk: ((message: ChunkReadyMessage) => void) | null = null;
-  constructor(seed: number, constants: WorldConstants,
+  constructor(seed: number, constants: WorldConstants | null, kind: WorldKind,
     size = Math.max(2, Math.min(6, (navigator.hardwareConcurrency || 4) - 1))) {
     for (let i = 0; i < size; i++) {
       const worker = new ChunkWorker();
@@ -30,7 +31,7 @@ export class ChunkWorkerPool {
         this.onChunk?.(event.data);
         this.pump();
       };
-      this.post(worker, { type: 'init', seed, constants });
+      this.post(worker, { type: 'init', seed, constants, kind });
       this.workers.push(worker);
       this.idle.push(worker);
     }

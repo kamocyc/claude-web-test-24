@@ -20,6 +20,7 @@ import { tradesFromJSON, tradesToJSON } from './trading';
 
 export interface SnapshotSource {
   seed: number;
+  kind: SaveData['kind'];
   time: number;
   world: World;
   mapMemory: MapMemory;
@@ -70,6 +71,7 @@ export function createGameSnapshot(source: SnapshotSource): SaveData {
   return {
     version: SAVE_VERSION,
     seed: source.seed,
+    kind: source.kind,
     time: source.time,
     savedAt: Date.now(),
     player: {

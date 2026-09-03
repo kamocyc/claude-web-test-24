@@ -80,6 +80,7 @@ export type { SavedIndustry } from './industry';
 export type { SavedQuest } from './questline';
 
 import { CHUNK_SIZE, parseChunkKey } from '../world/chunk';
+import { DEFAULT_WORLD_KIND, isWorldKind, type WorldKind } from '../world/generation/kind';
 import type { SavedVillage } from './villages';
 import type { SavedStop, SavedLine } from './lines';
 import type { SavedIndustry } from './industry';
@@ -139,6 +140,10 @@ export interface SavedTracks {
 export interface SaveData {
   version: number;
   seed: number;
+  /** Which generator built this world. Optional so that saves written before the
+   *  showcase existed open as what they are — ordinary terrain — instead of being
+   *  refused by a version bump that would throw every world away. */
+  kind?: WorldKind;
   time: number;
   savedAt: number;
   player: SavedPlayer;
@@ -315,6 +320,9 @@ export function parseSave(text: string): SaveData | null {
     if (!data || typeof data !== 'object') return null;
     if (data.version !== SAVE_VERSION) return null;
     if (typeof data.seed !== 'number' || !data.player || !data.edits || !Array.isArray(data.removedTrees)) return null;
+    // A world opened under the wrong generator is a world of floating houses, so
+    // an unrecognised kind falls back to the one every save before it was.
+    data.kind = isWorldKind(data.kind) ? data.kind : DEFAULT_WORLD_KIND;
     return data;
   } catch {
     return null;

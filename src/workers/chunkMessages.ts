@@ -1,6 +1,7 @@
 import type { ChestMarker, VillagerMarker } from '../world/generation/village';
 import type { RegionSurvey } from '../world/generation/terrain';
 import type { WorldConstants } from '../world/generation/infinite/world';
+import type { WorldKind } from '../world/generation/kind';
 
 export interface InitMessage {
   type: 'init';
@@ -13,8 +14,17 @@ export interface InitMessage {
    * would otherwise pay that separately, for an answer all of them are obliged
    * to agree on to the last bit — and disagreeing would put the sea at two
    * different heights in two different chunks.
+   *
+   * Null on a world whose ground is not measured from anything, which is what a
+   * superflat showcase is.
    */
-  constants: WorldConstants;
+  constants: WorldConstants | null;
+  /**
+   * Which generator to build with. A world's kind is not a preference the worker
+   * could look up — it is part of what the world *is* — and a worker told the
+   * wrong one would quietly hand back terrain for a superflat world.
+   */
+  kind: WorldKind;
 }
 
 export interface GenerateMessage {

@@ -87,6 +87,24 @@ blockItem('drain', Block.DRAIN);
 blockItem('floodgate', Block.FLOODGATE_CLOSED);
 blockItem('gold_ore', Block.GOLD_ORE, { smeltsTo: 'gold_ingot' });
 
+// --- architecture materials --------------------------------------------------
+// Placeable forms of the facing materials. A roof wedge and a column are not here:
+// they are directional, and are placed as their material (`stone_bricks` already
+// works that way), so the hotbar does not fill up with four of everything.
+blockItem('bricks', Block.BRICKS);
+blockItem('plaster', Block.PLASTER);
+blockItem('timber_frame', Block.TIMBER_FRAME);
+blockItem('marble', Block.MARBLE);
+blockItem('slate', Block.SLATE);
+blockItem('roof_tile', Block.ROOF_TILE);
+blockItem('copper_panel', Block.COPPER_PANEL);
+blockItem('concrete', Block.CONCRETE);
+blockItem('steel', Block.STEEL);
+blockItem('tinted_glass', Block.TINTED_GLASS);
+blockItem('stained_glass', Block.STAINED_GLASS);
+blockItem('gold_block', Block.GOLD_BLOCK);
+blockItem('lantern', Block.LANTERN);
+
 // Cobblestone smelts back into smooth stone.
 ITEMS.get('cobblestone')!.smeltsTo = 'stone';
 

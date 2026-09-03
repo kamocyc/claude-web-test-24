@@ -4,6 +4,7 @@ import type { Industry } from './industry';
 import type { SaveData } from './save';
 import type { Settings } from './settings';
 import type { VillageRecord } from './villages';
+import type { WorldKind } from '../world/generation/kind';
 
 export interface GameOptions {
   canvas: HTMLCanvasElement;
@@ -12,6 +13,8 @@ export interface GameOptions {
   seed: number;
   save: SaveData | null;
   settings: Settings;
+  /** Which generator builds this world. Defaults to the ordinary terrain. */
+  kind?: WorldKind;
   /** Start with a road already built between two villages. */
   sample?: boolean;
   onQuit(): void;

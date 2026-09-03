@@ -1,5 +1,6 @@
 import { seedFromString } from '../core/rng';
 import { CHUNK_HEIGHT } from '../world/chunk';
+import { isWorldKind, type WorldKind } from '../world/generation/kind';
 import type { TerrainGenerator } from '../world/generation/terrain';
 
 /** The world used for verification: screenshots, the browser smoke test and the
@@ -9,6 +10,12 @@ export const VERIFICATION_SEED_TEXT = 'voxelcraft';
 
 export const VERIFICATION_SEED = seedFromString(VERIFICATION_SEED_TEXT);
 
+/** The superflat building showcase. Its seed decides almost nothing — the layout is
+ *  fixed and only the small decorative rolls read it — but a world still needs one,
+ *  and a named one keeps the URL shareable. */
+export const SHOWCASE_SEED_TEXT = 'showcase';
+export const SHOWCASE_SEED = seedFromString(SHOWCASE_SEED_TEXT);
+
 /** Seed named in the page URL (`?seed=...`), so a specific world can be shared as a
  *  link. Returns null when the URL does not ask for one. */
 export function seedFromUrl(search: string): { text: string; seed: number } | null {
@@ -16,6 +23,17 @@ export function seedFromUrl(search: string): { text: string; seed: number } | nu
   const text = params.get('seed');
   if (text === null) return null;
   return { text, seed: seedFromString(text) };
+}
+
+/**
+ * The generator named in the page URL (`?world=showcase`), so the test world can be
+ * opened as a link and pinned by the browser smoke test. Returns null when the URL
+ * does not name one, and for a name that is not a generator — a typo should open the
+ * ordinary world rather than nothing at all.
+ */
+export function worldKindFromUrl(search: string): WorldKind | null {
+  const asked = new URLSearchParams(search).get('world');
+  return isWorldKind(asked) ? asked : null;
 }
 
 /**

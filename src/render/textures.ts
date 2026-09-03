@@ -655,6 +655,242 @@ tile('floodgate_open', (ctx) => {
   roundRect(ctx, U - 2, 0, 2, U, 0.8, [120, 120, 128]);
 });
 
+// --- architecture materials ----------------------------------------------------
+// The terrain palette is deliberately soft and desaturated, because a hillside made
+// of it is looked at for hours. A facade is looked at from across a square, and has
+// to hold its own against the sky, so these run warmer and with more contrast — but
+// they are still built from the same facets, bands and blobs, so a brick wall next
+// to a cobblestone one reads as the same world.
+
+const BRICK: Color = [198, 104, 82];
+const MORTAR: Color = [232, 222, 204];
+const PLASTER_C: Color = [242, 235, 219];
+const BEAM: Color = [124, 86, 58];
+const MARBLE_C: Color = [240, 241, 246];
+const SLATE_C: Color = [104, 114, 133];
+const TILE_C: Color = [206, 110, 76];
+const COPPER_C: Color = [116, 200, 176];
+const CONCRETE_C: Color = [200, 199, 194];
+const STEEL_C: Color = [146, 156, 172];
+const GOLD_C: Color = [246, 205, 96];
+
+tile('bricks', (ctx, rng) => {
+  rect(ctx, 0, 0, U, U, MORTAR);
+  // Four courses of five, offset by half a brick on alternate rows. The row height
+  // divides the tile exactly, so the bond carries on across the next block instead
+  // of jumping at the seam.
+  for (let row = 0; row < 4; row++) {
+    const y = row * 4;
+    const offset = row % 2 === 0 ? 0 : -4;
+    for (let x = offset; x < U; x += 8) {
+      const tone = shade(BRICK, (rng() - 0.45) * 26);
+      roundRect(ctx, x + 0.45, y + 0.45, 7.1, 3.1, 0.7, tone);
+      // A lit top edge: brick is laid, so every course catches the light the same way.
+      roundRect(ctx, x + 0.9, y + 0.8, 6.2, 0.9, 0.4, shade(tone, 20));
+      if (rng() < 0.35) disc(ctx, x + 2 + rng() * 4, y + 2.2, 0.5, shade(tone, -26), 0.6);
+    }
+  }
+});
+
+tile('plaster', (ctx, rng) => {
+  facets(ctx, rng, PLASTER_C, 2, 4);
+  // Trowel sweeps rather than speckles: the point of plaster is that it is smooth
+  // and still not flat.
+  for (let i = 0; i < 3; i++) {
+    band(ctx, 2 + i * 5.4, 1.5, 0.5, shade(PLASTER_C, i % 2 === 0 ? -9 : 8), 0.5, i * 1.7);
+  }
+  speckle(ctx, rng, shade(PLASTER_C, -14), 5, 0.7);
+});
+
+tile('timber_frame', (ctx, rng) => {
+  facets(ctx, rng, PLASTER_C, 2, 4);
+  speckle(ctx, rng, shade(PLASTER_C, -12), 5, 0.7);
+  // Posts on the tile's own edges and one brace across it. Keeping the uprights at
+  // x = 0 and x = U means two blocks side by side share a post rather than growing
+  // a double-width one.
+  const post = (x: number) => {
+    rect(ctx, x - 1.15, 0, 2.3, U, BEAM);
+    rect(ctx, x - 1.15, 0, 0.8, U, shade(BEAM, 16));
+  };
+  rect(ctx, 0, 0, U, 2.1, BEAM);
+  rect(ctx, 0, U - 2.1, U, 2.1, BEAM);
+  rect(ctx, 0, U - 2.1, U, 0.7, shade(BEAM, 18));
+  poly(ctx, [[1.5, U - 2], [5.4, 1.9], [7.2, 1.9], [3.3, U - 2]], shade(BEAM, -6));
+  post(0);
+  post(U);
+});
+
+tile('marble', (ctx, rng) => {
+  facets(ctx, rng, MARBLE_C, 2, 3);
+  // Two veins, drawn as thin quads that start and end on opposite edges so they
+  // carry across a wall instead of stopping at every block.
+  const vein = (y0: number, y1: number, width: number, tone: number, alpha: number) => {
+    const pts: Pt[] = [];
+    for (let x = 0; x <= U; x += 1) {
+      pts.push([x, y0 + ((y1 - y0) * x) / U + Math.sin((x / U) * Math.PI * 2.2) * 1.5]);
+    }
+    for (let x = U; x >= 0; x -= 1) {
+      pts.push([x, y0 + ((y1 - y0) * x) / U + Math.sin((x / U) * Math.PI * 2.2) * 1.5 + width]);
+    }
+    poly(ctx, pts, shade(MARBLE_C, tone), alpha);
+  };
+  vein(4.5, 10, 0.7, -34, 0.55);
+  vein(11, 3.5, 0.45, -22, 0.4);
+  speckle(ctx, rng, shade(MARBLE_C, -10), 4, 0.6);
+});
+
+/** The side of a column: the same stone, with the flutes a classical order has cut
+ *  into it. Drawn as vertical highlight/shadow pairs, so the round geometry the
+ *  mesher already gives the block gains the ribs that say which order it is. */
+tile('marble_fluted', (ctx, rng) => {
+  facets(ctx, rng, MARBLE_C, 2, 3);
+  for (let i = 0; i < 4; i++) {
+    const x = 1 + i * 4;
+    rect(ctx, x, 0, 1.5, U, shade(MARBLE_C, -20), 0.75);
+    rect(ctx, x + 1.5, 0, 1.1, U, shade(MARBLE_C, 12), 0.7);
+  }
+  speckle(ctx, rng, shade(MARBLE_C, -12), 3, 0.6);
+});
+
+tile('slate', (ctx, rng) => {
+  rect(ctx, 0, 0, U, U, shade(SLATE_C, -26));
+  // Four courses of overlapping shingles, staggered like the brick bond.
+  for (let row = 0; row < 4; row++) {
+    const y = row * 4;
+    const offset = row % 2 === 0 ? 0 : -3;
+    for (let x = offset; x < U; x += 6) {
+      const tone = shade(SLATE_C, (rng() - 0.5) * 22);
+      roundRect(ctx, x + 0.3, y, 5.4, 4.6, 0.9, tone);
+      roundRect(ctx, x + 0.7, y + 0.3, 4.6, 1, 0.5, shade(tone, 18));
+      rect(ctx, x + 0.3, y + 4.1, 5.4, 0.6, shade(tone, -24), 0.7);
+    }
+  }
+});
+
+tile('roof_tile', (ctx, rng) => {
+  rect(ctx, 0, 0, U, U, shade(TILE_C, -34));
+  // Pantiles: half-round barrels running down the slope, so the covering reads as
+  // rows of channels rather than as a red wall.
+  for (let i = 0; i < 4; i++) {
+    const x = i * 4;
+    const tone = shade(TILE_C, (rng() - 0.5) * 16);
+    roundRect(ctx, x + 0.35, -1, 3.3, U + 2, 1.5, tone);
+    roundRect(ctx, x + 0.9, -1, 1.2, U + 2, 0.6, shade(tone, 24));
+    rect(ctx, x + 3.1, -1, 0.7, U + 2, shade(tone, -26), 0.8);
+  }
+  // The lap between one course of tiles and the next.
+  rect(ctx, 0, 7.4, U, 1.1, shade(TILE_C, -30), 0.45);
+});
+
+tile('copper_panel', (ctx, rng) => {
+  facets(ctx, rng, COPPER_C, 2, 6);
+  // Standing seams: the raised joints a copper roof is folded along.
+  for (let i = 0; i < 3; i++) {
+    const x = 2 + i * 5.4;
+    rect(ctx, x, 0, 1.2, U, shade(COPPER_C, -30));
+    rect(ctx, x, 0, 0.5, U, shade(COPPER_C, 22));
+  }
+  // Patina is uneven; a few darker pools keep it from reading as painted metal.
+  for (let i = 0; i < 4; i++) {
+    disc(ctx, rng() * U, rng() * U, 1.2 + rng() * 1.6, shade(COPPER_C, -22), 0.35);
+  }
+});
+
+tile('concrete', (ctx, rng) => {
+  facets(ctx, rng, CONCRETE_C, 3, 5);
+  // The lines a shuttered pour leaves, and the tie holes down the middle of a panel.
+  rect(ctx, 0, 0, U, 0.7, shade(CONCRETE_C, -18), 0.7);
+  rect(ctx, 0, U - 0.7, U, 0.7, shade(CONCRETE_C, -18), 0.7);
+  for (const [x, y] of [[4, 4], [12, 4], [4, 12], [12, 12]] as const) {
+    disc(ctx, x, y, 0.65, shade(CONCRETE_C, -26), 0.7);
+    disc(ctx, x - 0.2, y - 0.2, 0.35, shade(CONCRETE_C, 12), 0.6);
+  }
+  speckle(ctx, rng, shade(CONCRETE_C, -14), 8, 0.7);
+});
+
+tile('steel', (ctx, rng) => {
+  facets(ctx, rng, STEEL_C, 2, 7);
+  // A plate with its edges turned and a row of rivets: what a riveted girder looks
+  // like at one block per storey.
+  rect(ctx, 0, 0, U, 1.5, shade(STEEL_C, 20));
+  rect(ctx, 0, U - 1.5, U, 1.5, shade(STEEL_C, -22));
+  rect(ctx, 0, 0, 1.5, U, shade(STEEL_C, 12));
+  rect(ctx, U - 1.5, 0, 1.5, U, shade(STEEL_C, -16));
+  for (let i = 0; i < 3; i++) {
+    blob(ctx, rng, 3 + i * 5, 7.5, 0.85, shade(STEEL_C, 6));
+  }
+});
+
+/** Curtain-wall glazing. Transparent like window glass, but darker, bluer and with
+ *  a mullion on two edges, so a tower of it reads as a grid of panels. */
+tile('tinted_glass', (ctx) => {
+  ctx.clearRect(0, 0, U, U);
+  roundRect(ctx, 0, 0, U, U, 1.5, [96, 150, 186], 0.46);
+  // The sky, caught along the top of the pane.
+  poly(ctx, [[0, 0], [U, 0], [U, 5], [0, 8]], [186, 226, 245], 0.3);
+  poly(ctx, [[2.5, 3], [8, 3], [5.5, 6], [1.5, 6]], [255, 255, 255], 0.4);
+  rect(ctx, 0, 0, U, 1.2, [58, 74, 92], 0.85);
+  rect(ctx, 0, 0, 1.2, U, [58, 74, 92], 0.85);
+});
+
+/** A leaded window. Kept translucent rather than cut out, so a nave gets coloured
+ *  light through it instead of a hole in the wall. */
+tile('stained_glass', (ctx, rng) => {
+  ctx.clearRect(0, 0, U, U);
+  const panes: Color[] = [
+    [214, 78, 82], [86, 122, 208], [238, 196, 92],
+    [96, 178, 128], [176, 96, 190], [226, 132, 74],
+  ];
+  for (let row = 0; row < 4; row++) {
+    for (let col = 0; col < 4; col++) {
+      const pane = panes[Math.floor(rng() * panes.length)];
+      roundRect(ctx, col * 4 + 0.4, row * 4 + 0.4, 3.2, 3.2, 1.2, pane, 0.78);
+      roundRect(ctx, col * 4 + 1, row * 4 + 1, 1.4, 1.1, 0.5, shade(pane, 40), 0.5);
+    }
+  }
+  // The lead cames between the panes.
+  ctx.strokeStyle = css([42, 44, 52], 0.85);
+  ctx.lineWidth = 0.7;
+  for (let i = 0; i <= 4; i++) {
+    ctx.beginPath();
+    ctx.moveTo(i * 4, 0);
+    ctx.lineTo(i * 4, U);
+    ctx.moveTo(0, i * 4);
+    ctx.lineTo(U, i * 4);
+    ctx.stroke();
+  }
+});
+
+tile('gold_block', (ctx, rng) => {
+  facets(ctx, rng, GOLD_C, 2, 12);
+  // A dome and a finial are the only things made of this, and both are seen against
+  // the sky, so the tile is mostly highlight.
+  poly(ctx, [[0, 0], [U, 0], [U, 4.5], [0, 6.5]], shade(GOLD_C, 30), 0.7);
+  poly(ctx, [[0, U], [U, U], [U, 11.5], [0, 10]], shade(GOLD_C, -34), 0.6);
+  disc(ctx, 5, 5.5, 1.6, [255, 250, 214], 0.5);
+});
+
+/** A street lamp. Dark ironwork around a pane that is already lit — the block emits
+ *  its own light, so the tile has to look like the source rather than like something
+ *  a torch is shining on. */
+tile('lantern', (ctx) => {
+  rect(ctx, 0, 0, U, U, [48, 46, 52]);
+  // The glazed panel, warm rather than white: a street lamp seen from across a
+  // square should read as a light source, and pure white reads as a blank block.
+  roundRect(ctx, 2.6, 2.2, 10.8, 11.6, 1.4, [214, 176, 96]);
+  roundRect(ctx, 3.6, 3.2, 8.8, 9.6, 1, [248, 226, 158]);
+  disc(ctx, 8, 8, 2.8, [255, 248, 214], 0.9);
+  // Cage bars, heavy enough to still be there at a distance.
+  rect(ctx, 7.2, 2.2, 1.6, 11.6, [40, 38, 44]);
+  rect(ctx, 2.6, 7.2, 10.8, 1.6, [40, 38, 44]);
+  rect(ctx, 2.6, 2.2, 10.8, 0.9, [40, 38, 44]);
+  rect(ctx, 2.6, 12.9, 10.8, 0.9, [40, 38, 44]);
+  // Cap and foot, which is what it hangs between.
+  rect(ctx, 0.6, 0, 14.8, 2, [34, 32, 38]);
+  rect(ctx, 0.6, U - 2, 14.8, 2, [34, 32, 38]);
+  rect(ctx, 0.6, 0, 14.8, 0.7, [78, 74, 84]);
+});
+
 // --- cross-shaped plants -----------------------------------------------------
 
 function plantTile(draw: Draw): Draw {

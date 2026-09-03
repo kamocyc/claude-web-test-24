@@ -10,7 +10,7 @@ let generator: TerrainGenerator | null = null;
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const message = event.data;
   if (message.type === 'init') {
-    generator = new TerrainGenerator(message.seed, message.constants);
+    generator = new TerrainGenerator(message.seed, message.constants ?? undefined, message.kind);
     return;
   }
   if (message.type === 'survey') {
