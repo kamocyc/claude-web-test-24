@@ -190,6 +190,13 @@ function traceStems(world: RiverSource, lakes: Uint8Array, frame: Frame): CellSt
     if (claimed[mouth]) continue;
     const cells = climb(mouth);
     for (const cell of cells) claimed[cell] = 1;
+    // Carry on into the water it drains into, for the same reason a tributary is
+    // extended to its junction below: a run that stops on the last land cell
+    // stops half a cell short of the coast, and the river ends in a field. The
+    // sea cell's own surface is at sea level, so the last point of the channel
+    // is cut at the waterline and the two bodies of water meet.
+    const into = world.parent[mouth];
+    if (into >= 0 && (world.sea[into] || lakes[into])) cells.push(into);
     if (cells.length >= 2) stems.push({ cells, order: 0 });
   }
 
@@ -221,10 +228,16 @@ function shapeStem(world: RiverSource, cells: number[],
   // The reference's 14 m floor on the channel width survives the conversion:
   // these are the top few per cent of the drainage by discharge, so the
   // smallest of them is still a river rather than a ditch.
-  const raw: RibbonPoint[] = cells.map(i => ({
-    x: frame.worldX(i % n), z: frame.worldZ(Math.floor(i / n)), w: riverWidthBlocks(14 + flowAt(i) * 62),
+  // Discharge as a running maximum down the run. It cannot fall downstream in any
+  // case, so this changes nothing inland; what it protects is the sea cell a mouth
+  // is extended into, whose own accumulation says nothing about the river that got
+  // there — without this the channel would pinch shut in its last few blocks.
+  let carried = 0;
+  const flows = cells.map(i => (carried = Math.max(carried, flowAt(i))));
+  const raw: RibbonPoint[] = cells.map((i, k) => ({
+    x: frame.worldX(i % n), z: frame.worldZ(Math.floor(i / n)), w: riverWidthBlocks(14 + flows[k] * 62),
   }));
-  const depths = cells.map(i => riverDepthBlocks(2 + flowAt(i) * 5));
+  const depths = flows.map(flow => riverDepthBlocks(2 + flow * 5));
   // world.terrain and world.filled are the same array, so this is the bare
   // ground surface: the channel is cut below it rather than floated on top.
   const levels = cells.map(i => Math.max(SEA_LEVEL, unitsToHeight(world.filled[i], world.seaLevel)));

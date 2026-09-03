@@ -2,6 +2,8 @@ import { smoothstep } from '../../core/noise';
 import { SEA_LEVEL } from '../chunk';
 import { Biome, biomeDef, classifyBiome, isSnowy } from './biome';
 import { CIVIL_TILE, civilTileOf } from './infinite/constants';
+import { bankReach } from './infinite/riverCarve';
+import type { RiverSample } from './infinite/riverField';
 import type { InfiniteSettlement, SettlementTier } from './infinite/settlements';
 import { CELL_BLOCKS } from './scale';
 import type { VillageSite, VillageVariant } from './village';
@@ -69,6 +71,23 @@ export interface VillageInfo {
 export function plateauWeight(site: { x: number; z: number }, x: number, z: number): number {
   const distance = Math.hypot(x - site.x, z - site.z);
   return 1 - smoothstep(PLATEAU_FULL, PLATEAU_EDGE, distance);
+}
+
+/**
+ * How far past its banks a river keeps the town's plateau off it.
+ *
+ * The plateau is a hard replacement — inside `PLATEAU_FULL` it discards whatever
+ * the ground was — so a town standing on a river used to fill the channel in and
+ * the river simply stopped at the town wall. The town still levels its streets;
+ * it just stops short of the water and lets its floor come down to the bank over
+ * this many blocks, which is what a riverside town looks like anyway.
+ */
+const FLOODPLAIN_REACH = 12;
+
+/** 1 where the ground belongs to the river, 0 where it belongs to the town. */
+export function channelHold(river: RiverSample): number {
+  const bank = river.width * 0.5 + bankReach(river);
+  return 1 - smoothstep(bank, bank + FLOODPLAIN_REACH, river.distance);
 }
 
 /** Cells whose village list is kept. One chunk is one cell, so this is a region. */
@@ -144,11 +163,21 @@ export class VillageField {
     return false;
   }
 
-  /** The height a column ends up at once every nearby town has levelled it. */
-  flatten(x: number, z: number, height: number): number {
+  /**
+   * The height a column ends up at once every nearby town has levelled it.
+   *
+   * `river` is the channel at this column, when the caller has one. Where a river
+   * runs through a town the plateau is held off it — see `channelHold` — so the
+   * water keeps its bed and its banks and the streets come down to meet them.
+   * A caller without a channel to hand (the cheap `height()` estimate, which has
+   * no hydrology in it at all) passes nothing and gets the plain plateau.
+   */
+  flatten(x: number, z: number, height: number, river: RiverSample | null = null): number {
+    const hold = river ? channelHold(river) : 0;
+    if (hold >= 1) return height;
     let out = height;
     for (const info of this.near(x, z)) {
-      const weight = plateauWeight(info.site, x, z);
+      const weight = plateauWeight(info.site, x, z) * (1 - hold);
       if (weight > 0) out = out + (info.baseY - out) * weight;
     }
     return out;

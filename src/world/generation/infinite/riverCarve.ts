@@ -1,3 +1,4 @@
+import { SEA_LEVEL } from '../../chunk';
 import type { RiverSample } from './riverField';
 
 /**
@@ -58,6 +59,11 @@ export const bankReach = (sample: RiverSample) => Math.max(2.5, sample.width * 0
  * one side and a levee on the other rather than a flat trench.
  */
 export function leveeHeight(sample: RiverSample, base: number): number {
+  // Nothing to hold once the water is the sea's. `waterY` is floored at sea level,
+  // so without this the last stretch of every river carries a bank one block above
+  // the ocean — along its sides, and, because the field measures distance radially
+  // past the end of a run, wrapped right around the mouth. That bank was the dam.
+  if (sample.waterY <= SEA_LEVEL) return base;
   if (sample.distance <= sample.width * 0.5) return base;
   if (sample.distance > sample.width * 0.5 + bankReach(sample)) return base;
   return Math.max(base, sample.waterY + 1);

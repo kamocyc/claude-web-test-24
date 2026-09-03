@@ -57,6 +57,14 @@ export interface FieldSample {
 export interface ColumnSample extends FieldSample {
   /** Ground height in blocks, carved and levelled, rounded and clamped. */
   y: number;
+  /** The same ground with the channel not yet cut into it.
+   *
+   *  A town levels the land it stands on, and it has to do that to the ground the
+   *  river found rather than to the ground the river has already carved — level a
+   *  carved column and the channel is filled in. So the carve is handed out
+   *  separately from the field it was cut into, and `terrain.ts` puts it back
+   *  after the plateau. */
+  bare: number;
   sea: boolean;
   /** The channel here, when there is one within its banks' reach. */
   river: RiverSample | null;
@@ -203,7 +211,7 @@ export class WorldField {
     // The sea is `units <= seaLevel` by construction, and `unitsToHeight` maps
     // that boundary exactly onto `SEA_LEVEL`, so the block answer and the
     // tile's own mask cannot disagree about where the coast is.
-    return { ...field, ground, y, sea: y < SEA_LEVEL, river };
+    return { ...field, ground, bare: field.ground, y, sea: y < SEA_LEVEL, river };
   }
 
   /** The channel at a block, or null where there is none within its banks. */

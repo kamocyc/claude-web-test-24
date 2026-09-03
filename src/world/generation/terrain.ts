@@ -6,7 +6,7 @@ import { WATER_FULL } from '../water';
 import { type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
 import { ORES, outcropDepth, outcropIn, placeCactus, placeSugarCane } from './features';
 import type { FieldParcel } from './fields';
-import { bankReach } from './infinite/riverCarve';
+import { bankReach, channelHeight, leveeHeight } from './infinite/riverCarve';
 import type { RiverSample } from './infinite/riverField';
 import { MAX_HEIGHT, MIN_HEIGHT, ruggedFromSlope } from './scale';
 import { VillageField, type VillageInfo } from './villageSites';
@@ -311,7 +311,15 @@ export class TerrainGenerator {
    */
   private columnPlan(x: number, z: number): ColumnPlan {
     const column = this.field.columnAt(x, z);
-    const ground = clamp(Math.round(this.villages.flatten(x, z, column.y)), MIN_HEIGHT, MAX_HEIGHT);
+    const river = column.river;
+    // Level first, cut second. A town levels the ground the river *found*, and
+    // then the channel is cut into the levelled ground — do it the other way
+    // round, as this did, and the plateau fills the channel in and the river
+    // stops dead at the town. `flatten` also keeps its hands off the water
+    // itself, so the streets come down to the bank instead of over it.
+    const levelled = this.villages.flatten(x, z, column.bare, river);
+    const shaped = river ? leveeHeight(river, channelHeight(river, levelled)) : levelled;
+    const ground = clamp(Math.round(shaped), MIN_HEIGHT, MAX_HEIGHT);
     const { temperature, humidity } = this.climate(x, z);
     const biome = classifyBiome({
       height: ground,
@@ -321,18 +329,19 @@ export class TerrainGenerator {
       rugged: ruggedFromSlope(column.slope),
     });
     const def = biomeDef(biome);
-    const river = column.river;
     // A river's banks are its own material, not the biome's turf: grass running
     // to the water's edge is the one thing that makes a carved channel read as
     // a canal.
     const onBank = river !== null && river.distance <= river.width * 0.5 + bankReach(river);
     const surface = onBank && ground <= river.waterY + 1 ? def.bank : def.surface;
     const inChannel = river !== null && river.distance <= river.width * 0.5;
-    // Sea first: a channel that reaches the coast is the sea by the time it
-    // gets there, and its own level is the one the drainage gave it inland.
-    const waterTop = ground < SEA_LEVEL ? SEA_LEVEL
-      : inChannel && river.waterY > SEA_LEVEL && river.waterY > ground ? river.waterY
-        : -1;
+    // Whichever stands higher. A channel that has reached the coast is at sea
+    // level and the sea fills it; one still inland stands above the sea and fills
+    // itself. Taking the maximum rather than choosing between them is what lets
+    // the two meet at a river mouth instead of stopping a few blocks apart.
+    const seaTop = ground < SEA_LEVEL ? SEA_LEVEL : -1;
+    const riverTop = inChannel && river.waterY > ground ? river.waterY : -1;
+    const waterTop = Math.max(seaTop, riverTop);
     return { ground, biome, def, surface, river, inChannel, waterTop };
   }
 
@@ -403,7 +412,7 @@ export class TerrainGenerator {
       for (let lx = 0; lx < CHUNK_SIZE; lx++) {
         const x = originX + lx;
         const z = originZ + lz;
-        const { ground: h, biome, def, surface, river, inChannel } = this.columnPlan(x, z);
+        const { ground: h, biome, def, surface, waterTop } = this.columnPlan(x, z);
         heights[lz * CHUNK_SIZE + lx] = h;
         biomes[lz * CHUNK_SIZE + lx] = biome;
 
@@ -424,20 +433,17 @@ export class TerrainGenerator {
           setLocal(lx, h, lz, Block.SAND);
           setLocal(lx, h - 1, lz, Block.SAND);
         }
-        for (let y = h + 1; y <= SEA_LEVEL; y++) setLocal(lx, y, lz, Block.WATER);
-        if (h < SEA_LEVEL && isSnowy(biome)) setLocal(lx, SEA_LEVEL, lz, Block.ICE);
-
-        // The river, above the sea. `waterY` is a whole block and steps only
-        // downstream, so what goes in is a flat pool rather than a slope the
-        // water simulator would pour down (see `quantiseLevels`).
-        if (inChannel && river !== null && river.waterY > SEA_LEVEL) {
-          for (let y = Math.max(h + 1, SEA_LEVEL + 1); y <= river.waterY; y++) {
-            setLocal(lx, y, lz, Block.WATER);
-          }
-          if (isSnowy(biome)) setLocal(lx, river.waterY, lz, Block.ICE);
+        // One pour, from the same `waterTop` the map and `standingY` read. Sea and
+        // river used to be two loops under two different conditions, which is how
+        // a column could be dry on the map and wet in the world. A river surface
+        // is a whole block and steps only downstream, so what goes in is a flat
+        // pool rather than a slope the water simulator would drain (see
+        // `quantiseLevels`).
+        if (waterTop >= 0) {
+          for (let y = h + 1; y <= waterTop; y++) setLocal(lx, y, lz, Block.WATER);
+          if (isSnowy(biome)) setLocal(lx, waterTop, lz, Block.ICE);
           wet[lz * CHUNK_SIZE + lx] = 1;
         }
-        if (h < SEA_LEVEL) wet[lz * CHUNK_SIZE + lx] = 1;
       }
     }
 
