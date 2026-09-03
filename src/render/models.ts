@@ -12,9 +12,48 @@ import {
   type CarKind,
 } from '../game/consist';
 import type { MobKind } from '../game/mobs/types';
+import { CREATURES, type CreatureKind } from './creatureModels';
+import type { GaitName } from './mobAnimation';
 import { MOB } from './palette';
 
-export type PartRole = 'head' | 'armLeft' | 'armRight' | 'legFrontLeft' | 'legFrontRight' | 'legBackLeft' | 'legBackRight' | 'body' | 'detail';
+/**
+ * A frame that can turn, named after the body part it drives.
+ *
+ * A joint is what a part hangs off. The point of naming them is that the
+ * animator works from the names alone — it never asks what kind of mob it is
+ * driving — so a species gets its motion by growing the joint, not by growing a
+ * special case in the renderer.
+ */
+export type JointName =
+  | 'head' | 'neck' | 'jaw'
+  | 'armLeft' | 'armRight'
+  | 'legFrontLeft' | 'legFrontRight'
+  | 'legMidFrontLeft' | 'legMidFrontRight'
+  | 'legMidBackLeft' | 'legMidBackRight'
+  | 'legBackLeft' | 'legBackRight'
+  | 'earLeft' | 'earRight'
+  | 'wingLeft' | 'wingRight'
+  | 'tail' | 'tailTip';
+
+/** Where a part hangs. `body` and `detail` ride the mob itself and never move. */
+export type PartRole = JointName | 'body' | 'detail';
+
+/**
+ * What a part is made of.
+ *
+ * Everything used to be a box, which is most of why one animal read much like
+ * the next. A muzzle that narrows, a barrel of a body and a fleece of round
+ * puffs are three different shapes, and no arrangement of boxes says them.
+ */
+export type PartShape =
+  /** A box with every edge bevelled to suit its own smallest dimension. */
+  | 'box'
+  /** A cylinder along Y, scaled to the part's box — a limb, a neck, a tail. */
+  | 'cylinder'
+  /** A cylinder whose top is `taper` times the bottom — a muzzle, a horn. */
+  | 'taper'
+  /** An ellipsoid — a fleece puff, an abdomen, a nose. */
+  | 'sphere';
 
 export interface ModelPart {
   /** Width (x), height (y), depth (z) in blocks. */
@@ -23,6 +62,50 @@ export interface ModelPart {
   offset: [number, number, number];
   color: number;
   role: PartRole;
+  /** Default `box`. */
+  shape?: PartShape;
+  /** Rest rotation about the part's own centre, radians, applied Z then X then Y.
+   *  This is what lets a leg splay, a horn angle out and an ear lie back without
+   *  a joint of its own. */
+  rotation?: [number, number, number];
+  /** Bevel as a fraction of the part's smallest dimension. Default 0.2. */
+  round?: number;
+  /** `taper` only: the top's radius as a fraction of the bottom's. */
+  taper?: number;
+  /** Sides on the round shapes. Default 10; fewer for something tiny. */
+  segments?: number;
+  /** A second colour at the top of the part, blended down its height. Flat
+   *  pastel boxes are what made these read as toys; a little shading is the
+   *  cheapest thing that stops them. */
+  tip?: number;
+}
+
+/**
+ * Where a joint turns, and how it hangs at rest.
+ *
+ * `pivot` is in the same rest space as every `offset` — measured from the mob's
+ * feet — so a model can be read and checked without composing any transforms.
+ * The renderer converts to joint-local space once, when it builds the meshes.
+ */
+export interface Joint {
+  name: JointName;
+  pivot: [number, number, number];
+  /** The joint this one hangs off. Absent means it hangs off the mob. */
+  parent?: JointName;
+  /** How the joint sits when nothing is driving it: a dog's ear hangs down. */
+  rest?: [number, number, number];
+  /** Scales whatever the gait asks of this joint. 0 pins it — which is how a
+   *  zombie holds its arms out, rather than by a check on the kind. */
+  gain?: number;
+  /** Radians added to this joint's own clock. Eight spider legs ripple on it. */
+  phase?: number;
+}
+
+/** A mob's shape and its rig. `gait` names a row of the animator's table. */
+export interface MobModel {
+  parts: ModelPart[];
+  joints: Joint[];
+  gait: GaitName;
 }
 
 /** Rolling stock, in the same soft palette as the rest of the world: a coral engine,
@@ -328,8 +411,125 @@ const CARS: Record<CarKind, ModelPart[]> = {
   coach: coachCar(),
 };
 
-export function modelFor(kind: MobKind): ModelPart[] {
-  return MODELS[kind];
+/** Which row of the animator's table each kind walks on. */
+const GAIT_OF: Record<MobKind, GaitName> = {
+  zombie: 'biped', skeleton: 'biped', villager: 'biped', porter: 'biped', cart: 'biped',
+  spider: 'wave', rabbit: 'bound', chicken: 'strut', camel: 'plod',
+  pig: 'trot', cow: 'trot', sheep: 'trot', cat: 'trot', dog: 'trot', fox: 'trot',
+  // Rolling stock has no legs to swing, and a train that walked would be telling
+  // the player the wrong thing about what is moving the goods.
+  train: 'biped',
+};
+
+/** Where on its own parts a joint turns. */
+type Anchor = 'top' | 'bottom' | 'front' | 'back' | 'inner';
+
+/**
+ * A limb turns at the top, where it meets the body; a head at the base of its
+ * neck, which for anything on four legs is the back of the skull and for
+ * anything upright is under it; a tail at its root, which is its front.
+ */
+const ANCHOR: Record<JointName, Anchor> = {
+  head: 'bottom', neck: 'bottom', jaw: 'back',
+  armLeft: 'top', armRight: 'top',
+  legFrontLeft: 'top', legFrontRight: 'top',
+  legMidFrontLeft: 'top', legMidFrontRight: 'top',
+  legMidBackLeft: 'top', legMidBackRight: 'top',
+  legBackLeft: 'top', legBackRight: 'top',
+  earLeft: 'bottom', earRight: 'bottom',
+  wingLeft: 'inner', wingRight: 'inner',
+  tail: 'front', tailTip: 'front',
+};
+
+/** Joints that hang off another joint rather than off the mob. */
+const HANGS_ON: Partial<Record<JointName, JointName>> = {
+  earLeft: 'head', earRight: 'head', jaw: 'head', tailTip: 'tail',
+};
+
+function anchorOf(parts: ModelPart[], role: JointName, quadruped: boolean): [number, number, number] {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const part of parts) {
+    if (part.role !== role) continue;
+    minX = Math.min(minX, part.offset[0] - part.size[0] / 2);
+    maxX = Math.max(maxX, part.offset[0] + part.size[0] / 2);
+    minY = Math.min(minY, part.offset[1] - part.size[1] / 2);
+    maxY = Math.max(maxY, part.offset[1] + part.size[1] / 2);
+    minZ = Math.min(minZ, part.offset[2] - part.size[2] / 2);
+    maxZ = Math.max(maxZ, part.offset[2] + part.size[2] / 2);
+  }
+  const midX = (minX + maxX) / 2, midY = (minY + maxY) / 2, midZ = (minZ + maxZ) / 2;
+  // A four-legged animal's head is out in front of it and swings from the neck
+  // behind it; an upright one's sits on its shoulders and swings from under it.
+  const anchor = role === 'head' && quadruped ? 'back' : ANCHOR[role];
+  switch (anchor) {
+    case 'top': return [midX, maxY, midZ];
+    case 'bottom': return [midX, minY, midZ];
+    case 'front': return [midX, midY, minZ];
+    case 'back': return [midX, midY, maxZ];
+    case 'inner': return [midX > 0 ? minX : maxX, maxY, midZ];
+  }
+}
+
+/**
+ * A rig derived from the parts, for a model that has not been given one.
+ *
+ * Every animated role present becomes a joint at the sensible end of its own
+ * parts. It is what lets a model be authored as a flat list of boxes and still
+ * swing from its hips, and it is the fallback a species keeps until it is worth
+ * hand-placing a pivot.
+ */
+export function rigFor(parts: ModelPart[], gait: GaitName): Joint[] {
+  const quadruped = gait !== 'biped' && gait !== 'strut';
+  const seen = new Set<JointName>();
+  const joints: Joint[] = [];
+  for (const part of parts) {
+    if (part.role === 'body' || part.role === 'detail' || seen.has(part.role)) continue;
+    seen.add(part.role);
+    joints.push({ name: part.role, pivot: anchorOf(parts, part.role, quadruped) });
+  }
+  // A joint may only hang off one that exists, or it would be rooted twice.
+  for (const joint of joints) {
+    const parent = HANGS_ON[joint.name];
+    if (parent && seen.has(parent)) joint.parent = parent;
+  }
+  return joints;
+}
+
+/** How a joint hangs, where the derived rig is not the whole story. */
+type Tuning = Partial<Record<JointName, Pick<Joint, 'rest' | 'gain' | 'phase'>>>;
+
+const TUNING: Partial<Record<MobKind, Tuning>> = {
+  // Arms held out in front and dead to the walk. This used to be a check on the
+  // mob's kind inside the renderer, which is the wrong place for it: how a
+  // zombie holds itself is a fact about zombies.
+  zombie: {
+    armLeft: { rest: [-1.5, 0, 0.06], gain: 0 },
+    armRight: { rest: [-1.5, 0, -0.06], gain: 0 },
+  },
+};
+
+function tune(joints: Joint[], tuning: Tuning | undefined): Joint[] {
+  if (!tuning) return joints;
+  return joints.map((joint) => ({ ...joint, ...tuning[joint.name] }));
+}
+
+const RIGGED = new Map<MobKind, MobModel>();
+
+export function modelFor(kind: MobKind): MobModel {
+  // The living kinds are modelled and rigged by hand in `creatureModels.ts`. The
+  // haulers and the rolling stock are the same boxes they always were, and take
+  // the derived rig — which is what gives a porter hips without anyone having to
+  // decide where a porter's hips are.
+  const creature = CREATURES[kind as CreatureKind];
+  if (creature) return creature;
+  let model = RIGGED.get(kind);
+  if (!model) {
+    const parts = MODELS[kind];
+    const gait = GAIT_OF[kind];
+    model = { parts, joints: tune(rigFor(parts, gait), TUNING[kind]), gait };
+    RIGGED.set(kind, model);
+  }
+  return model;
 }
 
 /** One car of a train, drawn in its own frame. The cars behind the engine are placed by

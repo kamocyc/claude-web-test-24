@@ -161,6 +161,9 @@ const DEFS: Record<MobKind, MobDef> = {
 
 /** Mobs the transport network owns and drives along a route. They never spawn by
  *  themselves, they never wander, and they never run away from anything. */
+/** Every kind there is, for anything that has to be total over them. */
+export const MOB_KINDS = Object.keys(DEFS) as readonly MobKind[];
+
 export const HAULING_KINDS: readonly MobKind[] = ['porter', 'cart', 'train'];
 
 export function mobDef(kind: MobKind): MobDef {
