@@ -19,6 +19,7 @@ import { CHUNK_AREA, CHUNK_SIZE, type Chunk, chunkKey, toChunkCoord, toLocalCoor
 import { base64ToBytes, bytesToBase64, decodeRuns, encodeRuns } from './save';
 import type { World } from '../world/world';
 import type { TreeMapSample } from '../world/trees';
+import type { ChunkSurvey } from '../world/generation/terrain';
 
 export interface TreeMapSurface {
   canopyAt(x: number, z: number): TreeMapSample | null;
@@ -48,6 +49,10 @@ interface Tile {
   /** The encoded form, kept until the tile is surveyed again. A save re-encodes only
    *  the chunks that have been near the player since the last one. */
   encoded: string | null;
+  /** Taken off the generator by the debug reveal rather than walked past. Kept out
+   *  of the save: the map remembers where the player has been, and a region somebody
+   *  looked at in the console is not that — nor is it worth the megabytes. */
+  revealed?: true;
 }
 
 function localIndex(x: number, z: number): number {
@@ -60,6 +65,17 @@ export class MapMemory implements MapSurface {
   /** How many chunks have been surveyed. */
   get size(): number {
     return this.tiles.size;
+  }
+
+  /** Drops everything the debug reveal put on the map, leaving what was walked. */
+  forgetRevealed(): number {
+    let dropped = 0;
+    for (const [key, tile] of [...this.tiles]) {
+      if (!tile.revealed) continue;
+      this.tiles.delete(key);
+      dropped++;
+    }
+    return dropped;
   }
 
   /** Whether a chunk has ever been walked past. */
@@ -94,6 +110,32 @@ export class MapMemory implements MapSurface {
     tile.encoded = null;
   }
 
+  /**
+   * Writes down a survey taken from somewhere other than a loaded chunk.
+   *
+   * The map is a record of where the player has been, and this is the one thing
+   * that puts something on it they have not walked past — a debug view of a
+   * whole region, taken straight off the generator. It overwrites, like
+   * `record`, so walking through afterwards replaces the survey with the ground
+   * as it actually turned out, and is not saved with the world.
+   */
+  recordSurvey(cx: number, cz: number, survey: ChunkSurvey): void {
+    const tile: Tile = {
+      height: new Uint8Array(CHUNK_AREA),
+      block: new Uint16Array(CHUNK_AREA),
+      water: new Uint8Array(CHUNK_AREA),
+      encoded: null,
+      revealed: true,
+    };
+    for (let i = 0; i < CHUNK_AREA; i++) {
+      const top = survey.height[i];
+      tile.height[i] = top < 0 ? 0 : Math.min(255, top + 1);
+      tile.block[i] = top < 0 ? 0 : survey.block[i];
+      tile.water[i] = top < 0 ? 0 : survey.water[i];
+    }
+    this.tiles.set(chunkKey(cx, cz), tile);
+  }
+
   heightAt(x: number, z: number): number {
     const tile = this.tiles.get(chunkKey(toChunkCoord(x), toChunkCoord(z)));
     if (!tile) return -1;
@@ -115,6 +157,7 @@ export class MapMemory implements MapSurface {
   toJSON(): Record<string, string> {
     const out: Record<string, string> = {};
     for (const [key, tile] of this.tiles) {
+      if (tile.revealed) continue;
       if (tile.encoded === null) tile.encoded = encodeTile(tile);
       out[key] = tile.encoded;
     }

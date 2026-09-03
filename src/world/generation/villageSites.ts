@@ -71,8 +71,12 @@ export function plateauWeight(site: { x: number; z: number }, x: number, z: numb
   return 1 - smoothstep(PLATEAU_FULL, PLATEAU_EDGE, distance);
 }
 
+/** Cells whose village list is kept. One chunk is one cell, so this is a region. */
+const NEARBY_CACHE = 4096;
+
 export class VillageField {
   private readonly infos = new Map<string, VillageInfo>();
+  private readonly nearby = new Map<number, VillageInfo[]>();
 
   constructor(
     private readonly field: WorldField,
@@ -99,9 +103,26 @@ export class VillageField {
     return out;
   }
 
-  /** Villages whose plateau or buildings can reach a column. */
+  /**
+   * Villages whose plateau or buildings can reach a column.
+   *
+   * Answered per cell rather than per block, and cached, because every column of
+   * every chunk asks it and the answer costs a walk over the settlement lattice.
+   * Asking from the middle of the cell instead of from the block is safe by a
+   * wide margin: the list reaches 480 blocks, the two questions asked of it —
+   * how much a town flattens this ground, and whether its buildings land here —
+   * both answer "not at all" past 56, and a cell is 16 blocks across.
+   */
   near(x: number, z: number): VillageInfo[] {
-    return this.around(x, z, 1);
+    const cellX = Math.floor(x / CELL_BLOCKS), cellZ = Math.floor(z / CELL_BLOCKS);
+    const key = cellZ * 8388608 + cellX;
+    const cached = this.nearby.get(key);
+    if (cached) return cached;
+    const half = CELL_BLOCKS / 2;
+    const list = this.around(cellX * CELL_BLOCKS + half, cellZ * CELL_BLOCKS + half, 1);
+    this.nearby.set(key, list);
+    while (this.nearby.size > NEARBY_CACHE) this.nearby.delete(this.nearby.keys().next().value as number);
+    return list;
   }
 
   /**
@@ -135,6 +156,7 @@ export class VillageField {
 
   clear() {
     this.infos.clear();
+    this.nearby.clear();
   }
 
   /** Cached on the lattice's own id, so two lookups of one place agree. */

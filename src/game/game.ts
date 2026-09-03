@@ -90,6 +90,7 @@ import { SPEEDS, nearestSpeed, saveSettings } from './settings';
 import { tickFurnace } from './smelting';
 import { generateTrades, restockTrades } from './trading';
 import { VILLAGE_RADIUS, type Footprint, type HouseRecord } from '../world/generation/village';
+import { VILLAGE_CELL_BLOCKS } from '../world/generation/villageSites';
 import {
   HEADROOM,
   ROAD_SPEED,
@@ -243,6 +244,7 @@ import {
   TRACK_START_MARK,
   TRACK_VIEW_INTERVAL,
   TUTORIAL_STOPS,
+  REVEAL_LIMIT,
   UNLOAD_MARGIN,
   WATER_MESH_BUDGET,
   WORLD_BUDGET_MS,
@@ -4938,6 +4940,57 @@ export class Game {
         if (village) this.debug.teleport(village.x, village.z);
         return village;
       },
+      /**
+       * Surveys the generator over a square around the player and puts it on the
+       * map, so a whole region can be looked at without walking it.
+       *
+       * For looking at terrain generation: where the coasts and the rivers run,
+       * how the biomes fall, whether the towns are spaced the way they should
+       * be. Open the map with `M` afterwards and zoom out.
+       *
+       * `radius` is in blocks. `stride` is how coarsely each chunk is sampled and
+       * defaults to a value that keeps a wide sweep affordable — at the zoom a
+       * wide view is read at, one sample per chunk is one pixel, so there is
+       * nothing finer to see. What it costs is mostly the terrain itself: the
+       * drainage solution is computed in 2048-block tiles and a square this
+       * crosses has to be built before anything can be drawn from it.
+       *
+       * What it draws is the ground as generated — no houses, and no roads the
+       * player has laid. Chunks in memory are skipped, because the map already
+       * prefers those and they are the ground as it is *now*. Nothing written
+       * here is saved with the world; `forgetRevealed` takes it back off.
+       */
+      revealMap: (radius = 768, stride?: number): {
+        chunks: number; blocks: number; stride: number; ms: number; villages: { x: number; z: number }[];
+      } => {
+        const started = Date.now();
+        const asked = Math.max(CHUNK_SIZE, Math.round(radius));
+        // A revealed chunk is a kilobyte of surface held in memory. The budget is
+        // what keeps "reveal the world" from being an out-of-memory error with a
+        // friendly name; past it the radius is quietly brought in, and the return
+        // value says how far it actually went.
+        const reach = Math.min(Math.round(asked / CHUNK_SIZE), REVEAL_LIMIT);
+        const step = stride ?? Math.max(1, Math.min(CHUNK_SIZE, Math.round(reach * CHUNK_SIZE / 256)));
+        const cx = toChunkCoord(this.player.x);
+        const cz = toChunkCoord(this.player.z);
+        let chunks = 0;
+        for (let dz = -reach; dz <= reach; dz++) {
+          for (let dx = -reach; dx <= reach; dx++) {
+            if (this.world.hasChunk(cx + dx, cz + dz)) continue;
+            this.mapMemory.recordSurvey(cx + dx, cz + dz, this.generator.surveyChunk(cx + dx, cz + dz, step));
+            chunks++;
+          }
+        }
+        const blocks = (reach * 2 + 1) * CHUNK_SIZE;
+        const villages = this.generator
+          .villagesAround(this.player.x, this.player.z, Math.ceil(blocks / 2 / VILLAGE_CELL_BLOCKS))
+          .map((v) => ({ x: v.x, z: v.z }));
+        const ms = Date.now() - started;
+        this.hud.toast(`${blocks} マス四方を地図に写した（${(ms / 1000).toFixed(1)} 秒）`);
+        return { chunks, blocks, stride: step, ms, villages };
+      },
+      /** Takes the revealed region back off the map, leaving what was walked. */
+      forgetRevealed: (): number => this.mapMemory.forgetRevealed(),
       // --- villages, roads and transport ---------------------------------
       villages: () =>
         [...this.villages.byId.values()].map((v) => ({

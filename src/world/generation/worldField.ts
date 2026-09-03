@@ -40,7 +40,7 @@ import { CELL_BLOCKS, MAX_HEIGHT, MIN_HEIGHT, unitsToHeight } from './scale';
 
 /** What the lattice says about a column, before the rivers are cut into it. */
 export interface FieldSample {
-  /** Ground height in blocks, as a real number. */
+  /** Ground height in blocks, sub-cell relief included, as a real number. */
   ground: number;
   /** Terrain units. */
   units: number;
@@ -74,8 +74,15 @@ for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) RIVER_NEIGHBOU
 
 /** Stems are small; the super-chunks they came from are not, and are dropped. */
 const STEM_CACHE = 25;
-const FIELD_CACHE = 4;
-/** Cell deltas for the chunk in hand and its neighbours. */
+/**
+ * River fields, of which a query near a corner touches one and a sweep across a
+ * region touches them row by row. Nine, so a 3 x 3 neighbourhood stays resident:
+ * assembling one stitches nine tiles' worth of loose ends together, which is
+ * quadratic in the number of ends, and at four a raster sweep re-stitched the
+ * same three fields for every row of chunks it crossed.
+ */
+const FIELD_CACHE = 9;
+/** Cell deltas and slopes for the chunk in hand and its neighbours. */
 const DELTA_CACHE = 4096;
 
 export class WorldField {
@@ -86,6 +93,7 @@ export class WorldField {
   private readonly relief: FineRelief;
   private readonly seaLevel: number;
   private readonly deltas = new Map<number, number>();
+  private readonly slopes = new Map<number, number>();
   private readonly stems = new Map<number, RiverStem[]>();
   private readonly fields = new Map<number, RiverField>();
 
@@ -117,15 +125,37 @@ export class WorldField {
 
   /**
    * How steep the bare height field is at a block, in terrain units per cell —
-   * the same measurement `slopeMap` makes, one stage earlier. Costs four noise
-   * evaluations and needs no tile, which is what lets `biomeAt` be asked about
-   * ground nobody has generated.
+   * the same measurement `slopeMap` makes, one stage earlier, and needing no
+   * tile, which is what lets `biomeAt` be asked about ground nobody has
+   * generated.
+   *
+   * Measured on the cell lattice and interpolated, like the delta. Done per
+   * block it is four more evaluations of the whole noise stack on top of the
+   * one the height already costs, which made it five sixths of the price of a
+   * column; on the lattice the four are shared by the 256 blocks of a cell. The
+   * slope is a derivative of a field whose finest octave is seventeen blocks
+   * wide, so there is nothing below the cell for the per-block version to have
+   * been telling anyone.
    */
   baseSlope(x: number, z: number): number {
     const fx = x / CELL_BLOCKS, fz = z / CELL_BLOCKS;
-    return Math.hypot(
-      this.sampler.height(fx + 1, fz) - this.sampler.height(fx - 1, fz),
-      this.sampler.height(fx, fz + 1) - this.sampler.height(fx, fz - 1)) * 0.5;
+    const cx = Math.floor(fx), cz = Math.floor(fz);
+    const tx = fx - cx, tz = fz - cz;
+    const s00 = this.slopeAt(cx, cz), s10 = this.slopeAt(cx + 1, cz);
+    const s01 = this.slopeAt(cx, cz + 1), s11 = this.slopeAt(cx + 1, cz + 1);
+    return (s00 * (1 - tx) + s10 * tx) * (1 - tz) + (s01 * (1 - tx) + s11 * tx) * tz;
+  }
+
+  private slopeAt(cellX: number, cellY: number): number {
+    const key = cellY * 8388608 + cellX;
+    const cached = this.slopes.get(key);
+    if (cached !== undefined) return cached;
+    const slope = Math.hypot(
+      this.sampler.height(cellX + 1, cellY) - this.sampler.height(cellX - 1, cellY),
+      this.sampler.height(cellX, cellY + 1) - this.sampler.height(cellX, cellY - 1)) * 0.5;
+    this.slopes.set(key, slope);
+    while (this.slopes.size > DELTA_CACHE) this.slopes.delete(this.slopes.keys().next().value as number);
+    return slope;
   }
 
   /**
@@ -151,7 +181,7 @@ export class WorldField {
     const near = sampleGround((a, b) => this.world.superChunk(a, b), Math.round(fx), Math.round(fz));
     const chunk = near.chunk, i = near.index;
     return {
-      ground: unitsToHeight(units, this.seaLevel),
+      ground: unitsToHeight(units, this.seaLevel) + this.relief.at(x, z, this.baseSlope(x, z)),
       units,
       slope: chunk.slope[i],
       landform: chunk.landform[i],
@@ -162,10 +192,11 @@ export class WorldField {
 
   /** The full answer, rivers included, building whatever tiles it takes. */
   columnAt(x: number, z: number): ColumnSample {
-    const field = this.fieldAt(x, z);
-    // Before the channel is cut, so `channelHeight` still gets a clean bed and
+    // `fieldAt` has already put the sub-cell relief on, which is before the
+    // channel is cut: `channelHeight` still gets a clean bed out of it and
     // `leveeHeight` still gets a bank it can guarantee is above the water.
-    let ground = field.ground + this.relief.at(x, z, this.baseSlope(x, z));
+    const field = this.fieldAt(x, z);
+    let ground = field.ground;
     const river = this.riverAt(x, z);
     if (river) ground = leveeHeight(river, channelHeight(river, ground));
     const y = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, Math.round(ground)));
@@ -203,6 +234,7 @@ export class WorldField {
   clear() {
     this.world.clear();
     this.deltas.clear();
+    this.slopes.clear();
     this.stems.clear();
     this.fields.clear();
   }

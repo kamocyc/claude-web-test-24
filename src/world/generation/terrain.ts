@@ -1,12 +1,13 @@
 import { Noise, clamp } from '../../core/noise';
 import { hashFloat, mulberry32, hashInts } from '../../core/rng';
 import { Block, type BlockId } from '../blocks';
-import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey } from '../chunk';
+import { CHUNK_AREA, CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey } from '../chunk';
 import { WATER_FULL } from '../water';
 import { type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
 import { ORES, outcropDepth, outcropIn, placeCactus, placeSugarCane } from './features';
 import type { FieldParcel } from './fields';
 import { bankReach } from './infinite/riverCarve';
+import type { RiverSample } from './infinite/riverField';
 import { MAX_HEIGHT, MIN_HEIGHT, ruggedFromSlope } from './scale';
 import { VillageField, type VillageInfo } from './villageSites';
 import { WorldField } from './worldField';
@@ -56,6 +57,31 @@ export interface ChunkGenResult {
   chests: ChestMarker[];
   /** Surface Y per column, so the main thread does not have to work it out again. */
   heights: Int16Array;
+}
+
+/** The top face of a chunk's columns, for a map that does not want the blocks. */
+export interface ChunkSurvey {
+  /** Y of the top face, water included. */
+  height: Int16Array;
+  /** What is on top: the surface material, or water, or ice. */
+  block: Uint16Array;
+  /** Fill level of that cell, 0 when dry. */
+  water: Uint8Array;
+}
+
+/** What both writing a column's blocks and drawing it on a map depend on. */
+interface ColumnPlan {
+  /** The ground, plateaus applied, rounded and clamped into the world. */
+  ground: number;
+  biome: BiomeId;
+  def: ReturnType<typeof biomeDef>;
+  /** The block the top face of the ground is made of. */
+  surface: BlockId;
+  river: RiverSample | null;
+  /** Whether the column is between the channel's banks. */
+  inChannel: boolean;
+  /** Y the water stands to, or -1 when the column is dry. */
+  waterTop: number;
 }
 
 /** What the village registry needs to know about a village, before anything has happened
@@ -129,6 +155,28 @@ export class TerrainGenerator {
   /** The ground before any town levelled it. */
   rawHeight(x: number, z: number): number {
     return this.exactHeight(x, z) ?? this.field.estimate(x, z);
+  }
+
+  /**
+   * The block a person could be set down on at this column, or null when nobody
+   * could be.
+   *
+   * The same question `generateChunk` answers when it decides how deep the water
+   * over a column stands, asked through the same method, so this cannot drift
+   * from what actually gets built. It costs the tiles the drainage solution
+   * needs — which is why `height` does not go through it and this does: how high
+   * the ground is roughly and whether a person can stand on it are different
+   * questions, and only the second one has to be exactly right.
+   *
+   * Refused: anything with water over it, sea or river alike, and the very top
+   * of the world, where there is no room over a person's head. The village
+   * plateau is applied, so a town's own streets are standable.
+   */
+  standingY(x: number, z: number): number | null {
+    const plan = this.columnPlan(x, z);
+    if (plan.waterTop >= 0) return null;
+    if (plan.ground >= CHUNK_HEIGHT - 20) return null;
+    return plan.ground;
   }
 
   /** The ground a player stands on, town plateaus included. */
@@ -231,6 +279,83 @@ export class TerrainGenerator {
     return best;
   }
 
+  /**
+   * Everything about a column that both writing its blocks and drawing it on a
+   * map have to agree about: how high the ground is, what biome it is in, what
+   * the top face is made of, and how deep the water over it stands.
+   *
+   * One method rather than two, because a map that disagrees with the ground is
+   * worse than no map: it sends the player to a lake that is a hillside.
+   */
+  private columnPlan(x: number, z: number): ColumnPlan {
+    const column = this.field.columnAt(x, z);
+    const ground = clamp(Math.round(this.villages.flatten(x, z, column.y)), MIN_HEIGHT, MAX_HEIGHT);
+    const { temperature, humidity } = this.climate(x, z);
+    const biome = classifyBiome({
+      height: ground,
+      temperature,
+      humidity,
+      seaLevel: SEA_LEVEL,
+      rugged: ruggedFromSlope(column.slope),
+    });
+    const def = biomeDef(biome);
+    const river = column.river;
+    // A river's banks are its own material, not the biome's turf: grass running
+    // to the water's edge is the one thing that makes a carved channel read as
+    // a canal.
+    const onBank = river !== null && river.distance <= river.width * 0.5 + bankReach(river);
+    const surface = onBank && ground <= river.waterY + 1 ? def.bank : def.surface;
+    const inChannel = river !== null && river.distance <= river.width * 0.5;
+    // Sea first: a channel that reaches the coast is the sea by the time it
+    // gets there, and its own level is the one the drainage gave it inland.
+    const waterTop = ground < SEA_LEVEL ? SEA_LEVEL
+      : inChannel && river.waterY > SEA_LEVEL && river.waterY > ground ? river.waterY
+        : -1;
+    return { ground, biome, def, surface, river, inChannel, waterTop };
+  }
+
+  /**
+   * What a map would draw for one chunk, without generating it.
+   *
+   * The blocks are the expensive part of a chunk and a map wants none of them —
+   * it needs the top face and the water over it, which is the column stage and
+   * nothing else. `stride` samples every nth column and repeats the answer
+   * across the rest, which is what makes surveying a whole region affordable;
+   * at the zoom a wide view is read at, a stride of two or four is below one
+   * pixel.
+   *
+   * The village is not on it. Its plateau is, because that is terrain, but its
+   * houses are written after the columns and are not worth generating a chunk
+   * for; nor is what grows on the ground, so a column wearing a flower comes
+   * back as the grass under it.
+   */
+  surveyChunk(cx: number, cz: number, stride = 1): ChunkSurvey {
+    const height = new Int16Array(CHUNK_AREA);
+    const block = new Uint16Array(CHUNK_AREA);
+    const water = new Uint8Array(CHUNK_AREA);
+    const originX = cx * CHUNK_SIZE;
+    const originZ = cz * CHUNK_SIZE;
+    const step = Math.max(1, Math.min(CHUNK_SIZE, Math.round(stride)));
+    for (let lz = 0; lz < CHUNK_SIZE; lz += step) {
+      for (let lx = 0; lx < CHUNK_SIZE; lx += step) {
+        const plan = this.columnPlan(originX + lx, originZ + lz);
+        const frozen = plan.waterTop >= 0 && isSnowy(plan.biome);
+        const top = plan.waterTop >= 0 ? plan.waterTop : plan.ground;
+        const id = plan.waterTop < 0 ? plan.surface : frozen ? Block.ICE : Block.WATER;
+        const level = plan.waterTop >= 0 && !frozen ? WATER_FULL : 0;
+        for (let dz = 0; dz < step && lz + dz < CHUNK_SIZE; dz++) {
+          for (let dx = 0; dx < step && lx + dx < CHUNK_SIZE; dx++) {
+            const i = (lz + dz) * CHUNK_SIZE + (lx + dx);
+            height[i] = top;
+            block[i] = id;
+            water[i] = level;
+          }
+        }
+      }
+    }
+    return { height, block, water };
+  }
+
   generateChunk(cx: number, cz: number): ChunkGenResult {
     const blocks = new Uint16Array(CHUNK_VOLUME);
     const water = new Uint8Array(CHUNK_VOLUME);
@@ -259,27 +384,10 @@ export class TerrainGenerator {
       for (let lx = 0; lx < CHUNK_SIZE; lx++) {
         const x = originX + lx;
         const z = originZ + lz;
-        const column = this.field.columnAt(x, z);
-        const h = clamp(Math.round(this.villages.flatten(x, z, column.y)), MIN_HEIGHT, MAX_HEIGHT);
-        const { temperature, humidity } = this.climate(x, z);
-        const biome = classifyBiome({
-          height: h,
-          temperature,
-          humidity,
-          seaLevel: SEA_LEVEL,
-          rugged: ruggedFromSlope(column.slope),
-        });
-        const def = biomeDef(biome);
+        const { ground: h, biome, def, surface, river, inChannel } = this.columnPlan(x, z);
         heights[lz * CHUNK_SIZE + lx] = h;
         biomes[lz * CHUNK_SIZE + lx] = biome;
 
-        // A river's banks are its own material, not the biome's turf: grass
-        // running to the water's edge is the one thing that makes a carved
-        // channel read as a canal.
-        const river = column.river;
-        const inChannel = river !== null && river.distance <= river.width * 0.5;
-        const onBank = river !== null && river.distance <= river.width * 0.5 + bankReach(river);
-        const surface = onBank && h <= river.waterY + 1 ? def.bank : def.surface;
         const fillerTop = h - 1;
         const fillerBottom = h - def.fillerDepth;
         for (let y = 0; y <= h; y++) {
@@ -303,7 +411,7 @@ export class TerrainGenerator {
         // The river, above the sea. `waterY` is a whole block and steps only
         // downstream, so what goes in is a flat pool rather than a slope the
         // water simulator would pour down (see `quantiseLevels`).
-        if (inChannel && river.waterY > SEA_LEVEL) {
+        if (inChannel && river !== null && river.waterY > SEA_LEVEL) {
           for (let y = Math.max(h + 1, SEA_LEVEL + 1); y <= river.waterY; y++) {
             setLocal(lx, y, lz, Block.WATER);
           }

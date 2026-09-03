@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { VERIFICATION_SEED, VERIFICATION_SEED_TEXT, findSpawn, seedFromUrl } from '../game/seeds';
 import { seedFromString } from '../core/rng';
-import { SEA_LEVEL } from '../world/chunk';
+import { CHUNK_SIZE, SEA_LEVEL, blockIndex } from '../world/chunk';
+import { Block } from '../world/blocks';
 import { TerrainGenerator } from '../world/generation/terrain';
 
 describe('seeds', () => {
@@ -32,6 +33,26 @@ describe('seeds', () => {
   describe('the verification world', () => {
     const generator = new TerrainGenerator(VERIFICATION_SEED);
     const spawn = findSpawn(generator);
+
+    it('starts the player somewhere they can stand', () => {
+      // The world has rivers in it, and a column in one has ground under it and
+      // several blocks of water on top. Asked only how high the ground was, the
+      // spawn search used to answer with the riverbed.
+      for (const text of ['voxelcraft', 'alpha', 'seed-3', '4242', 'ocean-heavy']) {
+        const generator = new TerrainGenerator(seedFromString(text));
+        const at = findSpawn(generator);
+        const cx = Math.floor(at.x / CHUNK_SIZE), cz = Math.floor(at.z / CHUNK_SIZE);
+        const { blocks } = generator.generateChunk(cx, cz);
+        const lx = at.x - cx * CHUNK_SIZE, lz = at.z - cz * CHUNK_SIZE;
+        const at0 = blocks[blockIndex(lx, at.y, lz)];
+        const above = blocks[blockIndex(lx, at.y + 1, lz)];
+        const below = blocks[blockIndex(lx, at.y - 1, lz)];
+        expect(below, `${text}: nothing to stand on`).not.toBe(Block.AIR);
+        expect(below, `${text}: standing on water`).not.toBe(Block.WATER);
+        expect(at0, `${text}: standing in water`).toBe(Block.AIR);
+        expect(above, `${text}: head under water`).toBe(Block.AIR);
+      }
+    });
 
     it('starts the player on dry land', () => {
       expect(spawn).toEqual({ x: 0, y: 50, z: 0 });
