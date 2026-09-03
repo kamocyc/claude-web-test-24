@@ -6,6 +6,7 @@ import { clear, el } from './dom';
 import { Compass, type CompassMarker } from './compass';
 import { Minimap, type MinimapOverlay } from './minimap';
 import { RoutePanel, type RoutePanelView } from './routePanel';
+import { CabPanel } from './cab';
 import { CoordPanel } from './coords';
 import type { MapSurface } from '../game/cartography';
 import { renderSlot } from './containers';
@@ -76,6 +77,8 @@ export class Hud {
   readonly compass = new Compass();
   readonly minimap: Minimap;
   readonly routes = new RoutePanel();
+  /** The driving readout. Empty and hidden unless somebody is in a cab. */
+  readonly cab = new CabPanel();
   readonly coords = new CoordPanel();
   private debugVisible = false;
   private clickPromptUp = false;
@@ -110,6 +113,7 @@ export class Hud {
       this.track,
       this.speedBadge,
       this.creativeBadge,
+      this.cab.root,
       bottom,
       this.toasts,
       this.clickPrompt,

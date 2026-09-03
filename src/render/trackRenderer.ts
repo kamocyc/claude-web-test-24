@@ -373,6 +373,7 @@ function emitSleepers(
         z: a.z + (b.z - a.z) * t,
         tx: a.tx + (b.tx - a.tx) * t,
         ty: a.ty + (b.ty - a.ty) * t,
+        radius: a.radius,
         tz: a.tz + (b.tz - a.tz) * t,
       };
       const { f, s, u } = frameAt(centre);

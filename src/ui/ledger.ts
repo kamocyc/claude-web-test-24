@@ -99,7 +99,7 @@ export interface LedgerRoute {
   load: number;
   porters: number;
   delivered: number;
-  /** 荷運び or 荷車 — what the width of the road buys. */
+  /** 荷運び・荷車・馬車・列車・船 — what the way between the two stops turned out to be. */
   vehicle: string;
   /** Blocks of up and down, and the road divided by the straight line. Both are charged:
    *  climb as time, detour as a fare that does not grow with it. */
@@ -286,7 +286,10 @@ export function buildLedger(view: LedgerView): HTMLElement {
       'ledger-note',
       '道があるだけでは荷は動かない — 停留所を置き、路線に並べて初めて便が出る。' +
         '舗装は速さ、幅は運ぶ手段を決める — 全区間が幅 3 マスなら荷車が走り、一度に 3 倍運ぶ。' +
+        '同じ道でも人を運ぶ便は馬車になり、荷車より多く速く運ぶ。' +
         '線路が両方の停留所に届いていれば列車が走り、速さも積む量も上がる（道は関係ない）。' +
+        'ただし線路の勾配と曲線は速さに効く — パネルの「線形」がその区間の目減りぶん。' +
+        '両端が海際なら、何も建てなくても船が渡る。陸路と海路があるときは速いほうを使う。' +
         '登りは時間を食い、遠回りしても運賃は増えない（運賃は直線距離ぶん）。' +
         '原料は産業から、加工品は町の工場から出る。工場は原料が全種類そろうまで何も作らない。' +
         '荷は町の「集荷所」の戸口から出て戸口へ入る — 建物を見て F キーで変えられる。' +

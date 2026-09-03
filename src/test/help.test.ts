@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { KEYS, helpView } from '../ui/help';
 import { MILESTONES, QUEST_STEPS } from '../game/questline';
-import { BLOCKS_PER_PORTER, CART_LOAD, MAX_PORTERS, TRAIN_LOAD } from '../game/transport';
+import {
+  BLOCKS_PER_PORTER,
+  BUS_LOAD,
+  CART_LOAD,
+  MAX_PORTERS,
+  OVERSPEED_GRACE,
+  SHIP_LOAD,
+  TRAIN_LOAD,
+} from '../game/transport';
+import { HARBOUR_REACH } from '../game/sea';
+import { EASY_RADIUS } from '../game/tracks';
 import { MAX_STOCK, PRODUCE_SECONDS, RANKS, STAGE_POINTS } from '../game/villages';
 import { HEADROOM, MAX_STEP, ROAD_SPEED } from '../game/roads';
 import { CELL_STOCK, COMMUTE_EVERY, HOME_PEOPLE, HOUSEHOLD_GOODS } from '../game/townEconomy';
@@ -118,6 +128,33 @@ describe('the 遊びかた screen', () => {
     // The one promise the whole feature stands on.
     expect(body).toContain('信号を 1 つも置いていない線路は、今までとまったく同じに動く');
     expect(body).toContain('待避線');
+  });
+
+  it('explains the three new ways of moving things, and what each is for', () => {
+    const body = text(view('done', 0));
+    // A carriage is the one vehicle the *cargo* chooses, so the page has to say that
+    // rather than leave the player widening a road and wondering why they see carts.
+    expect(body).toContain('馬車');
+    expect(body).toContain(`${BUS_LOAD} 倍`);
+    expect(body).toContain('車両が積荷で変わる唯一の場所');
+    // The sea costs nothing to build on, which is the whole of why a ship is worth having.
+    expect(body).toContain('船 — 何も作らずに海を渡る');
+    expect(body).toContain(`${SHIP_LOAD} 倍`);
+    expect(body).toContain(`${HARBOUR_REACH} マス以内`);
+    expect(body).toContain('速いほう');
+    // And the driving, including the one rule that costs the player time.
+    expect(body).toContain('手動運転');
+    expect(body).toContain('W が力行');
+    expect(body).toContain(`${OVERSPEED_GRACE} 秒たつと非常ブレーキ`);
+  });
+
+  it('says that a railway is no longer one number', () => {
+    const body = text(view('done', 0));
+    expect(body).toContain('勾配と曲線は速さに効く');
+    expect(body).toContain(`半径 ${EASY_RADIUS} マス以上の曲線は無料`);
+    // The asymmetry is the reason to follow the valley, so it is said out loud.
+    expect(body).toContain('往きと復りで所要時間が違う');
+    expect(body).toContain('線形');
   });
 
   it('documents every key the game binds, including its own', () => {

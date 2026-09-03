@@ -1491,6 +1491,83 @@ body.screen-open #viewport {
 }
 
 
+/* ---------- 運転台 ---------- */
+
+/* Bottom right, clear of the hotbar and of the stats: the driver is looking out of the
+   window, and this is the corner of the screen a dashboard belongs in. */
+.cab {
+  position: absolute;
+  right: 12px;
+  bottom: 96px;
+  width: 250px;
+  padding: 8px 10px 7px;
+  border: 1px solid rgba(255, 212, 121, 0.45);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #f2e7d2;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  line-height: 1.5;
+}
+
+.cab-speed {
+  font-size: 19px;
+  color: #ffd479;
+}
+
+.cab-speed.over {
+  color: #ff8f7a;
+}
+
+.cab-bar {
+  position: relative;
+  height: 7px;
+  margin: 3px 0 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.13);
+  overflow: hidden;
+}
+
+.cab-fill {
+  height: 100%;
+  background: #8ce896;
+}
+
+.cab-fill.over {
+  background: #ff8f7a;
+}
+
+/* The limit, as a line across the bar. A number the driver has to read and compare is a
+   number they will not read; a mark the needle is either under or past is one glance. */
+.cab-limit {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 11px;
+  background: #ffd479;
+}
+
+.cab-rails,
+.cab-ahead,
+.cab-cargo {
+  color: #d8cdb8;
+}
+
+.cab-warn {
+  margin-top: 3px;
+  color: #ffd479;
+}
+
+.cab-warn.bad {
+  color: #ff8f7a;
+}
+
+.cab-keys {
+  margin-top: 4px;
+  color: #9d9482;
+}
+
 /* ---------- 路線表（N） ---------- */
 
 .lines-host {

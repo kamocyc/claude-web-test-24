@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   BASE_LOAD,
+  BUS_LOAD,
+  BUS_PACE,
   CART_LOAD,
+  DRIVE_TOP,
+  OVERSPEED_GRACE,
+  SHIP_LOAD,
+  SHIP_QUALITY,
   MAX_WAGONS,
   WAGON_LOAD,
   carsFor,
@@ -18,6 +24,8 @@ import {
   type RailSource,
   type Route,
   type RailWay,
+  type SeaLane,
+  type SeaSource,
   type TransportEvents,
   type Vehicle,
 } from '../game/transport';
@@ -135,10 +143,25 @@ class FakeRails implements RailSource {
     return this.moved;
   }
 
+  /** What the rails are like, when a test cares. Flat and straight by default, which is
+   *  what every test written before curves cost anything expects. */
+  private shape: { grade: number; radius: number } = { grade: 0, radius: Infinity };
+
+  /** Makes the whole line climb from the first village towards the second, and bend. */
+  profile(grade: number, radius = Infinity): void {
+    this.shape = { grade, radius };
+    this.moved++;
+  }
+
   wayBetween(from: RoadPoint, to: RoadPoint): RailWay | null {
     if (this.built < 1 || !this.manned) return null;
     const points = this.line(from, to, 1);
-    return { points, climb: 0, sections: this.blocks(points.length) };
+    return {
+      points,
+      climb: 0,
+      sections: this.blocks(points.length),
+      profile: points.map(() => ({ ...this.shape })),
+    };
   }
 
   /** Signals every `gap` points along the line, or none at all. Zero is what every
@@ -198,6 +221,8 @@ interface BuildOptions {
   width?: number;
   /** A railway between the two villages, when the test is about one. */
   rails?: FakeRails;
+  /** Open water between them, when the test is about ships. */
+  sea?: SeaSource;
   /** Doorways for the two villages, when the test cares that goods start and finish at a
    *  building rather than at a point on the map. */
   depots?: DepotSource | null;
@@ -258,7 +283,7 @@ function stock(registry: VillageRegistry, id: string): void {
 }
 
 function build({
-  surface = Block.DIRT_PATH, host, width = 1, rails, depots, town, stocked = true,
+  surface = Block.DIRT_PATH, host, width = 1, rails, sea, depots, town, stocked = true,
 }: BuildOptions = {}) {
   const world = new FakeWorld();
   const span = Math.floor((width - 1) / 2);
@@ -306,6 +331,7 @@ function build({
     handlers,
     host ?? null,
     rails ?? null,
+    sea ?? null,
   );
   /** Draws the line the rest of the test runs on, and hands back its one leg.
    *
@@ -1121,11 +1147,11 @@ describe('a train on a railway', () => {
     run(transport, 3);
     const route = transport.routes[0];
     expect(route.vehicle, 'the line is not railed').toBe('train');
-    expect(route.railSpan, 'a railed route has no rail span').not.toBeNull();
+    expect(route.carrySpan, 'a railed route has no rail span').not.toBeNull();
     // The walk out of the village is a real part of the trip, so the rails are the middle
     // of it and not the whole of it.
-    expect(route.railSpan!.from).toBeGreaterThan(0);
-    expect(route.railSpan!.to).toBeLessThan(1);
+    expect(route.carrySpan!.from).toBeGreaterThan(0);
+    expect(route.carrySpan!.to).toBeLessThan(1);
     // At the door it is a porter, in the middle it is a train, at the far door a porter.
     expect(transport.vehicleAt(route, 0)).toBe('porter');
     expect(transport.vehicleAt(route, 0.5)).toBe('train');
@@ -1219,7 +1245,7 @@ describe('signals and the block ahead', () => {
   function ship(route: Route, t: number, dir: 1 | -1): Porter {
     const porter: Porter = {
       t, dir, home: dir === 1 ? 0 : 1, good: 'wheat', cargo: 1,
-      mobId: null, mobVehicle: null, held: 0,
+      mobId: null, mobVehicle: null, held: 0, manual: false,
     };
     route.porters.push(porter);
     return porter;
@@ -1403,5 +1429,333 @@ describe('people as something a line carries', () => {
     expect(registry.waiting(ID_A)).toBe(0);
     run(transport, 20);
     expect(transport.routes[0].porters).toHaveLength(0);
+  });
+});
+
+/** Open water between the two villages, as transport sees it: a straight lane of the
+ *  length the test asks for. Where the points actually run does not matter to anything in
+ *  `transport.ts` — the length is what it compares against the road, and the shape of a
+ *  crossing is `sea.ts`'s business. */
+class FakeSea implements SeaSource {
+  constructor(private readonly length: number | null) {}
+
+  laneBetween(from: RoadPoint, to: RoadPoint): SeaLane | null {
+    if (this.length === null) return null;
+    const away = Math.hypot(to.x - from.x, to.z - from.z) || 1;
+    const points: RoadPoint[] = [];
+    for (let i = 0; i <= 4; i++) {
+      const t = i / 4;
+      points.push({
+        x: from.x + ((to.x - from.x) / away) * this.length * t,
+        y: 34,
+        z: from.z + ((to.z - from.z) / away) * this.length * t,
+      });
+    }
+    return { points, length: this.length };
+  }
+}
+
+describe('what the cargo rides on the road', () => {
+  it('puts people in a carriage where crates would go by cart', () => {
+    const { transport, link } = build({ surface: Block.STONE_BRICKS, width: 3 });
+    const route = link();
+    run(transport, 3);
+    expect(route.vehicle).toBe('cart');
+    // The one place a trip's own cargo decides what carries it.
+    expect(transport.vehicleAt(route, 0.5, 'wheat')).toBe('cart');
+    expect(transport.vehicleAt(route, 0.5, PASSENGER)).toBe('bus');
+  });
+
+  it('carries more people than a cart carries crates, and carries them faster', () => {
+    const { transport, link } = build({ surface: Block.STONE_BRICKS, width: 3 });
+    const route = link();
+    run(transport, 3);
+    expect(transport.loadOf(route, true)).toBe(loadFor(route.quality) * BUS_LOAD);
+    expect(transport.loadOf(route, true)).toBeGreaterThan(transport.loadOf(route));
+    expect(transport.speedAt(route, 0.5, 1, PASSENGER)).toBeCloseTo(
+      transport.speedAt(route, 0.5, 1, 'wheat') * BUS_PACE,
+      6,
+    );
+  });
+
+  it('leaves a narrow road walking, whoever is on it', () => {
+    const { transport, link } = build({ surface: Block.DIRT_PATH, width: 1 });
+    const route = link();
+    run(transport, 3);
+    expect(route.vehicle).toBe('porter');
+    // No road, no bus: a carriage needs the three columns a cart needs.
+    expect(transport.vehicleAt(route, 0.5, PASSENGER)).toBe('porter');
+  });
+});
+
+describe('the sea', () => {
+  it('joins two coasts with no road between them at all', () => {
+    const { transport, events, link } = build({ surface: null, sea: new FakeSea(300) });
+    const route = link();
+    run(transport, 3);
+    expect(route.connected).toBe(true);
+    expect(events.connected).toBe(1);
+    expect(route.vehicle).toBe('ship');
+    expect(route.quality).toBe(SHIP_QUALITY);
+    expect(transport.loadOf(route)).toBe(loadFor(SHIP_QUALITY) * SHIP_LOAD);
+    // The crossing is the middle of the trip; the ends are the walk down to the quay.
+    expect(route.carrySpan).not.toBeNull();
+  });
+
+  it('leaves an inland pair alone', () => {
+    const { transport, link } = build({ surface: Block.DIRT_PATH, sea: new FakeSea(null) });
+    const route = link();
+    run(transport, 3);
+    expect(route.vehicle).toBe('porter');
+    expect(route.connected).toBe(true);
+  });
+
+  it('takes whichever of the road and the crossing is quicker', () => {
+    // The road these fixtures lay is about 240 blocks of dirt: quality 1, so 240 units of
+    // time. A 300 block crossing at ship speed is 167 of them, and wins.
+    const short = build({ surface: Block.DIRT_PATH, sea: new FakeSea(300) });
+    short.link();
+    run(short.transport, 3);
+    expect(short.transport.routes[0].vehicle).toBe('ship');
+
+    // Round the long way instead, and the dirt track is the better answer even though the
+    // ship is faster per block.
+    const long = build({ surface: Block.DIRT_PATH, sea: new FakeSea(900) });
+    long.link();
+    run(long.transport, 3);
+    expect(long.transport.routes[0].vehicle).toBe('porter');
+  });
+
+  it('gives way to a railway, which is what a railway is for', () => {
+    const rails = new FakeRails();
+    const { transport, link } = build({ surface: null, rails, sea: new FakeSea(300) });
+    const route = link();
+    run(transport, 3);
+    expect(route.vehicle).toBe('train');
+  });
+});
+
+describe('what a gradient and a curve cost a line', () => {
+  it('leaves a level, straight railway worth exactly what it always was', () => {
+    const rails = new FakeRails();
+    const { transport, link } = build({ surface: null, rails });
+    const route = link();
+    run(transport, 3);
+    expect(route.pace).toBe(1);
+    expect(transport.speedOf(route)).toBeCloseTo(PORTER_SPEED * RAIL_QUALITY, 6);
+    expect(transport.speedAt(route, 0.5, 1)).toBeCloseTo(transport.speedAt(route, 0.5, -1), 6);
+  });
+
+  it('makes the climb slower than the run back down it', () => {
+    const rails = new FakeRails();
+    rails.profile(0.1);
+    const { transport, link } = build({ surface: null, rails });
+    const route = link();
+    run(transport, 3);
+    expect(route.steepest).toBeCloseTo(0.1, 6);
+    // Uphill is the way the way points, which is from `from` towards `to`.
+    expect(transport.speedAt(route, 0.5, 1)).toBeLessThan(transport.speedAt(route, 0.5, -1));
+    expect(route.pace).toBeLessThan(1);
+  });
+
+  it('slows a curve whichever way it is taken', () => {
+    const rails = new FakeRails();
+    rails.profile(0, 8);
+    const { transport, link } = build({ surface: null, rails });
+    const route = link();
+    run(transport, 3);
+    expect(route.tightest).toBe(8);
+    expect(transport.speedAt(route, 0.5, 1)).toBeLessThan(PORTER_SPEED * RAIL_QUALITY);
+    expect(transport.speedAt(route, 0.5, 1)).toBeCloseTo(transport.speedAt(route, 0.5, -1), 6);
+  });
+
+  it('costs a shipment real time on the ground', () => {
+    const level = build({ surface: null, rails: new FakeRails() });
+    const climbing = new FakeRails();
+    climbing.profile(0.15, 10);
+    const bent = build({ surface: null, rails: climbing });
+    level.link();
+    bent.link();
+    run(level.transport, 3);
+    run(bent.transport, 3);
+    const walk = (fixture: ReturnType<typeof build>): number => {
+      const route = fixture.transport.routes[0];
+      route.porters.length = 0;
+      const porter: Porter = {
+        t: 0, dir: 1, home: 0, good: 'wheat', cargo: 1,
+        mobId: null, mobVehicle: null, held: 0, manual: false,
+      };
+      route.porters.push(porter);
+      for (let i = 0; i < 40; i++) fixture.transport.update(0.5, 10_000, 10_000);
+      return porter.t;
+    };
+    expect(walk(bent)).toBeLessThan(walk(level));
+  });
+});
+
+describe('driving one yourself', () => {
+  /** A railed line between the two villages, with the controls taken at the near end. */
+  function cab(profile?: { grade: number; radius?: number }) {
+    const rails = new FakeRails();
+    if (profile) rails.profile(profile.grade, profile.radius ?? Infinity);
+    const fixture = build({ surface: null, rails });
+    const line = fixture.network.createLine();
+    fixture.network.addCall(line.id, fixture.stopA.id);
+    fixture.network.addCall(line.id, fixture.stopB.id);
+    fixture.transport.syncLines(fixture.network);
+    run(fixture.transport, 3);
+    // The automatic service has been running while the leg was surveyed and has taken
+    // what was there. Put something back, so the driver has a train worth driving.
+    fixture.registry.get(ID_A)!.stock = 40;
+    return { ...fixture, lineId: line.id };
+  }
+
+  /** Holds the controls until something is true, or gives up. Returns whether it
+   *  happened, so a test can say so rather than asserting on whatever second it
+   *  happened to sample. */
+  function driveUntil(
+    transport: TransportNetwork,
+    controls: { power: number; brake: number },
+    done: (view: NonNullable<ReturnType<TransportNetwork['driving']>>) => boolean,
+    seconds = 120,
+  ): boolean {
+    for (let t = 0; t < seconds; t += 0.1) {
+      transport.updateDrive(0.1, controls, 10_000, 10_000);
+      const view = transport.driving();
+      if (!view) return false;
+      if (done(view)) return true;
+    }
+    return false;
+  }
+
+  /** Holds the controls for a while. */
+  function drive(
+    transport: TransportNetwork,
+    seconds: number,
+    controls: { power: number; brake: number },
+    step = 0.1,
+  ): void {
+    for (let t = 0; t < seconds; t += step) transport.updateDrive(step, controls, 10_000, 10_000);
+  }
+
+  it('refuses a line with no railway on it', () => {
+    const { transport, network, stopA, stopB } = build({ surface: Block.DIRT_PATH });
+    const line = network.createLine();
+    network.addCall(line.id, stopA.id);
+    network.addCall(line.id, stopB.id);
+    transport.syncLines(network);
+    run(transport, 3);
+    expect(transport.drivableLegs(line.id)).toHaveLength(0);
+    expect(transport.startDrive(line.id, { x: 0, z: 0 })).toBeNull();
+    expect(transport.driving()).toBeNull();
+  });
+
+  it('takes the controls at the nearest stop and loads there', () => {
+    const { transport, lineId } = cab();
+    const view = transport.startDrive(lineId, { x: 0, z: 0 })!;
+    expect(view).not.toBeNull();
+    expect(view.next.name).toBe('B停留所');
+    expect(view.speed).toBe(0);
+    // A shipment like any other: it loaded at the stop it set out from.
+    expect(view.cargo).toBeGreaterThan(0);
+    expect(transport.routes[0].porters.some((porter) => porter.manual)).toBe(true);
+  });
+
+  it('does not move on the timetable', () => {
+    const { transport, lineId } = cab();
+    transport.startDrive(lineId, { x: 0, z: 0 });
+    const before = transport.driving()!.toGo;
+    // The clock that moves every other shipment is not this one's.
+    run(transport, 20);
+    expect(transport.driving()!.toGo).toBe(before);
+  });
+
+  it('moves on the throttle, and stops on the brake', () => {
+    const { transport, lineId } = cab();
+    transport.startDrive(lineId, { x: 0, z: 0 });
+    drive(transport, 6, { power: 1, brake: 0 });
+    const running = transport.driving()!;
+    expect(running.speed).toBeGreaterThan(1);
+    expect(running.toGo).toBeLessThan(transport.routes[0].length);
+    drive(transport, 12, { power: 0, brake: 1 });
+    expect(transport.driving()!.speed).toBe(0);
+  });
+
+  it('is held back by the hill it is climbing', () => {
+    const level = cab();
+    const climbing = cab({ grade: 0.15 });
+    level.transport.startDrive(level.lineId, { x: 0, z: 0 });
+    climbing.transport.startDrive(climbing.lineId, { x: 0, z: 0 });
+    drive(level.transport, 10, { power: 1, brake: 0 });
+    drive(climbing.transport, 10, { power: 1, brake: 0 });
+    expect(climbing.transport.driving()!.speed).toBeLessThan(level.transport.driving()!.speed);
+    // And the limit is lower as well, which is the other half of what a bank does.
+    expect(climbing.transport.driving()!.limit).toBeLessThan(level.transport.driving()!.limit);
+  });
+
+  it('puts the brakes in by itself when the limit is ignored for long enough', () => {
+    // A tight curve the whole way: line speed is well over what it allows.
+    const { transport, lineId } = cab({ grade: 0, radius: 7 });
+    transport.startDrive(lineId, { x: 0, z: 0 });
+    // Over the limit first, which a driver holding the throttle down cannot avoid here.
+    expect(driveUntil(transport, { power: 1, brake: 0 }, (v) => v.speed > v.limit)).toBe(true);
+    // Then, a few seconds later and not immediately, the brakes go in by themselves.
+    expect(
+      driveUntil(transport, { power: 1, brake: 0 }, (v) => v.emergency, OVERSPEED_GRACE + 2),
+    ).toBe(true);
+    // And they stay in, whatever the driver does with the throttle, until it stops.
+    expect(driveUntil(transport, { power: 1, brake: 0 }, (v) => v.speed === 0, 20)).toBe(true);
+  });
+
+  it('cannot be driven faster than the train will go', () => {
+    const { transport, lineId } = cab();
+    transport.startDrive(lineId, { x: 0, z: 0 });
+    drive(transport, 300, { power: 1, brake: 0 });
+    const view = transport.driving()!;
+    expect(view.speed).toBeLessThanOrEqual(transport.lineSpeed(view.route) * DRIVE_TOP + 1e-6);
+  });
+
+  it('calls at the far end, hands the load over and turns round', () => {
+    const { transport, events, lineId } = cab();
+    transport.startDrive(lineId, { x: 0, z: 0 });
+    const carried = transport.driving()!.cargo;
+    expect(carried).toBeGreaterThan(0);
+    // All the way down the line. Running into the buffers still counts as arriving —
+    // it just says so — and what this test is about is the call, not the stop.
+    expect(driveUntil(transport, { power: 1, brake: 0 }, (v) => v.next.name === 'A停留所', 400))
+      .toBe(true);
+    const view = transport.driving()!;
+    expect(events.arrivals.length).toBeGreaterThan(0);
+    expect(events.arrivals[events.arrivals.length - 1].count).toBe(carried);
+    // A line of two stops turns round on itself: the next call is where it came from.
+    expect(view.next.name).toBe('A停留所');
+    expect(view.speed).toBe(0);
+  });
+
+  it('gives the load back to the stop it was taken from when the driver gets out', () => {
+    const { transport, registry, lineId } = cab();
+    const before = registry.get(ID_A)!.stock;
+    transport.startDrive(lineId, { x: 0, z: 0 });
+    const taken = transport.driving()!.cargo;
+    expect(registry.get(ID_A)!.stock).toBe(before - taken);
+    transport.endDrive();
+    expect(transport.driving()).toBeNull();
+    expect(registry.get(ID_A)!.stock).toBe(before);
+  });
+
+  it('stops driving when the rails under the train are pulled up', () => {
+    const rails = new FakeRails();
+    const fixture = build({ surface: null, rails });
+    const line = fixture.network.createLine();
+    fixture.network.addCall(line.id, fixture.stopA.id);
+    fixture.network.addCall(line.id, fixture.stopB.id);
+    fixture.transport.syncLines(fixture.network);
+    run(fixture.transport, 3);
+    fixture.transport.startDrive(line.id, { x: 0, z: 0 });
+    expect(fixture.transport.driving()).not.toBeNull();
+    rails.lay(0.5);
+    run(fixture.transport, 3);
+    fixture.transport.updateDrive(0.1, { power: 0, brake: 0 }, 10_000, 10_000);
+    expect(fixture.transport.driving()).toBeNull();
   });
 });

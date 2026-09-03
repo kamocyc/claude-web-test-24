@@ -140,6 +140,12 @@ export interface TrackSample extends TrackPoint {
   tx: number;
   ty: number;
   tz: number;
+  /** Radius of the arc this sample sits on, `Infinity` on a straight.
+   *
+   *  Per sample and not per curve, because a biarc is two different bends and a train is
+   *  only ever on one of them: quoting the tighter of the two for the whole piece would
+   *  slow a train down for a curve it had already left. */
+  radius: number;
 }
 
 export type TrackFault =
@@ -436,9 +442,78 @@ export function sampleTrack(curve: TrackCurve, spacing: number): TrackSample[] {
     previous = s;
     const p = pointAt(curve, s);
     const t = tangentAt(curve, s);
-    samples.push({ x: p.x, y: p.y, z: p.z, tx: t.x, ty: t.y, tz: t.z });
+    const piece = locate(curve, s).piece;
+    samples.push({
+      x: p.x, y: p.y, z: p.z, tx: t.x, ty: t.y, tz: t.z,
+      radius: piece.kind === 'arc' ? piece.radius : Infinity,
+    });
   }
   return samples;
+}
+
+// --- how fast a railway is ----------------------------------------------------
+
+/** Radius at which a curve costs a train nothing. Wider than anything the player builds by
+ *  accident and well inside what a long sweeping run reaches, so laying track that is
+ *  worth running on is a thing to aim at rather than a thing that happens. */
+export const EASY_RADIUS = 44;
+/** The grade at which a climb halves the speed. Small next to `MAX_GRADE`: the whole point
+ *  of the number is that the last few percent of a ramp cost far more than the first, and
+ *  a railway that follows the valley beats one that goes over the top. */
+export const HALF_GRADE = 0.1;
+/** The slowest a bend or a bank may make a train, however bad both are. A railway is never
+ *  worse than a road: a crawl is a speed, a stop is a bug report. */
+export const MIN_PACE = 0.3;
+/** The most a descent gives back. Gravity is worth something and it is not worth much —
+ *  a train that made up a whole climb on the way down would make grade a rounding error
+ *  over the round trip, which is the opposite of the thing being modelled. */
+export const MAX_PACE = 1.1;
+
+/** What a bend of this radius does to line speed, as a factor of it.
+ *
+ *  Square root of the radius, which is what the physics says: the sideways acceleration a
+ *  curve puts on a train is `v² / r`, so holding that constant makes the speed it allows
+ *  proportional to `√r`. The tightest curve the solver will lay is `MIN_RADIUS`, and it
+ *  comes out at about a third of line speed — slow enough to be a decision, fast enough
+ *  that a tight corner in a yard is not a wall. */
+export function curvePace(radius: number): number {
+  if (!(radius < EASY_RADIUS)) return 1;
+  return Math.max(MIN_PACE, Math.sqrt(Math.max(0, radius) / EASY_RADIUS));
+}
+
+/** What a slope does to line speed. Positive climbs.
+ *
+ *  Asymmetric on purpose, and by a lot: a climb costs far more than the same descent
+ *  gives back, so a line that saws up and down is slower than a level one of the same
+ *  length even though it ends where it started. That is the whole reason to spend an
+ *  afternoon cutting a shelf along a hillside instead of running straight over it. */
+export function gradePace(grade: number): number {
+  if (grade < 0) return Math.min(MAX_PACE, 1 - grade * 0.5);
+  return 1 / (1 + grade / HALF_GRADE);
+}
+
+/** Line speed here, as a factor of what the railway would do straight and level. */
+export function railPace(radius: number, grade: number): number {
+  const pace = curvePace(radius) * gradePace(grade);
+  return Math.max(MIN_PACE, Math.min(MAX_PACE, pace));
+}
+
+/** The one factor a whole stretch is worth, given what each piece of it is worth and how
+ *  long that piece is.
+ *
+ *  A harmonic mean, because the thing being averaged is a speed and what is actually
+ *  being added up is time. Averaging the factors themselves would say that a mile of
+ *  level track and a hundred blocks of 1-in-5 average out to something quite good, when
+ *  what the player experiences is the hundred blocks taking as long as the mile. */
+export function meanPace(paces: readonly number[], spans: readonly number[]): number {
+  let time = 0;
+  let total = 0;
+  for (let i = 0; i < paces.length && i < spans.length; i++) {
+    if (!(spans[i] > 0)) continue;
+    total += spans[i];
+    time += spans[i] / Math.max(MIN_PACE, paces[i]);
+  }
+  return time > 0 ? total / time : 1;
 }
 
 // --- describing a curve -------------------------------------------------------
@@ -720,6 +795,23 @@ export interface TrackWay {
    *  at all, which is what makes an unsignalled railway behave exactly as it did: whoever
    *  reads this has nothing to check. */
   sections: { at: number; id: number }[];
+  /** What the rails are like at each point, in the same order and the same length as
+   *  `points`. This is where a railway stops being one number.
+   *
+   *  `grade` is signed for travel from `points[0]` towards the far end, so a train running
+   *  the other way sees it negated — which is the whole of the asymmetry: the loaded trip
+   *  up the valley is the slow one and the empty trip back down is not. */
+  profile: RailProfile[];
+}
+
+/** How fast the rails allow a train to go at one point of them, as the two things that
+ *  decide it. Kept as the geometry rather than as a speed so that whoever reads it can
+ *  say *why* a train is slow, which is the difference between a limit and a mystery. */
+export interface RailProfile {
+  /** Radius of the bend here, `Infinity` on a straight. */
+  radius: number;
+  /** dy/ds, positive climbing away from `points[0]`. */
+  grade: number;
 }
 
 export class TrackNetwork {
@@ -1497,6 +1589,7 @@ export class TrackNetwork {
     }
 
     const points: TrackPoint[] = [];
+    const profile: RailProfile[] = [];
     const blocks = this.sections();
     const sections: { at: number; id: number }[] = [];
     let length = 0;
@@ -1514,12 +1607,19 @@ export class TrackNetwork {
       // A curve runs from its `a` end to its `b` end; walked the other way it is the same
       // samples backwards.
       const samples = sampleTrack(edge.curve, spacing);
-      if (edge.a !== step.from) samples.reverse();
+      // A curve walked from its `b` end is the same samples backwards — and the same
+      // slopes upside down. Getting that wrong would make every second piece of a line
+      // report a climb as a descent, which is exactly the mistake a profile is for.
+      const back = edge.a !== step.from;
+      if (back) samples.reverse();
       for (const sample of samples) {
         const last = points[points.length - 1];
         if (last && Math.hypot(sample.x - last.x, sample.z - last.z) < 1e-6) continue;
         if (last) climb += Math.abs(sample.y - last.y);
         points.push({ x: sample.x, y: sample.y, z: sample.z });
+        const flat = Math.hypot(sample.tx, sample.tz);
+        const grade = flat > EPS ? sample.ty / flat : 0;
+        profile.push({ radius: sample.radius, grade: back ? -grade : grade });
       }
       length += edge.curve.length;
     }
@@ -1527,7 +1627,7 @@ export class TrackNetwork {
     // A way that never leaves an unwatched stretch has no boundaries worth reporting, and
     // saying so as an empty list is what lets the caller skip the whole question.
     const watched = sections.some((mark) => mark.id !== UNWATCHED);
-    return { points, length, climb, sections: watched ? sections : [] };
+    return { points, length, climb, sections: watched ? sections : [], profile };
   }
 
   /** An end near a place that could be a station and is not.
@@ -1697,7 +1797,7 @@ export function straightSamples(from: TrackPoint, to: TrackPoint, spacing = 1): 
       x: from.x + (to.x - from.x) * t,
       y: from.y + (to.y - from.y) * t,
       z: from.z + (to.z - from.z) * t,
-      tx, ty: 0, tz,
+      tx, ty: 0, tz, radius: Infinity,
     });
   }
   return samples;

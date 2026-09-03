@@ -14,6 +14,8 @@ export type MobKind =
   | 'villager'
   | 'porter'
   | 'cart'
+  | 'bus'
+  | 'ship'
   | 'train';
 
 export interface MobDrop {
@@ -146,6 +148,25 @@ const DEFS: Record<MobKind, MobDef> = {
     attackCooldown: 0, sightRange: 12, burnsInDaylight: false, ranged: false,
     drops: [],
   },
+  // A team and a carriage: wider than a cart because it is a bigger thing on the same
+  // three wide road, and no faster on its own — what makes a bus quick is the horses, and
+  // that is `BUS_PACE` in `transport.ts`, where the rest of what a vehicle is worth lives.
+  bus: {
+    kind: 'bus', label: '馬車', hostile: false, maxHealth: 20,
+    width: 1.5, height: 2.3, speed: 1.9, attackDamage: 0, attackRange: 0,
+    attackCooldown: 0, sightRange: 12, burnsInDaylight: false, ranged: false,
+    drops: [],
+  },
+  // A small steamer. As wide as the hull that is drawn, for the same reason the train is:
+  // a player can walk up to one at a quay, and a hit box that did not match would be a
+  // ship you could see through. It never touches the ground — it is given the waterline as
+  // its surface the way a train is given the deck, which is what keeps it afloat.
+  ship: {
+    kind: 'ship', label: '船', hostile: false, maxHealth: 20,
+    width: 2.4, height: 2.4, speed: 1.9, attackDamage: 0, attackRange: 0,
+    attackCooldown: 0, sightRange: 12, burnsInDaylight: false, ranged: false,
+    drops: [],
+  },
   // As wide and as tall as the carriages it pulls, because a player can now stand on
   // those: a hit box that did not match what is drawn would be a train you could see
   // through or one that shouldered you off a viaduct from a metre away. The width still
@@ -164,7 +185,7 @@ const DEFS: Record<MobKind, MobDef> = {
 /** Every kind there is, for anything that has to be total over them. */
 export const MOB_KINDS = Object.keys(DEFS) as readonly MobKind[];
 
-export const HAULING_KINDS: readonly MobKind[] = ['porter', 'cart', 'train'];
+export const HAULING_KINDS: readonly MobKind[] = ['porter', 'cart', 'bus', 'ship', 'train'];
 
 export function mobDef(kind: MobKind): MobDef {
   return DEFS[kind];

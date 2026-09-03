@@ -36,6 +36,10 @@ export interface LineLegView {
 export interface LineRowView {
   id: string;
   name: string;
+  /** Whether any of its legs is a railway somebody could take the controls of, and
+   *  whether the player is on one of them now. */
+  drivable: boolean;
+  driving: boolean;
   /** The calls in order. The same stop may appear twice. */
   calls: { index: number; name: string; place: string }[];
   legs: LineLegView[];
@@ -57,6 +61,9 @@ export interface LineActions {
   remove(lineId: string): void;
   addCall(lineId: string, stopId: string): void;
   removeCall(lineId: string, index: number): void;
+  /** Takes the controls of a train on this line, or gives them back. */
+  drive(lineId: string): void;
+  stopDriving(): void;
 }
 
 /** Builds the whole page into one node. Rebuilt whenever anything changes, which is only
@@ -67,7 +74,11 @@ export function buildLinePanel(view: LinePanelView, actions: LineActions): HTMLE
   const bar = el('div', 'lines-bar');
   const add = el('button', 'lines-button', '路線を新しく作る');
   add.addEventListener('click', () => actions.create());
-  bar.append(add, el('div', 'lines-hint', '停留所を順に加えると区間ができる。2 か所なら往復、3 か所以上なら循環する'));
+  bar.append(
+    add,
+    el('div', 'lines-hint', '停留所を順に加えると区間ができる。2 か所なら往復、3 か所以上なら循環する'),
+    el('div', 'lines-hint', '線路でつないだ路線は「運転する」で自分で走らせられる（W 力行・S 制動・X 降車）'),
+  );
   root.appendChild(bar);
 
   if (view.lines.length === 0) {
@@ -91,6 +102,17 @@ export function buildLinePanel(view: LinePanelView, actions: LineActions): HTMLE
     const drop = el('button', 'lines-button danger', '廃止');
     drop.addEventListener('click', () => actions.remove(line.id));
     head.append(name, pick, drop);
+    // Driving is offered where there is something to drive, and nowhere else: a button
+    // that is always there and usually refuses is a button that teaches the player it
+    // does not work.
+    if (line.drivable || line.driving) {
+      const cab = el('button', `lines-button${line.driving ? ' danger' : ''}`, line.driving ? '運転をやめる' : '運転する');
+      cab.addEventListener('click', () => {
+        if (line.driving) actions.stopDriving();
+        else actions.drive(line.id);
+      });
+      head.appendChild(cab);
+    }
     box.appendChild(head);
 
     const calls = el('div', 'lines-calls');

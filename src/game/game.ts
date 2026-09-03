@@ -4,7 +4,7 @@ import { mulberry32 } from '../core/rng';
 import { ChunkRenderer } from '../render/chunkRenderer';
 import { Effects } from '../render/effects';
 import { EntityRenderer } from '../render/entityRenderer';
-import { CargoRenderer, type CargoDisplay } from '../render/cargoRenderer';
+import { CargoRenderer, type CargoDisplay, type CargoDisplayKind } from '../render/cargoRenderer';
 import { TreeRenderer } from '../render/treeRenderer';
 import { buildTreeModels, type TreeModel, type TreeSpecies } from '../render/treeModels';
 import { RouteGuide, type GuideBeam, type GuideLine, type GuidePoint, type GuideView } from '../render/routeGuide';
@@ -24,6 +24,10 @@ import { createChunkMaterials, type ChunkMaterials } from '../render/materials';
 import { Sky } from '../render/sky';
 import { buildAtlas, type Atlas } from '../render/textures';
 import {
+  CAB_BACK,
+  CAB_LONG,
+  CAR_FLOOR,
+  CAR_WIDTH,
   RideDecks,
   TRAIL_STEP,
   clearanceCells,
@@ -124,13 +128,16 @@ import {
   type TrackSample,
 } from './tracks';
 import { runRoad, treadBrush, treadLine, TREAD_DIRT, type PaveMaterial, type PaveTarget } from './paving';
+import { SeaLanes, WATERLINE } from './sea';
 import {
   CATCH_UP,
   carsFor,
   PORTER_LEASH,
   PORTER_LOST,
   TransportNetwork,
+  vehicleLabel,
   type Arrival,
+  type DriveView,
   type PorterView,
   type Route,
   type Vehicle,
@@ -313,6 +320,18 @@ export class Game {
    *  railway's decks and platforms, and the carriages running along them. Held as one
    *  object rather than assigned per frame because the player keeps a reference to it, and
    *  because which of the two answers is the higher one is nobody else's business. */
+  /** Navigable water, and the lanes across it. Built in the constructor, where the
+   *  generator it reads exists. */
+  private readonly sea: SeaLanes;
+  /** What a ship stands on. The top of the sea, exactly as the railway's deck is the top
+   *  of a viaduct: a hull floats because the one thing under it that is not a block says
+   *  it does, and the mob's own walk then carries it along the lane like any other. */
+  private readonly seaSurface: StandingSurface = {
+    surfaceTopAt: (_x, _z, low, high) => {
+      const top = WATERLINE + 1;
+      return top >= low && top <= high ? top : null;
+    },
+  };
   private readonly playerSurface: StandingSurface = {
     surfaceTopAt: (x, z, low, high) => {
       const rails = this.trackNet.surfaceTopAt(x, z, low, high);
@@ -465,6 +484,11 @@ export class Game {
       (village, nextStage) => this.canVillageGrow(village, nextStage),
     );
     this.roads = new RoadNetwork(this.world);
+    // The sea, read off the generator rather than off the world: a crossing is longer than
+    // the loaded chunks around the player, and a lane has to be the same lane every time
+    // the world is opened. `rawHeight` and not `height`, because a plateau cut for houses
+    // has nothing to say about how deep the water is — and it is the cheaper of the two.
+    this.sea = new SeaLanes({ heightAt: (x, z) => this.generator.rawHeight(Math.round(x), Math.round(z)) });
     this.world.onBlockChange((x, y, z, previous, next) => {
       this.light.onBlockChanged(x, y, z, previous, next);
       this.water.onBlockChanged(x, y, z, previous, next);
@@ -537,6 +561,7 @@ export class Game {
           return mob ? { x: mob.x, z: mob.z } : null;
         },
         movePorter: (id, point, speed) => this.movePorter(id, point, speed),
+        placePorter: (id, point, yaw) => this.placePorter(id, point, yaw),
         removePorter: (id) => this.removePorter(id),
       },
       // The railway, as the two questions freight has of it. `this.trackNet` is read
@@ -549,6 +574,9 @@ export class Game {
         stationGapAt: (place) => this.trackNet.stationGapNear(place),
         revision: () => this.trackNet.revision,
       },
+      // The sea. Nothing to keep in step: it is the same water it was when the world was
+      // made, and nobody can move it.
+      this.sea,
     );
     this.hud = new Hud(this.atlas);
     this.worldMap = new WorldMap(this.atlas, () => this.toggleWorldMap(), {
@@ -678,6 +706,9 @@ export class Game {
 
     if (this.paused || this.player.isDead) {
       if (this.player.isDead) {
+        // Whatever else dying does, it gets you out of the cab: a driver who respawned in
+        // a village and was put straight back in a moving train would be a ghost.
+        this.stopDriving('運転をやめた');
         this.options.menus.showDeath(true);
         // However the pointer came to be locked, the cursor has to come back or the
         // respawn button cannot be clicked.
@@ -709,7 +740,9 @@ export class Game {
     // so the game stays playable if the browser refuses to lock the cursor.
     const screenOpen = this.uiOpen;
     if (!screenOpen && this.options.input.locked) this.updateLook();
-    const input = screenOpen ? NO_INPUT : this.readMovement();
+    // W and S are the throttle and the brake while driving, so the legs stop working:
+    // a driver who walked out of the cab every time they powered up would be a joke.
+    const input = screenOpen || this.transport.driving() ? NO_INPUT : this.readMovement();
 
     const current = this.water.flowAt(
       Math.floor(this.player.x),
@@ -719,6 +752,9 @@ export class Game {
     const events = this.player.update(dt, this.world, input, current);
     this.unstick();
     this.recordRide();
+    // After the player's own move and not before it: driving overrides where they are,
+    // and a physics step that ran afterwards would drag them back out of the cab.
+    this.updateDriving(dt);
     if (events.tookDamage > 0) this.hud.flashDamage();
 
     if (!screenOpen) this.updateInteraction(dt);
@@ -966,6 +1002,9 @@ export class Game {
             wanted: this.townOf(route.to)?.needs.includes(route.good) ?? false,
             carrying: this.carryingOn(route),
             vehicle: route.vehicle,
+            pace: route.pace,
+            steepest: route.steepest,
+            tightest: route.tightest,
             cartPinch: route.cartPinch ? this.bearingTo(route.cartPinch) : null,
             railPinch: route.railPinch ? this.bearingTo(route.railPinch) : null,
             stationGap: route.stationGap ? this.bearingTo(route.stationGap) : null,
@@ -1145,6 +1184,10 @@ export class Game {
             event.preventDefault();
             this.worldMap.recentre();
           }
+          break;
+        case 'KeyX':
+          if (this.paused || this.player.isDead) break;
+          this.stopDriving('降車した');
           break;
         case 'KeyG':
           if (this.paused || this.player.isDead) break;
@@ -3653,6 +3696,8 @@ export class Game {
       lines: [...this.lines.lines.values()].map((line) => ({
         id: line.id,
         name: line.name,
+        drivable: this.transport.drivableLegs(line.id).length > 0,
+        driving: this.transport.driving()?.lineId === line.id,
         full: line.stops.length >= MAX_LINE_STOPS,
         calls: line.stops.map((stopId, index) => {
           const stop = this.lines.stops.get(stopId);
@@ -3668,7 +3713,7 @@ export class Game {
           connected: route.connected,
           length: route.length,
           missing: route.missing,
-          vehicle: route.vehicle === 'train' ? '列車' : route.vehicle === 'cart' ? '荷車' : '徒歩',
+          vehicle: vehicleLabel(route.vehicle),
         })),
       })),
       stops: [...this.lines.stops.values()]
@@ -3723,7 +3768,125 @@ export class Game {
         this.lines.removeCall(lineId, index);
         this.syncLines();
       },
+      drive: (lineId) => this.startDriving(lineId),
+      stopDriving: () => this.stopDriving('降車した'),
     };
+  }
+
+  // --- driving one yourself ---------------------------------------------------
+
+  /** Takes the controls of a train on a line. The panel closes behind the player: the cab
+   *  is out in the world, and a screen over it would be a page they had to dismiss before
+   *  they could see what they had just asked for. */
+  private startDriving(lineId: string): void {
+    const view = this.transport.startDrive(lineId, this.player);
+    if (!view) {
+      this.hud.toast('この路線には走れる線路の区間がない — 駅と駅を線路でつなぐ');
+      return;
+    }
+    if (this.screens.isOpen) this.closeScreen();
+    // Face the way the train is pointing, once. Where they look after that is theirs: a
+    // camera locked to the track would be a cutscene, not a cab.
+    this.player.yaw = view.yaw;
+    this.player.pitch = 0;
+    this.hud.toast(`${view.next.name} へ向けて出発 — W 力行 / S 制動 / X 降車`);
+  }
+
+  /** Gives them back, and puts the player down where the cab was. The rails are under
+   *  them and `playerSurface` already knows about the deck, so somebody who was on a
+   *  viaduct lands on it rather than falling off the world. */
+  private stopDriving(why: string): void {
+    if (!this.transport.driving()) return;
+    this.transport.endDrive();
+    this.hud.cab.setVisible(false);
+    this.hud.toast(why);
+  }
+
+  /** Runs the driven train, and keeps the player in its cab.
+   *
+   *  The order matters: the train is moved first, then the player is put where it now is.
+   *  The other way round and the driver would spend every frame one step behind their own
+   *  locomotive, which is exactly the lag the placed mob exists to avoid. */
+  private updateDriving(dt: number): void {
+    let drive = this.transport.driving();
+    if (!drive) {
+      this.hud.cab.setVisible(false);
+      return;
+    }
+    const input = this.options.input;
+    const idle = this.uiOpen || this.paused || this.player.isDead;
+    // Hands off the controls while a screen is up. Not a stop: a train coasts, which is
+    // both what a train does and a good reason not to open the map on a falling gradient.
+    this.transport.updateDrive(
+      dt,
+      {
+        power: !idle && input.isDown('KeyW') ? 1 : 0,
+        brake: !idle && input.isDown('KeyS') ? 1 : 0,
+      },
+      this.player.x,
+      this.player.z,
+    );
+    drive = this.transport.driving();
+    if (!drive) {
+      // The line ran out from under the driver: the rails were pulled up, the leg was
+      // edited away, or the next call is one no train serves. Whichever it was, they are
+      // standing at a station and no longer driving.
+      this.hud.cab.setVisible(false);
+      this.hud.toast('運転を終えた');
+      return;
+    }
+    this.rideCab(drive);
+    this.hud.cab.setVisible(true);
+    this.hud.cab.update({
+      speed: drive.speed,
+      limit: drive.limit,
+      lineSpeed: drive.lineSpeed,
+      grade: drive.grade,
+      radius: drive.radius,
+      line: this.lines.lines.get(drive.lineId)?.name ?? '路線',
+      next: drive.next.name,
+      toGo: drive.toGo,
+      cargo: drive.cargo > 0 ? `${this.goodName(drive.good)} ×${drive.cargo}` : '積荷なし',
+      held: drive.held,
+      over: drive.over,
+      emergency: drive.emergency,
+      note: drive.note,
+    });
+  }
+
+  /** How high the driver's feet are over the cab floor. A little, so the eye clears the
+   *  boiler and looks along the track rather than at the side of it. */
+  private static readonly CAB_LEAN = 0.45;
+
+  /** Puts the player in the cab of the train they are driving.
+   *
+   *  The locomotive's own position and not the shipment's: the mob is settled onto the
+   *  deck by the same surface every frame, and a driver taken from the raw point would
+   *  bob half a block up and down where the two disagree. */
+  private rideCab(drive: DriveView): void {
+    const mob = drive.mobId === null ? null : this.livePorter(drive.mobId);
+    const yaw = mob ? mob.yaw : drive.yaw;
+    const x = mob ? mob.x : drive.at.x + 0.5;
+    const y = mob ? mob.y : drive.at.y + 1;
+    const z = mob ? mob.z : drive.at.z + 0.5;
+    // At the cab window, leaning out — not in the middle of the cab. The locomotive is
+    // drawn as solid boxes, so an eye inside it sees the inside of a box and nothing
+    // else; and leaning out of the side is what a driver does anyway. Forward in the mob
+    // convention is `(-sin yaw, -cos yaw)`, so the engine's own +z runs back along it and
+    // its own +x is `(cos yaw, -sin yaw)`.
+    const back = CAB_BACK - CAB_LONG / 2 + 0.3;
+    const side = CAR_WIDTH / 2 + 0.35;
+    this.player.x = x + Math.sin(yaw) * back + Math.cos(yaw) * side;
+    this.player.y = y + CAR_FLOOR + Game.CAB_LEAN;
+    this.player.z = z + Math.cos(yaw) * back - Math.sin(yaw) * side;
+    this.player.vx = 0;
+    this.player.vy = 0;
+    this.player.vz = 0;
+    this.player.onGround = true;
+    this.player.boating = false;
+    // Nothing is riding a deck: the player is *in* the train, not standing on one, and
+    // leaving the ride recorded would have `carryRider` move them a second time.
+    this.riding = null;
   }
 
   /** Everything the ledger shows, gathered on demand. */
@@ -3785,7 +3948,7 @@ export class Game {
         load: this.transport.loadOf(route),
         porters: route.porters.length,
         delivered: route.delivered,
-        vehicle: route.vehicle === 'train' ? '列車' : route.vehicle === 'cart' ? '荷車' : '荷運び',
+        vehicle: vehicleLabel(route.vehicle),
         climb: route.climb,
         detour: route.detour,
       })),
@@ -3879,7 +4042,7 @@ export class Game {
           good: porter.good,
           label: this.goodName(porter.good),
           count: porter.cargo,
-          kind: mob.kind === 'train' ? 'train' : mob.kind === 'cart' ? 'cart' : 'porter',
+          kind: HAULING_KINDS.includes(mob.kind) ? (mob.kind as CargoDisplayKind) : 'porter',
           x: pose.x,
           y: pose.y,
           z: pose.z,
@@ -4108,6 +4271,10 @@ export class Game {
     // else that walks has no reason to be up on a viaduct and no way down off one; a
     // train has both, and without this it walks off the first pier and falls.
     if (vehicle === 'train') mob.surface = this.trackNet;
+    // And the one thing on the water is given the water. Without it a hull sinks to the
+    // sea bed and walks the lane along the bottom of the ocean, which is a sight nobody
+    // needs to see twice.
+    if (vehicle === 'ship') mob.surface = this.seaSurface;
     this.mobs.add(mob);
     this.porterMobs.set(mob.id, mob);
     return mob.id;
@@ -4140,6 +4307,26 @@ export class Game {
     mob.speedScale = keepUp * hurry;
     if (lag <= PORTER_LOST) return;
     this.removePorter(id);
+  }
+
+  /** Puts a hauling mob exactly where its shipment is, pointing the way it is going.
+   *
+   *  Only the train somebody is driving is placed rather than walked. Everything else is
+   *  a view that follows its shipment and may fall behind; a locomotive with the player
+   *  sitting in the cab may not, because the cab is where the player's eyes are. */
+  private placePorter(id: number, point: RoadPoint, yaw: number): void {
+    const mob = this.livePorter(id);
+    if (!mob) return;
+    const middle = centreOf(mob.kind);
+    mob.x = point.x + middle;
+    mob.y = point.y + 1;
+    mob.z = point.z + middle;
+    mob.vx = 0;
+    mob.vy = 0;
+    mob.vz = 0;
+    mob.yaw = yaw;
+    mob.follow = { x: mob.x, z: mob.z };
+    mob.onGround = true;
   }
 
   /** Draws the people walking across whatever town the player is standing in.
@@ -5142,6 +5329,9 @@ export class Game {
           grade: route.grade, load: this.transport.loadOf(route), delivered: route.delivered,
           wanted: this.townOf(route.to)?.needs.includes(route.good) ?? false,
           vehicle: route.vehicle, climb: route.climb,
+          pace: Math.round(route.pace * 100) / 100,
+          steepest: Math.round(route.steepest * 1000) / 1000,
+          tightest: Number.isFinite(route.tightest) ? Math.round(route.tightest) : null,
           detour: Math.round(route.detour * 100) / 100,
           direct: Math.round(route.direct), doorGap: Math.round(route.doorGap),
           cartPinch: route.cartPinch, railPinch: route.railPinch, nearMiss: route.nearMiss,
@@ -5187,6 +5377,64 @@ export class Game {
         this.selectedLine = line.id;
         this.syncLines();
         return { id: line.id, name: line.name, calls: line.stops.length };
+      },
+      /** Takes the controls of a train on a line, the way the 路線表 button does. The
+       *  throttle itself is the W and S keys: driving is a thing done with the hands, and
+       *  a script that pressed it through a function would not be testing that. */
+      drive: (lineId: string) => {
+        this.startDriving(lineId);
+        return this.debug.driving();
+      },
+      stopDriving: (): void => this.stopDriving('降車した'),
+      /** The cab, in numbers. Null when nobody is driving. */
+      driving: () => {
+        const view = this.transport.driving();
+        if (!view) return null;
+        return {
+          line: this.lines.lines.get(view.lineId)?.name ?? '?',
+          next: view.next.name,
+          toGo: Math.round(view.toGo),
+          speed: Math.round(view.speed * 100) / 100,
+          limit: Math.round(view.limit * 100) / 100,
+          lineSpeed: Math.round(view.lineSpeed * 100) / 100,
+          grade: Math.round(view.grade * 1000) / 1000,
+          radius: Number.isFinite(view.radius) ? Math.round(view.radius) : null,
+          good: view.good,
+          cargo: view.cargo,
+          emergency: view.emergency,
+          held: view.held,
+          note: view.note,
+          at: { x: Math.round(view.at.x), y: Math.round(view.at.y), z: Math.round(view.at.z) },
+        };
+      },
+      /** Puts one hauler on the map by hand, through the same door the transport network
+       *  uses — so a ship gets the waterline to float on and a train gets the deck. For
+       *  photographing a vehicle without waiting for an economy to send one. */
+      spawnHauler: (
+        vehicle: Vehicle,
+        x = this.player.x,
+        z = this.player.z,
+        cargo = 3,
+        good = 'wheat',
+        y?: number,
+      ): number | null =>
+        this.spawnPorter(
+          { x: Math.round(x), y: y ?? this.groundHeightAt(Math.round(x), Math.round(z)), z: Math.round(z) },
+          vehicle,
+          cargo,
+          good,
+        ),
+      /** Where a ship could lie off a place, and the water from one place to another.
+       *  Both are read off the generator, so they answer for anywhere at all. */
+      harbour: (x = this.player.x, z = this.player.z) =>
+        this.sea.harbourAt({ x: Math.round(x), y: 0, z: Math.round(z) }),
+      seaLane: (ax: number, az: number, bx: number, bz: number) => {
+        const lane = this.sea.laneBetween({ x: ax, y: 0, z: az }, { x: bx, y: 0, z: bz });
+        if (!lane) return null;
+        return {
+          length: Math.round(lane.length),
+          points: lane.points.map((at) => ({ x: at.x, y: at.y, z: at.z })),
+        };
       },
       /** What every stop and station is judged to serve — the same two rules the light in
        *  the world draws, in a form a test can read. */
@@ -5347,6 +5595,16 @@ export class Game {
             kind: mob.kind, cars: mob.cars,
             x: Math.round(mob.x), y: Math.round(mob.y), z: Math.round(mob.z),
           })),
+      /** Every shipment on the network: where it has got to, what it is carrying, and what
+       *  is carrying it *there* — which on a railed or sailed leg changes hands twice. */
+      shipments: () =>
+        this.transport.porterViews().map((view) => ({
+          line: this.lines.lines.get(view.route.lineId)?.name ?? '?',
+          from: view.route.from.name, to: view.route.to.name,
+          vehicle: view.vehicle, good: view.good, cargo: view.cargo,
+          visible: view.visible,
+          x: Math.round(view.x), y: Math.round(view.y), z: Math.round(view.z),
+        })),
       /** Where every shipment currently is, whether or not anybody can see it. Standing
        *  at one of these is what makes a porter appear. */
       porterSpots: () =>

@@ -125,6 +125,23 @@ const GLASS = 0xc6e6f4;
 const ROOF = 0xf6ecdb;
 const FIRE = 0xffb454;
 
+/** The team and the coach they pull. A horse is not one of the game's creatures — there
+ *  is no horse to ride — so it is drawn here, beside the vehicle it exists to pull, and
+ *  in the same soft palette as everything else on the road. */
+const HORSE = 0xb5825c;
+const HORSE_DEEP = 0x8c6142;
+const HORSE_MANE = 0x6b4a34;
+const BUS_SIDE = 0x8fa9d8;
+const BUS_TRIM = 0xf2e5c8;
+
+/** The hull, the deck and what stands on it. A small steamer, which is what a world with
+ *  a working locomotive in it would have on the water. */
+const HULL = 0x7a5b46;
+const HULL_DEEP = 0x59422f;
+const DECK = 0xd8b782;
+const CABIN = 0xf3ead6;
+const FUNNEL = 0xd76d63;
+
 /** How wide the way into a carriage is. A player is 0.6 across, so this is room to walk
  *  through without aiming. */
 const DOORWAY = 1.3;
@@ -138,6 +155,103 @@ const WHEEL = 0.84;
  *  between two discs would be a stripe of daylight nobody asked about. */
 function axle(z: number): ModelPart {
   return { size: [WHEEL_SPAN + 0.3, WHEEL, WHEEL * 0.4], offset: [0, AXLE, z], color: CHASSIS, role: 'body' };
+}
+
+/** A pair of horses and the coach behind them.
+ *
+ *  It has to read as "people, not crates" from the side of the road — that is the entire
+ *  reason it exists rather than another cart — so the body is a proper coach with windows
+ *  along it and a roof over them, and it is the horses in front that say why it is
+ *  quicker. The legs carry the trot roles; everything else rides along.
+ *
+ *  The wheels are cylinders lying on their axles rather than the thin boxes the cart uses.
+ *  At a cart's scale a bevelled slab reads as a wheel; at this one, four of them read as
+ *  table legs, and the whole thing stops being a carriage. */
+function omnibus(): ModelPart[] {
+  /** A wheel: a disc in the plane of travel, turned onto an axle along x. */
+  const wheel = (x: number, z: number, size: number): ModelPart => ({
+    size: [size, 0.16, size],
+    offset: [x, size / 2, z],
+    color: CHASSIS,
+    role: 'body',
+    shape: 'cylinder',
+    rotation: [Math.PI / 2, 0, 0],
+    segments: 12,
+  });
+  const horse = (side: -1 | 1): ModelPart[] => {
+    const x = side * 0.42;
+    return [
+      { size: [0.56, 0.72, 1.5], offset: [x, 1.36, -1.65], color: HORSE, role: 'body', tip: HORSE_DEEP },
+      // Neck and head, carried high: a team at a trot is the whole reason a bus is quick.
+      { size: [0.34, 0.8, 0.42], offset: [x, 1.82, -2.28], color: HORSE, role: 'head', rotation: [0, 0.5, 0] },
+      { size: [0.3, 0.34, 0.62], offset: [x, 2.06, -2.62], color: HORSE_DEEP, role: 'head' },
+      { size: [0.1, 0.16, 0.1], offset: [x - 0.1, 2.24, -2.44], color: HORSE_DEEP, role: 'head' },
+      { size: [0.1, 0.16, 0.1], offset: [x + 0.1, 2.24, -2.44], color: HORSE_DEEP, role: 'head' },
+      { size: [0.18, 0.5, 0.44], offset: [x, 1.94, -2.02], color: HORSE_MANE, role: 'detail' },
+      { size: [0.16, 0.56, 0.16], offset: [x, 1.32, -0.86], color: HORSE_MANE, role: 'tail' },
+      { size: [0.2, 1.0, 0.2], offset: [x - 0.14, 0.5, -2.16], color: HORSE_DEEP, role: 'legFrontLeft', shape: 'cylinder' },
+      { size: [0.2, 1.0, 0.2], offset: [x + 0.14, 0.5, -2.16], color: HORSE_DEEP, role: 'legFrontRight', shape: 'cylinder' },
+      { size: [0.2, 1.0, 0.2], offset: [x - 0.14, 0.5, -1.12], color: HORSE_DEEP, role: 'legBackLeft', shape: 'cylinder' },
+      { size: [0.2, 1.0, 0.2], offset: [x + 0.14, 0.5, -1.12], color: HORSE_DEEP, role: 'legBackRight', shape: 'cylinder' },
+    ];
+  };
+  return [
+    ...horse(-1),
+    ...horse(1),
+    // The pole between the two horses and the shafts back to the coach.
+    { size: [0.1, 0.1, 1.8], offset: [0, 1.24, -1.6], color: TIMBER_DARK, role: 'body' },
+    { size: [0.09, 0.09, 1.3], offset: [-0.5, 1.16, -0.7], color: TIMBER_DARK, role: 'body' },
+    { size: [0.09, 0.09, 1.3], offset: [0.5, 1.16, -0.7], color: TIMBER_DARK, role: 'body' },
+    // The coach: a sprung body with a window band down each side, a driver's bench out in
+    // front of the passengers, and a rail round the roof for what will not fit inside.
+    { size: [1.36, 0.26, 2.5], offset: [0, 1.0, 0.55], color: CHASSIS, role: 'body' },
+    { size: [1.3, 1.16, 2.42], offset: [0, 1.72, 0.5], color: BUS_SIDE, role: 'body' },
+    { size: [1.34, 0.42, 1.86], offset: [0, 1.94, 0.5], color: GLASS, role: 'body' },
+    { size: [1.34, 0.16, 0.5], offset: [0, 1.42, -0.72], color: BUS_TRIM, role: 'body' },
+    { size: [1.42, 0.14, 2.56], offset: [0, 2.36, 0.5], color: BUS_TRIM, role: 'body' },
+    { size: [1.44, 0.12, 0.1], offset: [0, 2.48, 1.72], color: TIMBER_DARK, role: 'detail' },
+    { size: [0.1, 0.12, 2.5], offset: [-0.66, 2.48, 0.5], color: TIMBER_DARK, role: 'detail' },
+    { size: [0.1, 0.12, 2.5], offset: [0.66, 2.48, 0.5], color: TIMBER_DARK, role: 'detail' },
+    // The driver's bench, ahead of the body and over the shafts.
+    { size: [1.16, 0.3, 0.56], offset: [0, 1.9, -0.86], color: TIMBER, role: 'body' },
+    { size: [1.16, 0.42, 0.12], offset: [0, 2.16, -0.62], color: TIMBER_DARK, role: 'body' },
+    wheel(-0.7, -0.3, 0.7),
+    wheel(0.7, -0.3, 0.7),
+    wheel(-0.72, 1.3, 1.0),
+    wheel(0.72, 1.3, 1.0),
+  ];
+}
+
+/** A small coasting steamer.
+ *
+ *  Half of it is under the origin on purpose: the mob's feet are the waterline — see the
+ *  surface it is given in `Game.spawnPorter` — so a hull drawn from -0.5 upwards is a hull
+ *  sitting *in* the water rather than a boat-shaped thing balanced on top of it. */
+function steamer(): ModelPart[] {
+  return [
+    { size: [2.2, 1.0, 4.6], offset: [0, 0.0, 0.3], color: HULL, role: 'body', tip: HULL_DEEP },
+    // the bow, narrower and a little higher, which is the whole of what makes it point
+    { size: [1.3, 1.0, 1.6], offset: [0, 0.08, -2.5], color: HULL, role: 'body', tip: HULL_DEEP },
+    { size: [0.6, 0.9, 0.7], offset: [0, 0.2, -3.3], color: HULL_DEEP, role: 'body' },
+    // the deck, and the low bulwark round it
+    { size: [2.3, 0.14, 4.8], offset: [0, 0.5, 0.2], color: DECK, role: 'body' },
+    { size: [2.36, 0.34, 0.16], offset: [0, 0.66, 2.6], color: HULL_DEEP, role: 'body' },
+    { size: [0.16, 0.34, 5.0], offset: [-1.1, 0.66, 0.2], color: HULL_DEEP, role: 'body' },
+    { size: [0.16, 0.34, 5.0], offset: [1.1, 0.66, 0.2], color: HULL_DEEP, role: 'body' },
+    // the wheelhouse aft, with its windows facing forward
+    { size: [1.5, 1.0, 1.5], offset: [0, 1.07, 1.5], color: CABIN, role: 'body' },
+    { size: [1.2, 0.34, 1.54], offset: [0, 1.3, 1.5], color: GLASS, role: 'body' },
+    { size: [1.66, 0.14, 1.7], offset: [0, 1.64, 1.5], color: BUS_TRIM, role: 'body' },
+    // funnel and mast
+    { size: [0.5, 1.1, 0.5], offset: [0, 1.62, 0.45], color: FUNNEL, role: 'body', shape: 'cylinder' },
+    { size: [0.56, 0.18, 0.56], offset: [0, 2.2, 0.45], color: CHASSIS, role: 'detail', shape: 'cylinder' },
+    { size: [0.16, 2.6, 0.16], offset: [0, 1.85, -1.9], color: TIMBER_DARK, role: 'body', shape: 'cylinder' },
+    { size: [1.5, 0.1, 0.1], offset: [0, 2.7, -1.9], color: TIMBER_DARK, role: 'detail' },
+    // deck cargo, so a ship reads as a ship and not as a ferry
+    { size: [0.8, 0.7, 0.8], offset: [-0.5, 0.92, -0.9], color: CRATE, role: 'detail' },
+    { size: [0.8, 0.7, 0.8], offset: [0.5, 0.92, -0.9], color: CRATE, role: 'detail' },
+    { size: [0.8, 0.7, 0.8], offset: [0, 0.92, -0.1], color: TIMBER, role: 'detail' },
+  ];
 }
 
 function locomotive(): ModelPart[] {
@@ -402,6 +516,8 @@ const MODELS: Record<MobKind, ModelPart[]> = {
   // into has to be the size the rails say it is. Nothing here has a leg or an arm role:
   // the renderer swings those from the walk phase, and a train that walked would be
   // telling the player the wrong thing about what is moving the goods.
+  bus: omnibus(),
+  ship: steamer(),
   train: locomotive(),
 };
 
@@ -414,6 +530,11 @@ const CARS: Record<CarKind, ModelPart[]> = {
 /** Which row of the animator's table each kind walks on. */
 const GAIT_OF: Record<MobKind, GaitName> = {
   zombie: 'biped', skeleton: 'biped', villager: 'biped', porter: 'biped', cart: 'biped',
+  // The horses trot and the coach rides along behind them.
+  bus: 'trot',
+  // A hull has no legs either. What the biped row gives it is the gentle bob of `bodyBob`,
+  // which on a boat reads as the swell — the one place that row was ever flattering.
+  ship: 'biped',
   spider: 'wave', rabbit: 'bound', chicken: 'strut', camel: 'plod',
   pig: 'trot', cow: 'trot', sheep: 'trot', cat: 'trot', dog: 'trot', fox: 'trot',
   // Rolling stock has no legs to swing, and a train that walked would be telling

@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { movementDirection } from '../game/player';
 import {
+  EASY_RADIUS,
   MAX_GRADE,
+  MAX_PACE,
+  MIN_PACE,
+  curvePace,
+  gradePace,
+  meanPace,
+  railPace,
   MAX_SPAN,
   MIN_RADIUS,
   MIN_SPAN,
@@ -1155,5 +1162,70 @@ describe('cutting the railway into blocks', () => {
     expect(back.signals().map((node) => Math.round(node.x))).toEqual([120]);
     expect(back.sections().watched.size).toBe(2);
     expect(back.wayBetween(west, east)!.sections).toHaveLength(2);
+  });
+});
+
+describe('what a curve and a bank cost a train', () => {
+  it('leaves a straight, level railway alone', () => {
+    expect(railPace(Infinity, 0)).toBe(1);
+    expect(curvePace(EASY_RADIUS)).toBe(1);
+    expect(gradePace(0)).toBe(1);
+  });
+
+  it('slows for a bend, and by the square root of its radius', () => {
+    // The physics: sideways acceleration is v²/r, so the speed a curve allows goes as √r.
+    expect(curvePace(EASY_RADIUS / 4)).toBeCloseTo(0.5, 5);
+    expect(curvePace(MIN_RADIUS)).toBeLessThan(curvePace(MIN_RADIUS * 4));
+    expect(curvePace(MIN_RADIUS)).toBeGreaterThanOrEqual(MIN_PACE);
+  });
+
+  it('charges a climb far more than it pays back a descent', () => {
+    const up = gradePace(0.1);
+    const down = gradePace(-0.1);
+    expect(up).toBeLessThan(0.6);
+    expect(down).toBeGreaterThan(1);
+    expect(down).toBeLessThanOrEqual(MAX_PACE);
+    // The whole reason to cut a shelf along the hillside: sawing up and down the same
+    // amount is slower than staying level, even though it ends at the same height.
+    expect((up + down) / 2).toBeLessThan(1);
+  });
+
+  it('never stops a train however bad the line is', () => {
+    expect(railPace(MIN_RADIUS, MAX_GRADE)).toBeGreaterThanOrEqual(MIN_PACE);
+    expect(railPace(0, 10)).toBeGreaterThanOrEqual(MIN_PACE);
+  });
+
+  it('averages a line by the time it takes, not by the length of it', () => {
+    // A mile of level track and a short brutal climb. The harmonic mean is what the
+    // player experiences; the arithmetic one would call this line nearly perfect.
+    const paces = [1, 0.3];
+    const spans = [900, 100];
+    const mean = meanPace(paces, spans);
+    // Slower than the length-weighted average of the two, which is what "harmonic" buys.
+    expect(mean).toBeLessThan((900 * 1 + 100 * 0.3) / 1000);
+    expect(mean).toBeCloseTo(1000 / (900 / 1 + 100 / 0.3), 5);
+  });
+
+  it('reads the radius and the slope off the rails it actually laid', () => {
+    const net = new TrackNetwork();
+    // A run that climbs six blocks in sixty and bends as it goes.
+    const laid = net.lay(end(0, 64, 0, 1, 0), end(60, 70, 30, 0, 1));
+    expect(laid.ok).toBe(true);
+    const way = net.wayBetween({ x: 0, y: 64, z: 0 }, { x: 60, y: 70, z: 30 }, 48, 2);
+    expect(way, 'the two ends have no stations, so there is no way yet').toBeNull();
+    for (const place of [{ x: 0, z: 0 }, { x: 60, z: 30 }]) {
+      const near = net.nodesNear(place.x, place.z, 4);
+      expect(near.length, 'the run has an end there to build a station on').toBeGreaterThan(0);
+      net.setStation(near[0].id, true);
+    }
+    const climbing = net.wayBetween({ x: 0, y: 64, z: 0 }, { x: 60, y: 70, z: 30 }, 48, 2)!;
+    expect(climbing.profile).toHaveLength(climbing.points.length);
+    // Uphill from the first point, which is the end the way starts at.
+    expect(climbing.profile.some((at) => at.grade > 0.02)).toBe(true);
+    expect(climbing.profile.every((at) => at.grade > -0.001)).toBe(true);
+    expect(climbing.profile.some((at) => Number.isFinite(at.radius))).toBe(true);
+    // The same rails walked the other way are the same bends and the opposite slopes.
+    const falling = net.wayBetween({ x: 60, y: 70, z: 30 }, { x: 0, y: 64, z: 0 }, 48, 2)!;
+    expect(falling.profile.every((at) => at.grade < 0.001)).toBe(true);
   });
 });

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import type { GoodId } from '../game/villages';
 
-export type CargoDisplayKind = 'waiting' | 'porter' | 'cart' | 'train';
+export type CargoDisplayKind = 'waiting' | 'porter' | 'cart' | 'bus' | 'ship' | 'train';
 
 /** One physical readout of goods or travellers in the world. The economy remains the
  *  authority; this is deliberately only a view of its counts. */
@@ -109,7 +109,7 @@ export class CargoRenderer {
     const group = new THREE.Group();
     const model = this.makeModel(cargo.good);
     const moving = cargo.kind !== 'waiting';
-    const scale = cargo.kind === 'train' ? 0.72 : moving ? 0.62 : 1;
+    const scale = cargo.kind === 'train' || cargo.kind === 'ship' ? 0.72 : moving ? 0.62 : 1;
     model.scale.setScalar(scale);
 
     // On foot it sits over the existing backpack; on a cart it identifies the load in the
@@ -117,6 +117,10 @@ export class CargoRenderer {
     // the ground beside the depot door.
     if (cargo.kind === 'porter') model.position.set(0, 1.65, 0.34);
     else if (cargo.kind === 'cart') model.position.set(0, 1.42, 0.95);
+    // On a coach it rides on the luggage rail, which is where a bus puts what it is not
+    // carrying inside; on a ship it stands on the deck between the hatches.
+    else if (cargo.kind === 'bus') model.position.set(0, 2.5, 0.5);
+    else if (cargo.kind === 'ship') model.position.set(0, 1.6, -0.9);
     else if (cargo.kind === 'train') model.position.set(0, 3.35, 0);
     group.add(model);
 
@@ -335,6 +339,8 @@ function roundedRect(
 
 function labelHeight(kind: CargoDisplayKind): number {
   if (kind === 'train') return 4.45;
+  if (kind === 'ship') return 3.6;
+  if (kind === 'bus') return 3.2;
   if (kind !== 'waiting') return 2.7;
   return 1.9;
 }

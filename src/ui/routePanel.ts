@@ -1,6 +1,6 @@
 import { gapText, type QuestObjective } from '../game/questline';
 import { faultSummary, type RoadFault } from '../game/roads';
-import { DETOUR_NOTICE, DOOR_GAP_NOTICE } from '../game/transport';
+import { DETOUR_NOTICE, DOOR_GAP_NOTICE, vehicleLabel, type Vehicle } from '../game/transport';
 import { clear, el, show } from './dom';
 
 export interface RouteView {
@@ -39,7 +39,14 @@ export interface RouteView {
   carrying: string | null;
   /** What hauls it, and — when a cart or a train cannot — how far away the place to go
    *  and fix is. A railway runs out somewhere; a road pinches somewhere. */
-  vehicle: 'porter' | 'cart' | 'train';
+  vehicle: Vehicle;
+  /** What a railway's curves and banks cost it, as a fraction of what the same rails
+   *  would be worth laid straight and level. 1 on everything else. */
+  pace: number;
+  /** The worst climb on the leg, as a slope, and the tightest bend, as a radius. Zero and
+   *  `Infinity` on anything that is not a railway. */
+  steepest: number;
+  tightest: number;
   cartPinch: { distance: number; bearing: number } | null;
   railPinch: { distance: number; bearing: number } | null;
   /** Where to build the station, when the rails have reached a village and nothing there
@@ -155,8 +162,7 @@ export class RoutePanel {
       let status: string;
       if (!route.surveyed) status = '調べています...';
       else if (route.connected) {
-        const haul =
-          route.vehicle === 'train' ? ' / 列車' : route.vehicle === 'cart' ? ' / 荷車' : '';
+        const haul = route.vehicle === 'porter' ? '' : ` / ${vehicleLabel(route.vehicle)}`;
         status = `接続済み ${Math.round(route.length)}m / ${route.grade}${haul} / 荷 ${route.load}`;
       } else status = `未接続 / ${gapText(route.missing)}`;
       row.appendChild(el('div', 'route-status', status));
@@ -246,6 +252,14 @@ function notes(route: RouteView): Note[] {
   }
   const climb = Math.round(route.climb);
   if (climb > 0) out.push({ text: `登り ${climb} 段`, tone: 'cost' });
+  // What the shape of the railway costs. Only worth saying when it costs something: a
+  // line laid along the valley reports nothing here, which is the point.
+  if (route.pace < 0.97) {
+    const parts = [`線形 ${Math.round(route.pace * 100)}%`];
+    if (route.steepest >= 0.02) parts.push(`最急 ${(route.steepest * 100).toFixed(0)}%`);
+    if (Number.isFinite(route.tightest)) parts.push(`最小半径 ${Math.round(route.tightest)}m`);
+    out.push({ text: `${parts.join(' / ')} — 勾配と曲線のぶん遅い`, tone: 'cost' });
+  }
   if (route.doorGap > DOOR_GAP_NOTICE) {
     out.push({ text: `集荷所の戸口から道まで ${Math.round(route.doorGap)}m`, tone: 'cost' });
   }
