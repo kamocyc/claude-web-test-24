@@ -82,10 +82,12 @@ for (const view of VIEWS) {
   console.log(`shot ${view.id}`);
 }
 
-// The plaza from the middle, and the whole exhibition from above one corner.
-await stand(0, GROUND + 4, 26, 0, -1, 0.05, 0);
+// The plaza from its own edge, and one corner of the exhibition from the air.
+// Not the whole of it: the game's fog closes in well before 200 blocks, and a
+// viewpoint far enough back to hold all nine lots holds them all in haze.
+await stand(0, GROUND + 4, 26, 0, -1, 0.05);
 await page.screenshot({ path: `${out}/plaza.png` });
-await stand(-130, GROUND + 95, 130, 1, -1, -0.5);
+await stand(-72, GROUND + 62, 72, 1, -1, -0.42);
 await page.screenshot({ path: `${out}/overview.png` });
 
 console.log(await page.evaluate(() => ({
