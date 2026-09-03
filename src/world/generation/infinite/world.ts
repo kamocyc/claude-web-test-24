@@ -35,8 +35,12 @@ import {
  * read again and every village lookup rebuilt the world.
  */
 const COARSE_CACHE = 4;
-/** A super-chunk is ~2 MB and covers 2048 blocks of interior. */
-const SUPER_CACHE = 2;
+/**
+ * A super-chunk is ~2 MB and covers 2048 blocks of interior. Four, because a
+ * column within the blend of a corner is spoken for by four of them and a cache
+ * that cannot hold all four rebuilds one on every block.
+ */
+const SUPER_CACHE = 4;
 
 /**
  * Fixed candidates for the probe chunks. The ones whose land fraction is closest
@@ -63,6 +67,12 @@ export interface InfiniteWorld {
   /** Where the settlements are. Scored from the coarse level, never from a tile. */
   settlements: SettlementField;
   superChunk(tx: number, ty: number): SuperChunk;
+  /**
+   * Build one without keeping it. For a caller that wants something small out
+   * of a tile it will not ask about again — the river curves, say — and would
+   * rather not evict the tiles that are answering for the ground underfoot.
+   */
+  uncachedSuperChunk(tx: number, ty: number): SuperChunk;
   /** Without building it, for a caller that would rather answer approximately. */
   peekSuperChunk(tx: number, ty: number): SuperChunk | undefined;
   /** The interior-owning chunk of a world cell, and the local index in it. */
@@ -165,6 +175,9 @@ export function createInfiniteWorld(p: GeneratorParams, known?: WorldConstants):
     return chunk;
   };
 
+  const uncachedSuperChunk = (tx: number, ty: number) =>
+    supers.get(tileKey(tx, ty)) ?? buildSuperChunk(context, tx, ty, riverThreshold);
+
   const peekSuperChunk = (tx: number, ty: number) => supers.get(tileKey(tx, ty));
 
   const settlements = createSettlementField({ params: p, constants, riverThreshold, coarseIndex });
@@ -178,7 +191,7 @@ export function createInfiniteWorld(p: GeneratorParams, known?: WorldConstants):
 
   return {
     params: p, constants, riverThreshold, settlements,
-    coarseTile, coarseIndex, superChunk, peekSuperChunk, cellOwner,
+    coarseTile, coarseIndex, superChunk, uncachedSuperChunk, peekSuperChunk, cellOwner,
     stats: () => ({ coarseTiles: coarse.size, superChunks: supers.size, lastBuildMs }),
     clear() { coarse.clear(); supers.clear(); settlements.clear(); },
   };
