@@ -1,7 +1,7 @@
 import { Noise, clamp } from '../../core/noise';
 import { hashFloat, mulberry32, hashInts } from '../../core/rng';
 import { Block, type BlockId } from '../blocks';
-import { CHUNK_AREA, CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey } from '../chunk';
+import { CHUNK_HEIGHT, CHUNK_SIZE, CHUNK_VOLUME, SEA_LEVEL, blockIndex, chunkKey } from '../chunk';
 import { WATER_FULL } from '../water';
 import { type BiomeId, biomeDef, classifyBiome, isSnowy } from './biome';
 import { ORES, outcropDepth, outcropIn, placeCactus, placeSugarCane } from './features';
@@ -59,8 +59,17 @@ export interface ChunkGenResult {
   heights: Int16Array;
 }
 
-/** The top face of a chunk's columns, for a map that does not want the blocks. */
-export interface ChunkSurvey {
+/** A rectangle of surveyed columns on a lattice of its own, coarser than the block
+ *  grid: what a map of a whole region wants, at the resolution a map of a whole region
+ *  can show. Sample (i, j) is the column at (x0 + i * step, z0 + j * step). */
+export interface RegionSurvey {
+  /** World position of sample (0, 0). */
+  x0: number;
+  z0: number;
+  cols: number;
+  rows: number;
+  /** Blocks between one sample and the next. */
+  step: number;
   /** Y of the top face, water included. */
   height: Int16Array;
   /** What is on top: the surface material, or water, or ice. */
@@ -68,6 +77,19 @@ export interface ChunkSurvey {
   /** Fill level of that cell, 0 when dry. */
   water: Uint8Array;
 }
+
+/**
+ * How wide a patch of ground one pass of the survey stays inside, in blocks.
+ *
+ * Not a tuning knob so much as the whole cost of a wide survey. The drainage
+ * solution is held per 2048-block tile and each tile's rivers are stitched from
+ * its own and its eight neighbours', so a walk that crosses tiles often pays for
+ * them again and again: sweeping a 2048-block square row by row takes 53
+ * seconds, and sweeping the same square in 512-block patches takes 5.4. Smaller
+ * is not better — 128-block patches take 8.4, because the patches themselves
+ * start straddling the same seams.
+ */
+const SURVEY_PATCH = 512;
 
 /** What both writing a column's blocks and drawing it on a map depend on. */
 interface ColumnPlan {
@@ -315,45 +337,42 @@ export class TerrainGenerator {
   }
 
   /**
-   * What a map would draw for one chunk, without generating it.
+   * Surveys a rectangle of the world on a coarse lattice, for a map of a region
+   * nobody has walked.
    *
-   * The blocks are the expensive part of a chunk and a map wants none of them —
-   * it needs the top face and the water over it, which is the column stage and
-   * nothing else. `stride` samples every nth column and repeats the answer
-   * across the rest, which is what makes surveying a whole region affordable;
-   * at the zoom a wide view is read at, a stride of two or four is below one
-   * pixel.
+   * Sampling every `step` blocks rather than every column is what makes a region
+   * affordable to look at: at the zoom a wide map is read at, one sample per
+   * chunk is one pixel. What is *not* affordable is asking for them in reading
+   * order — see `SURVEY_PATCH`, which is why this walks the rectangle in
+   * patches.
    *
    * The village is not on it. Its plateau is, because that is terrain, but its
    * houses are written after the columns and are not worth generating a chunk
    * for; nor is what grows on the ground, so a column wearing a flower comes
    * back as the grass under it.
    */
-  surveyChunk(cx: number, cz: number, stride = 1): ChunkSurvey {
-    const height = new Int16Array(CHUNK_AREA);
-    const block = new Uint16Array(CHUNK_AREA);
-    const water = new Uint8Array(CHUNK_AREA);
-    const originX = cx * CHUNK_SIZE;
-    const originZ = cz * CHUNK_SIZE;
-    const step = Math.max(1, Math.min(CHUNK_SIZE, Math.round(stride)));
-    for (let lz = 0; lz < CHUNK_SIZE; lz += step) {
-      for (let lx = 0; lx < CHUNK_SIZE; lx += step) {
-        const plan = this.columnPlan(originX + lx, originZ + lz);
-        const frozen = plan.waterTop >= 0 && isSnowy(plan.biome);
-        const top = plan.waterTop >= 0 ? plan.waterTop : plan.ground;
-        const id = plan.waterTop < 0 ? plan.surface : frozen ? Block.ICE : Block.WATER;
-        const level = plan.waterTop >= 0 && !frozen ? WATER_FULL : 0;
-        for (let dz = 0; dz < step && lz + dz < CHUNK_SIZE; dz++) {
-          for (let dx = 0; dx < step && lx + dx < CHUNK_SIZE; dx++) {
-            const i = (lz + dz) * CHUNK_SIZE + (lx + dx);
-            height[i] = top;
-            block[i] = id;
-            water[i] = level;
+  surveyRegion(x0: number, z0: number, cols: number, rows: number, step: number): RegionSurvey {
+    const height = new Int16Array(cols * rows);
+    const block = new Uint16Array(cols * rows);
+    const water = new Uint8Array(cols * rows);
+    const patch = Math.max(1, Math.round(SURVEY_PATCH / step));
+    for (let j0 = 0; j0 < rows; j0 += patch) {
+      for (let i0 = 0; i0 < cols; i0 += patch) {
+        const jEnd = Math.min(rows, j0 + patch);
+        const iEnd = Math.min(cols, i0 + patch);
+        for (let j = j0; j < jEnd; j++) {
+          for (let i = i0; i < iEnd; i++) {
+            const plan = this.columnPlan(x0 + i * step, z0 + j * step);
+            const frozen = plan.waterTop >= 0 && isSnowy(plan.biome);
+            const index = j * cols + i;
+            height[index] = plan.waterTop >= 0 ? plan.waterTop : plan.ground;
+            block[index] = plan.waterTop < 0 ? plan.surface : frozen ? Block.ICE : Block.WATER;
+            water[index] = plan.waterTop >= 0 && !frozen ? WATER_FULL : 0;
           }
         }
       }
     }
-    return { height, block, water };
+    return { x0, z0, cols, rows, step, height, block, water };
   }
 
   generateChunk(cx: number, cz: number): ChunkGenResult {

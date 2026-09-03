@@ -48,6 +48,18 @@ function poolWithBank(): World {
   return world;
 }
 
+/** Open water, wide enough that two seconds at speed is still over it: the flat world
+ *  flooded three blocks deep, with no bank inside the run. */
+function openWater(): World {
+  const world = flatWorld(20);
+  for (let z = -30; z < 30; z++) {
+    for (let x = -30; x < 40; x++) {
+      for (let y = 21; y <= 23; y++) world.setWater(x, y, z, WATER_FULL);
+    }
+  }
+  return world;
+}
+
 /** Flat ground that steps up by `height` blocks at x = 3 and stays up: a second of
  *  walking covers a dozen blocks, so the raised half has to be wider than that. */
 function worldWithStep(groundY = 20, height = 1): World {
@@ -291,6 +303,69 @@ describe('water', () => {
     // Roughly a block a second, where air would be more than ten times that.
     expect(sank).toBeGreaterThan(0.4);
     expect(sank).toBeLessThan(2);
+  });
+
+  it('rides a boat on the surface instead of swimming through the water', () => {
+    const world = poolWithBank();
+    const player = new Player();
+    player.y = 24;
+    expect(player.boardBoat(world, 1.5, 0.5)).toBe(true);
+    run(player, world, 120);
+    expect(player.boating).toBe(true);
+    // The water in this pool tops out at 24, and the hull sits a little into it.
+    expect(player.y).toBeGreaterThan(23.3);
+    expect(player.y).toBeLessThan(24);
+    // Not swimming, so not drowning either, however long the trip is.
+    expect(player.inWater).toBe(false);
+    expect(player.air).toBe(MAX_AIR);
+  });
+
+  it('carries the player across the water at the speed of a dash', () => {
+    const world = openWater();
+    const rowed = new Player();
+    rowed.y = 24;
+    rowed.yaw = Math.PI / 2;   // looking towards -X, up the open water
+    rowed.boardBoat(world, 25.5, 0.5);
+    const swum = new Player();
+    swum.x = 25.5;
+    swum.y = 23.5;
+    swum.z = 0.5;
+    swum.yaw = Math.PI / 2;
+    const forward = { ...NO_INPUT, forward: true };
+    run(rowed, world, 120, forward);
+    run(swum, world, 120, forward);
+    const rowedDistance = 25.5 - rowed.x;
+    const swumDistance = 25.5 - swum.x;
+    // Two seconds of a dash is over thirty blocks; two seconds of swimming is five.
+    expect(rowedDistance).toBeGreaterThan(30);
+    expect(rowedDistance).toBeGreaterThan(swumDistance * 4);
+  });
+
+  it('lets the player jump out of the boat', () => {
+    const world = poolWithBank();
+    const player = new Player();
+    player.y = 24;
+    player.boardBoat(world, 1.5, 0.5);
+    player.update(1 / 60, world, { ...NO_INPUT, jump: true });
+    expect(player.boating).toBe(false);
+    // Hopping rather than stepping off, so a bank a block above the water is reachable.
+    expect(player.y).toBeGreaterThan(23.6);
+    run(player, world, 120);
+    expect(player.boating).toBe(false);
+  });
+
+  it('will not launch on dry land, and tips the player out when the water goes', () => {
+    const world = poolWithBank();
+    const player = new Player();
+    player.y = 24;
+    // x = 20 is the bank: solid to y = 23 with nothing but air over it.
+    expect(player.boardBoat(world, 20.5, 0.5)).toBe(false);
+    expect(player.boating).toBe(false);
+
+    expect(player.boardBoat(world, 1.5, 0.5)).toBe(true);
+    for (let y = 21; y <= 23; y++) world.setWater(1, y, 0, 0);
+    player.update(1 / 60, world, NO_INPUT);
+    expect(player.boating).toBe(false);
   });
 
   it('slows a dive rather than stopping it dead at the surface', () => {

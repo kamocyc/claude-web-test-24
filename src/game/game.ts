@@ -58,6 +58,7 @@ import { TICK_INTERVAL, randomTickChunk } from '../world/ticks';
 import { World } from '../world/world';
 import { TreeStore, type TreeId, type TreeRayHit } from '../world/trees';
 import { ChunkWorkerPool } from '../workers/pool';
+import { MapSurveyor } from '../workers/surveyor';
 import type { ChunkReadyMessage } from '../workers/chunkMessages';
 import { Hud, type NavigationInfo } from '../ui/hud';
 import { WorldMap } from '../ui/worldMap';
@@ -86,7 +87,7 @@ import {
   writeSave,
 } from './save';
 import { findSpawn } from './seeds';
-import { SPEEDS, nearestSpeed, saveSettings } from './settings';
+import { MAP_REVEAL_RANGE, MAP_REVEAL_STEP, SPEEDS, nearestSpeed, saveSettings } from './settings';
 import { tickFurnace } from './smelting';
 import { generateTrades, restockTrades } from './trading';
 import { VILLAGE_RADIUS, type Footprint, type HouseRecord } from '../world/generation/village';
@@ -244,7 +245,6 @@ import {
   TRACK_START_MARK,
   TRACK_VIEW_INTERVAL,
   TUTORIAL_STOPS,
-  REVEAL_LIMIT,
   UNLOAD_MARGIN,
   WATER_MESH_BUDGET,
   WORLD_BUDGET_MS,
@@ -360,6 +360,8 @@ export class Game {
   private readonly water: WaterSimulator;
   private readonly generator: TerrainGenerator;
   private readonly pool: ChunkWorkerPool;
+  /** Workers for the map reveal, made on the first sweep and let go after each one. */
+  private surveyor: MapSurveyor | null = null;
   private readonly mobs: MobManager;
   private readonly drops: DropManager;
   private readonly hud: Hud;
@@ -603,6 +605,7 @@ export class Game {
     if (this.keyHandler) this.options.input.offKey(this.keyHandler);
     if (this.lockHandler) document.removeEventListener('pointerlockchange', this.lockHandler);
     this.pool.dispose();
+    this.surveyor?.dispose();
     this.chunkRenderer.dispose();
     this.treeRenderer.dispose();
     this.trackRenderer.dispose();
@@ -1690,6 +1693,13 @@ export class Game {
       return;
     }
 
+    // A boat is aimed at the water and not at the ground under it, so it looks through
+    // the surface the same way a bucket does.
+    if (held.id === 'boat') {
+      this.useBoat();
+      return;
+    }
+
     // Buckets look through water rather than at it, so they get their own trace.
     if (held.id === 'bucket' || held.id === 'water_bucket') {
       this.useBucket(held.id === 'bucket');
@@ -1742,6 +1752,36 @@ export class Game {
 
     if (def.placesBlock === undefined) return;
     this.placeBlock(hit, def.placesBlock);
+  }
+
+  /**
+   * Gets into a boat on the water the player is looking at, or steps out of the one they
+   * are already in.
+   *
+   * The boat is not consumed and there is none left behind: what a player carries is the
+   * boat, and using it is unrolling it onto the water. That keeps a ride out of the save
+   * and out of the way of drowning, dying and warping, all of which end it by simply
+   * having no water under the hull any more.
+   */
+  private useBoat(): void {
+    if (this.player.boating) {
+      this.player.boating = false;
+      this.hud.toast('ボートから降りた');
+      return;
+    }
+    if (this.player.flying) return;
+    const eye = { x: this.player.x, y: this.player.eyeY, z: this.player.z };
+    const look = this.player.lookVector();
+    const hit = raycastVoxels(this.world, eye, look, { maxDistance: REACH, hitLiquids: true });
+    const onWater = hit !== null && hit.block === Block.WATER;
+    const boarded = onWater
+      ? this.player.boardBoat(this.world, hit.x + 0.5, hit.z + 0.5, hit.y)
+      : this.player.boardBoat(this.world, this.player.x, this.player.z);
+    if (!boarded) {
+      this.hud.toast('水の上でないと浮かべられない');
+      return;
+    }
+    this.hud.toast('ボートに乗った（ジャンプで降りる）');
   }
 
   /** Scoops a full cell of water into an empty bucket, or pours one back out. */
@@ -4501,6 +4541,60 @@ export class Game {
     this.relock();
   }
 
+  /**
+   * Surveys a square of world around the player straight off the generator and puts it
+   * on the map, so a region can be looked at without walking it.
+   *
+   * For looking at the shape of a world: where the coasts and the rivers run, how the
+   * biomes fall, whether the towns are spaced the way they should be. Open the map with
+   * `M` afterwards and zoom out.
+   *
+   * One sample per chunk, which is one pixel at the zoom a region this wide is read at,
+   * and the only lattice a region wide enough to be worth revealing can afford. It runs
+   * in workers of its own and lands patch by patch, so the game keeps running while it
+   * goes; the widest setting is about a minute. What it draws is the ground as
+   * generated — no houses, and no roads the player has laid. Nothing it writes is saved
+   * with the world; `forgetRevealed` takes it back off.
+   *
+   * Returns the span it is actually surveying, in blocks.
+   */
+  revealMap(span = this.options.settings.mapReveal): number {
+    const asked = Math.round((Number(span) || 0) / MAP_REVEAL_STEP) * MAP_REVEAL_STEP;
+    const blocks = Math.min(MAP_REVEAL_RANGE.max, Math.max(MAP_REVEAL_RANGE.min, asked));
+    const cols = Math.max(1, Math.round(blocks / CHUNK_SIZE));
+    const x0 = (toChunkCoord(this.player.x) - (cols >> 1)) * CHUNK_SIZE;
+    const z0 = (toChunkCoord(this.player.z) - (cols >> 1)) * CHUNK_SIZE;
+    const covered = cols * CHUNK_SIZE;
+    this.mapMemory.beginReveal(x0, z0, cols, cols, CHUNK_SIZE);
+    this.surveyor ??= new MapSurveyor(this.world.seed, this.generator.constants());
+    const started = Date.now();
+    let announced = 0;
+    this.surveyor.run(x0, z0, cols, cols, CHUNK_SIZE, {
+      onPatch: (survey) => this.mapMemory.addRevealed(survey),
+      onProgress: (done, total) => {
+        // Quarters rather than every patch: a wide sweep is dozens of them, and a toast
+        // for each would be the only thing on the screen for a minute.
+        const quarter = Math.floor((done / Math.max(1, total)) * 4);
+        if (done > 0 && done < total && quarter > announced) {
+          announced = quarter;
+          this.hud.toast(`地図に写しています… ${Math.round((done / total) * 100)}%`);
+        }
+      },
+      onDone: (cancelled) => {
+        if (cancelled) return;
+        this.hud.toast(`${covered} マス四方を地図に写した（${((Date.now() - started) / 1000).toFixed(1)} 秒）`);
+      },
+    });
+    this.hud.toast(`${covered} マス四方を地図に写しています…`);
+    return covered;
+  }
+
+  /** Takes the revealed region back off the map, and abandons a sweep still running. */
+  forgetRevealed(): number {
+    this.surveyor?.cancel();
+    return this.mapMemory.forgetRevealed();
+  }
+
   /** Jumps to a block column. Without a height the player lands just above the ground,
    *  which the generator can answer for anywhere — loaded chunk or not. */
   private jumpTo(x: number, z: number, y: number | null): void {
@@ -4960,37 +5054,17 @@ export class Game {
        * prefers those and they are the ground as it is *now*. Nothing written
        * here is saved with the world; `forgetRevealed` takes it back off.
        */
-      revealMap: (radius = 768, stride?: number): {
-        chunks: number; blocks: number; stride: number; ms: number; villages: { x: number; z: number }[];
-      } => {
-        const started = Date.now();
-        const asked = Math.max(CHUNK_SIZE, Math.round(radius));
-        // A revealed chunk is a kilobyte of surface held in memory. The budget is
-        // what keeps "reveal the world" from being an out-of-memory error with a
-        // friendly name; past it the radius is quietly brought in, and the return
-        // value says how far it actually went.
-        const reach = Math.min(Math.round(asked / CHUNK_SIZE), REVEAL_LIMIT);
-        const step = stride ?? Math.max(1, Math.min(CHUNK_SIZE, Math.round(reach * CHUNK_SIZE / 256)));
-        const cx = toChunkCoord(this.player.x);
-        const cz = toChunkCoord(this.player.z);
-        let chunks = 0;
-        for (let dz = -reach; dz <= reach; dz++) {
-          for (let dx = -reach; dx <= reach; dx++) {
-            if (this.world.hasChunk(cx + dx, cz + dz)) continue;
-            this.mapMemory.recordSurvey(cx + dx, cz + dz, this.generator.surveyChunk(cx + dx, cz + dz, step));
-            chunks++;
-          }
-        }
-        const blocks = (reach * 2 + 1) * CHUNK_SIZE;
+      revealMap: (span?: number): { blocks: number; villages: { x: number; z: number }[] } => {
+        const blocks = this.revealMap(span);
         const villages = this.generator
           .villagesAround(this.player.x, this.player.z, Math.ceil(blocks / 2 / VILLAGE_CELL_BLOCKS))
           .map((v) => ({ x: v.x, z: v.z }));
-        const ms = Date.now() - started;
-        this.hud.toast(`${blocks} マス四方を地図に写した（${(ms / 1000).toFixed(1)} 秒）`);
-        return { chunks, blocks, stride: step, ms, villages };
+        return { blocks, villages };
       },
+      /** Whether a sweep is still running, for a script that wants to wait for one. */
+      revealing: (): boolean => this.surveyor?.running ?? false,
       /** Takes the revealed region back off the map, leaving what was walked. */
-      forgetRevealed: (): number => this.mapMemory.forgetRevealed(),
+      forgetRevealed: (): number => this.forgetRevealed(),
       // --- villages, roads and transport ---------------------------------
       villages: () =>
         [...this.villages.byId.values()].map((v) => ({

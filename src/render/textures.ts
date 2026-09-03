@@ -800,6 +800,25 @@ tile('water_bucket', (ctx, rng) => {
   roundRect(ctx, 5.6, 7.4, 2, 1.4, 0.7, shade(WATER, 26), 0.9);
 });
 
+tile('boat', (ctx) => {
+  iconBase(ctx);
+  const hull: Color = [198, 146, 92];
+  // Seen from the side and slightly above: a hull that tapers at both ends, the
+  // water line across it, and one oar leaning out over the stern.
+  poly(ctx, [[2.2, 8.6], [13.8, 8.6], [12, 12.6], [4, 12.6]], hull);
+  poly(ctx, [[3.4, 8.6], [12.6, 8.6], [12.2, 9.6], [3.8, 9.6]], shade(hull, 24));
+  poly(ctx, [[5.2, 9.9], [10.8, 9.9], [10.4, 11.6], [5.6, 11.6]], shade(hull, -26));
+  ctx.strokeStyle = css(shade(BARK, -6));
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 1.1;
+  ctx.beginPath();
+  ctx.moveTo(9.4, 9.2);
+  ctx.lineTo(13.6, 4.6);
+  ctx.stroke();
+  poly(ctx, [[12.6, 5.4], [14.6, 3.4], [15.2, 4.4], [13.4, 6]], shade(BARK, 14));
+  roundRect(ctx, 2.4, 12.8, 11.2, 1.2, 0.6, WATER, 0.85);
+});
+
 tile('stick', (ctx) => {
   iconBase(ctx);
   ctx.strokeStyle = css(shade(BARK, 20));

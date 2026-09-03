@@ -93,6 +93,7 @@ ITEMS.get('cobblestone')!.smeltsTo = 'stone';
 // --- water handling ----------------------------------------------------------
 item({ id: 'bucket', label: 'バケツ', tex: 'bucket', maxStack: 16 });
 item({ id: 'water_bucket', label: '水入りバケツ', tex: 'water_bucket', maxStack: 1 });
+item({ id: 'boat', label: 'ボート', tex: 'boat', maxStack: 1 });
 
 // --- materials ---------------------------------------------------------------
 item({ id: 'stick', label: '棒', tex: 'stick', fuel: 5 });

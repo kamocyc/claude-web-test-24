@@ -1,5 +1,5 @@
 import ChunkWorker from './chunk.worker?worker';
-import type { ChunkReadyMessage, WorkerRequest } from './chunkMessages';
+import type { ChunkReadyMessage, WorkerRequest, WorkerResponse } from './chunkMessages';
 import type { WorldConstants } from '../world/generation/infinite/world';
 import { chunkKey } from '../world/chunk';
 
@@ -21,7 +21,10 @@ export class ChunkWorkerPool {
     size = Math.max(2, Math.min(6, (navigator.hardwareConcurrency || 4) - 1))) {
     for (let i = 0; i < size; i++) {
       const worker = new ChunkWorker();
-      worker.onmessage = (event: MessageEvent<ChunkReadyMessage>) => {
+      worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+        // The same worker module also answers map surveys; this pool never asks for one,
+        // and would mistake the answer for a chunk if it ever did.
+        if (event.data.type !== 'chunk') return;
         this.inFlight.delete(chunkKey(event.data.cx, event.data.cz));
         this.idle.push(worker);
         this.onChunk?.(event.data);

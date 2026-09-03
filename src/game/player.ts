@@ -1,6 +1,6 @@
 import { boxIntersectsWorld, type EntityBox, type StandingSurface, STEP_HEIGHT, stepUpMove, sweepMove } from '../core/aabb';
 import { blockDef } from '../world/blocks';
-import { WATER_FULL } from '../world/water';
+import { WATER_FULL, waterFraction } from '../world/water';
 import type { World } from '../world/world';
 import { type Damageable, applyDamage, fallDamage } from './combat';
 import { type DifficultyRules, difficultyRules } from './difficulty';
@@ -44,6 +44,21 @@ const SWIM_UP_ACCEL = 22;
 const WATER_VERTICAL_DRAG = 5;
 /** Vertical speed water allows at all: a dive carries some way past the surface. */
 const MAX_WATER_FALL = 8;
+
+/** A boat travels at the speed of a dash. That is the whole point of building one: a
+ *  river is a road, and rowing down it has to beat walking the bank, or nobody would. */
+const BOAT_SPEED = SPRINT_SPEED;
+/** Slippier than the ground, so a boat carries its way instead of stopping dead. */
+const BOAT_FRICTION = 2.5;
+/** How far above and below its feet a hull looks for the water it is riding on. Two
+ *  blocks, so a boat carried over a weir by its own speed finds the pool below rather
+ *  than being tipped out into it. */
+const BOAT_REACH = 2;
+/** How deep the hull sits: the deck the player stands on is a little below the
+ *  waterline, which is what makes a boat read as sitting *in* the water. */
+const BOAT_DRAUGHT = 0.35;
+/** Upward push on stepping out, so the bank is within reach of the hop. */
+const BOAT_STEP_OUT = 5.5;
 
 /** Tallest ledge the player walks up without jumping, in blocks. */
 export const AUTO_STEP_BLOCKS = 3;
@@ -138,6 +153,10 @@ export class Player implements Damageable {
   readonly hunger = new Hunger();
   /** Set while the player is flying in creative-style free camera. */
   flying = false;
+  /** Riding a boat: the player sits on the surface of the water instead of swimming
+   *  through it, and travels at the speed of a dash. Cleared by the player stepping
+   *  out, and by the boat running out of water under it. */
+  boating = false;
   /** Walk up single block steps instead of having to jump every kerb. */
   autoStep = true;
   /** Surfaces that are not in the block grid - the laid railway, and nothing else so far.
@@ -183,6 +202,19 @@ export class Player implements Damageable {
     this.submerged =
       world.getWater(Math.floor(this.x), Math.floor(this.eyeY), Math.floor(this.z)) / WATER_FULL > 0.5;
 
+    // A boat rides on top of the water rather than through it, so none of the swimming
+    // below applies to somebody in one. Jumping is how they get out: the bank is
+    // usually a block up, and a boat that has run aground has to be leavable.
+    if (this.boating) {
+      if (input.jump || boatSurfaceY(world, this.x, this.y, this.z) === null) {
+        this.boating = false;
+        if (input.jump) this.vy = BOAT_STEP_OUT;
+      } else {
+        this.inWater = false;
+        this.submerged = false;
+      }
+    }
+
     // --- horizontal movement -------------------------------------------------
     let inputX = 0;
     let inputZ = 0;
@@ -198,14 +230,16 @@ export class Player implements Damageable {
 
     const { x: wishX, z: wishZ } = movementDirection(this.yaw, inputX, inputZ);
 
-    const sprinting = input.sprint && !input.sneak && inputLength > 0 && !this.inWater;
-    const target = this.inWater
-      ? SWIM_SPEED
-      : input.sneak
-        ? SNEAK_SPEED
-        : sprinting
-          ? SPRINT_SPEED
-          : WALK_SPEED;
+    const sprinting = input.sprint && !input.sneak && inputLength > 0 && !this.inWater && !this.boating;
+    const target = this.boating
+      ? BOAT_SPEED
+      : this.inWater
+        ? SWIM_SPEED
+        : input.sneak
+          ? SNEAK_SPEED
+          : sprinting
+            ? SPRINT_SPEED
+            : WALK_SPEED;
 
     const accel = this.onGround || this.inWater ? GROUND_ACCEL : AIR_ACCEL;
     this.vx += wishX * target * accel * dt;
@@ -213,7 +247,9 @@ export class Player implements Damageable {
     // The current carries the player along; it is applied after the speed clamp below
     // so that being swept away is not limited by the walking speed.
 
-    const friction = this.inWater ? WATER_FRICTION : this.onGround ? GROUND_FRICTION : 1.5;
+    const friction = this.boating
+      ? BOAT_FRICTION
+      : this.inWater ? WATER_FRICTION : this.onGround ? GROUND_FRICTION : 1.5;
     const damping = Math.max(0, 1 - friction * dt);
     this.vx *= damping;
     this.vz *= damping;
@@ -231,6 +267,9 @@ export class Player implements Damageable {
     // --- vertical movement ---------------------------------------------------
     if (this.flying) {
       this.vy = input.jump ? 8 : input.sneak ? -8 : 0;
+    } else if (this.boating) {
+      // The hull is put on the surface below, once the horizontal move has settled.
+      this.vy = 0;
     } else if (this.inWater) {
       // Water is thick. The player sinks slowly rather than dropping like a stone, and
       // a dive carries on past the surface before the drag brings it to a crawl.
@@ -339,6 +378,25 @@ export class Player implements Damageable {
       }
     }
 
+    // --- floating ------------------------------------------------------------
+    // Asked again after the move, not before it: the hull rides whatever water it has
+    // arrived over, which is what carries a boat down a weir in one piece. A pin that
+    // would bury the player in the ceiling is refused and tips them out instead.
+    if (this.boating) {
+      const surface = boatSurfaceY(world, this.x, this.y, this.z);
+      const deck = surface === null ? 0 : surface - BOAT_DRAUGHT;
+      if (
+        surface === null ||
+        boxIntersectsWorld(world, { x: this.x, y: deck, z: this.z, width: PLAYER_WIDTH, height: PLAYER_HEIGHT })
+      ) {
+        this.boating = false;
+      } else {
+        this.y = deck;
+        this.vy = 0;
+        this.onGround = true;
+      }
+    }
+
     // --- fall damage ---------------------------------------------------------
     if (!wasOnGround && this.onGround) {
       const distance = this.fallStartY - this.y;
@@ -405,6 +463,22 @@ export class Player implements Damageable {
     return events;
   }
 
+  /** Puts the player in a boat on the water under the given column, if there is any.
+   *  Returns whether they got in — there is nothing to sit on over dry land. */
+  boardBoat(world: World, x: number, z: number, y = this.y): boolean {
+    const surface = boatSurfaceY(world, x, y, z);
+    if (surface === null) return false;
+    const deck = surface - BOAT_DRAUGHT;
+    const box = { x, y: deck, z, width: PLAYER_WIDTH, height: PLAYER_HEIGHT };
+    if (boxIntersectsWorld(world, box)) return false;
+    this.x = x;
+    this.z = z;
+    this.y = deck;
+    this.vy = 0;
+    this.boating = true;
+    return true;
+  }
+
   /** Damage from blocks the player is touching, such as cactus. */
   private contactDamage(world: World): number {
     let worst = 0;
@@ -449,4 +523,20 @@ export class Player implements Damageable {
     this.air = MAX_AIR;
     this.hunger.reset();
   }
+}
+
+/** Top of the water column a hull at this position would sit in, or null when there is
+ *  none within reach — which is a boat run aground, and the one thing that ends a ride
+ *  without the player asking. The *top* of the column, so a boat floats on a river and
+ *  not along its bed. */
+function boatSurfaceY(world: World, x: number, y: number, z: number): number | null {
+  const bx = Math.floor(x);
+  const bz = Math.floor(z);
+  const from = Math.floor(y) + BOAT_REACH;
+  for (let cy = from; cy >= from - BOAT_REACH * 2; cy--) {
+    const level = world.getWater(bx, cy, bz);
+    if (level <= 0 || world.getWater(bx, cy + 1, bz) > 0) continue;
+    return cy + waterFraction(level);
+  }
+  return null;
 }

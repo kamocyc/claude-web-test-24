@@ -115,6 +115,9 @@ recipe('food', 'hand', { id: 'bread', count: 1 }, [{ id: 'wheat', count: 3 }]);
 
 // --- water works --------------------------------------------------------------
 recipe('water', 'table', { id: 'bucket', count: 1 }, [{ id: 'iron_ingot', count: 3 }]);
+// Planks and nothing else: a boat has to be buildable on the shore of whatever river the
+// player has walked to, with the wood that is standing behind them.
+recipe('water', 'hand', { id: 'boat', count: 1 }, [{ id: 'oak_planks', count: 5 }]);
 recipe('water', 'table', { id: 'floodgate', count: 2 }, [
   { id: 'oak_planks', count: 6 },
   { id: 'iron_ingot', count: 3 },

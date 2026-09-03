@@ -1,5 +1,7 @@
 import { DIFFICULTIES, type Difficulty, difficultyRules } from '../game/difficulty';
 import {
+  MAP_REVEAL_RANGE,
+  MAP_REVEAL_STEP,
   RENDER_DISTANCE_RANGE,
   SENSITIVITY_RANGE,
   SPEEDS,
@@ -65,8 +67,12 @@ export class Menus {
   private respawnButton!: HTMLButtonElement;
   private distanceInput!: HTMLInputElement;
   private sensitivityInput!: HTMLInputElement;
+  private revealInput!: HTMLInputElement;
   private distanceLabel!: HTMLElement;
   private sensitivityLabel!: HTMLElement;
+  private revealLabel!: HTMLElement;
+  private readonly revealButton = el('button', 'menu-button subtle', 'いま地図に写す');
+  private readonly forgetButton = el('button', 'menu-button subtle', '写したぶんを消す');
   private difficultyButtons!: { id: Difficulty; node: HTMLButtonElement }[];
   private speedButtons!: { speed: number; node: HTMLButtonElement }[];
   private difficultyNote!: HTMLElement;
@@ -146,6 +152,13 @@ export class Menus {
     this.sensitivityInput.step = '1';
     this.sensitivityLabel = el('span', 'slider-value');
 
+    this.revealInput = el('input', 'slider');
+    this.revealInput.type = 'range';
+    this.revealInput.min = String(MAP_REVEAL_RANGE.min);
+    this.revealInput.max = String(MAP_REVEAL_RANGE.max);
+    this.revealInput.step = String(MAP_REVEAL_STEP);
+    this.revealLabel = el('span', 'slider-value');
+
     // Four buttons rather than a slider: these are named choices, not a scale, and the
     // note underneath says what the chosen one actually does.
     const choices = el('div', 'choice-row');
@@ -176,6 +189,12 @@ export class Menus {
       el('div', 'setting-note speed-note', '世界の時計だけが速くなる。移動も採掘も、受けるダメージもいつも通り。[ ] でも変えられる'),
       settingRow('描画距離', this.distanceInput, this.distanceLabel),
       settingRow('マウス感度', this.sensitivityInput, this.sensitivityLabel),
+      settingRow('地図の広域表示', this.revealInput, this.revealLabel),
+      el('div', 'setting-note',
+        '歩いていない一帯を生成器から直接調べて地図に書く。裏で少しずつ進むので遊びながら待てる。'
+        + '広く取るほど時間がかかり、一辺 4000 マスで 10 秒、1 万マスで 1 分ほど。書いたぶんはセーブされない'),
+      this.revealButton,
+      this.forgetButton,
     );
     for (const [key, label] of TOGGLE_LABELS) {
       const input = el('input', 'toggle') as HTMLInputElement;
@@ -200,6 +219,7 @@ export class Menus {
 
     const render = (): void => {
       this.distanceLabel.textContent = `${settings.renderDistance} チャンク`;
+      this.revealLabel.textContent = `${settings.mapReveal} マス四方`;
       this.sensitivityLabel.textContent = String(sensitivityToSlider(settings.sensitivity));
       for (const choice of this.difficultyButtons) {
         choice.node.classList.toggle('selected', choice.id === settings.difficulty);
@@ -211,6 +231,7 @@ export class Menus {
     };
     this.distanceInput.value = String(settings.renderDistance);
     this.sensitivityInput.value = String(sensitivityToSlider(settings.sensitivity));
+    this.revealInput.value = String(settings.mapReveal);
     render();
 
     for (const [key, input] of this.toggles) {
@@ -247,6 +268,11 @@ export class Menus {
       render();
       onChange(settings);
     };
+    this.revealInput.oninput = () => {
+      settings.mapReveal = Number(this.revealInput.value);
+      render();
+      onChange(settings);
+    };
   }
 
   private buildDeath(): void {
@@ -277,6 +303,8 @@ export class Menus {
     onSave(): void;
     onExport(): void;
     onOpenFile(file: File): void;
+    onRevealMap(): void;
+    onForgetRevealed(): void;
     onQuit(): void;
   }): void {
     this.pauseNote.textContent = '';
@@ -285,6 +313,16 @@ export class Menus {
     this.saveButton.onclick = () => actions.onSave();
     this.exportButton.onclick = () => actions.onExport();
     this.loadButton.onclick = () => this.pickFile((file) => actions.onOpenFile(file));
+    // Both of these hand the game back afterwards: a sweep reports itself in toasts, and
+    // toasts are behind the pause screen.
+    this.revealButton.onclick = () => {
+      actions.onRevealMap();
+      actions.onResume();
+    };
+    this.forgetButton.onclick = () => {
+      actions.onForgetRevealed();
+      actions.onResume();
+    };
     this.quitButton.onclick = () => actions.onQuit();
   }
 

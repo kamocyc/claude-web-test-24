@@ -49,6 +49,8 @@ function startGame(seed: number, save: ReturnType<typeof readSave>, sample = fal
     onSave: () => game?.save(),
     onExport: () => game?.exportSave(),
     onOpenFile: (file) => void openFile(file),
+    onRevealMap: () => game?.revealMap(),
+    onForgetRevealed: () => game?.forgetRevealed(),
     onQuit: () => {
       game?.save(false);
       quitToTitle();

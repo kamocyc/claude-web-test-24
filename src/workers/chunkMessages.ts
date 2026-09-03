@@ -1,4 +1,5 @@
 import type { ChestMarker, VillagerMarker } from '../world/generation/village';
+import type { RegionSurvey } from '../world/generation/terrain';
 import type { WorldConstants } from '../world/generation/infinite/world';
 
 export interface InitMessage {
@@ -22,7 +23,25 @@ export interface GenerateMessage {
   cz: number;
 }
 
-export type WorkerRequest = InitMessage | GenerateMessage;
+/**
+ * A rectangle of ground to survey for the map, on the lattice `step` describes.
+ *
+ * Off the main thread for the same reason chunk generation is: a survey builds
+ * the same drainage tiles a chunk does, and a region wide enough to be worth
+ * looking at is seconds of them. `id` comes back with the answer so the caller
+ * can tell which patch of a many-patch sweep has landed.
+ */
+export interface SurveyMessage {
+  type: 'survey';
+  id: number;
+  x0: number;
+  z0: number;
+  cols: number;
+  rows: number;
+  step: number;
+}
+
+export type WorkerRequest = InitMessage | GenerateMessage | SurveyMessage;
 
 export interface ChunkReadyMessage {
   type: 'chunk';
@@ -44,4 +63,10 @@ export interface ChunkReadyMessage {
   heights: Int16Array;
 }
 
-export type WorkerResponse = ChunkReadyMessage;
+export interface SurveyReadyMessage {
+  type: 'survey';
+  id: number;
+  survey: RegionSurvey;
+}
+
+export type WorkerResponse = ChunkReadyMessage | SurveyReadyMessage;

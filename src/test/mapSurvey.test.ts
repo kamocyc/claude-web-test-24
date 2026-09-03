@@ -5,9 +5,9 @@ import { MapMemory } from '../game/cartography';
 import { Block } from '../world/blocks';
 import { CHUNK_SIZE, SEA_LEVEL, blockIndex } from '../world/chunk';
 
-/** The debug map reveal: a survey of the generator, put on the map without the
- *  player having walked the ground. What matters is that it agrees with the
- *  ground, and that it does not end up in the save. */
+/** The map reveal: a survey of the generator, put on the map without the player
+ *  having walked the ground. What matters is that it agrees with the ground, and
+ *  that it does not end up in the save. */
 
 const gen = new TerrainGenerator(seedFromString('voxelcraft'));
 
@@ -33,9 +33,9 @@ function plainChunk(): { cx: number; cz: number } {
   throw new Error('every chunk near the origin has a village in it');
 }
 
-describe('surveying a chunk for the map', () => {
+describe('surveying the ground for the map', () => {
   const { cx, cz } = plainChunk();
-  const survey = gen.surveyChunk(cx, cz, 1);
+  const survey = gen.surveyRegion(cx * CHUNK_SIZE, cz * CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE, 1);
   const { blocks } = gen.generateChunk(cx, cz);
 
   it('says what is on top of the ground the generator built', () => {
@@ -66,15 +66,19 @@ describe('surveying a chunk for the map', () => {
     }
   });
 
-  it('costs less at a coarser stride, and still covers every column', () => {
-    const coarse = gen.surveyChunk(cx, cz, 4);
-    for (let i = 0; i < coarse.height.length; i++) expect(coarse.height[i]).toBeGreaterThan(0);
-    // Every fourth column is exact; the rest repeat it.
-    for (let lz = 0; lz < CHUNK_SIZE; lz += 4) {
-      for (let lx = 0; lx < CHUNK_SIZE; lx += 4) {
-        const i = lz * CHUNK_SIZE + lx;
-        expect(coarse.height[i]).toBe(survey.height[i]);
-      }
+  /** The sweep walks a region in patches rather than in reading order, because that is
+   *  the whole cost of a wide survey — see `SURVEY_PATCH`. A patch boundary must not be
+   *  able to change an answer, or the map would be a grid of subtly different squares. */
+  it('gives the same answer whatever order the region is walked in', () => {
+    const x0 = cx * CHUNK_SIZE;
+    const z0 = cz * CHUNK_SIZE;
+    // Wide enough to be cut into patches, sampled per chunk as a real reveal is.
+    const wide = gen.surveyRegion(x0, z0, 80, 80, CHUNK_SIZE);
+    for (const [i, j] of [[0, 0], [17, 3], [40, 40], [79, 79], [8, 61]] as const) {
+      const one = gen.surveyRegion(x0 + i * CHUNK_SIZE, z0 + j * CHUNK_SIZE, 1, 1, CHUNK_SIZE);
+      const index = j * wide.cols + i;
+      expect(wide.height[index], `height at ${i},${j}`).toBe(one.height[0]);
+      expect(wide.block[index], `block at ${i},${j}`).toBe(one.block[0]);
     }
   });
 });
@@ -82,15 +86,44 @@ describe('surveying a chunk for the map', () => {
 describe('a revealed region on the map', () => {
   it('reads back where it was written, and is not saved with the world', () => {
     const memory = new MapMemory();
-    memory.recordSurvey(3, -2, gen.surveyChunk(3, -2, 2));
-    const x = 3 * CHUNK_SIZE + 5, z = -2 * CHUNK_SIZE + 9;
-    expect(memory.heightAt(x, z)).toBe(gen.surveyChunk(3, -2, 2).height[9 * CHUNK_SIZE + 5]);
-    expect(memory.size).toBe(1);
-    // The map remembers where the player has been. A region somebody looked at
-    // in the console is not that, and is megabytes of it.
+    const x0 = 3 * CHUNK_SIZE;
+    const z0 = -2 * CHUNK_SIZE;
+    const survey = gen.surveyRegion(x0, z0, 4, 4, CHUNK_SIZE);
+    memory.beginReveal(x0, z0, 4, 4, CHUNK_SIZE);
+    memory.addRevealed(survey);
+    // Every column of a chunk reads back the one sample taken for that chunk.
+    expect(memory.heightAt(x0 + 5, z0 + 9)).toBe(survey.height[0]);
+    expect(memory.heightAt(x0 + CHUNK_SIZE * 2 + 3, z0 + CHUNK_SIZE + 1)).toBe(survey.height[4 + 2]);
+    expect(memory.revealedBlocks).toBe(4 * CHUNK_SIZE);
+    // The map remembers where the player has been. A region somebody asked to
+    // look at is not that, and is megabytes of it.
     expect(memory.toJSON()).toEqual({});
-    expect(memory.forgetRevealed()).toBe(1);
     expect(memory.size).toBe(0);
-    expect(memory.heightAt(x, z)).toBe(-1);
+
+    expect(memory.forgetRevealed()).toBe(4 * CHUNK_SIZE);
+    expect(memory.heightAt(x0 + 5, z0 + 9)).toBe(-1);
+  });
+
+  it('says nothing about ground outside the region it was given', () => {
+    const memory = new MapMemory();
+    memory.beginReveal(0, 0, 2, 2, CHUNK_SIZE);
+    memory.addRevealed(gen.surveyRegion(0, 0, 2, 2, CHUNK_SIZE));
+    expect(memory.heightAt(1, 1)).toBeGreaterThan(0);
+    expect(memory.heightAt(-1, 1)).toBe(-1);
+    expect(memory.heightAt(1, 2 * CHUNK_SIZE)).toBe(-1);
+  });
+
+  /** A patch lands on the region by its world position, so a sweep whose patches come
+   *  back out of order — which is what several workers means — still assembles. */
+  it('takes patches in any order and puts each where it belongs', () => {
+    const memory = new MapMemory();
+    memory.beginReveal(0, 0, 4, 4, CHUNK_SIZE);
+    const whole = gen.surveyRegion(0, 0, 4, 4, CHUNK_SIZE);
+    memory.addRevealed(gen.surveyRegion(CHUNK_SIZE * 2, CHUNK_SIZE * 2, 2, 2, CHUNK_SIZE));
+    memory.addRevealed(gen.surveyRegion(0, 0, 2, 2, CHUNK_SIZE));
+    expect(memory.heightAt(CHUNK_SIZE * 3, CHUNK_SIZE * 3)).toBe(whole.height[3 * 4 + 3]);
+    expect(memory.heightAt(0, 0)).toBe(whole.height[0]);
+    // Nothing was written for the two patches that never arrived.
+    expect(memory.heightAt(CHUNK_SIZE * 3, 0)).toBe(-1);
   });
 });

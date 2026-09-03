@@ -2,16 +2,6 @@ import { MAX_STEP } from './roads';
 
 export const UNLOAD_MARGIN = 2;
 
-/**
- * How far the debug map reveal may reach, in chunks from the player.
- *
- * A revealed chunk is a kilobyte of surveyed surface held in memory, so 96 is a
- * 193 x 193 block of them: 37000 chunks, about 37 MB, and a 3088-block square —
- * a third of what the widest zoom of the map can show at once. Past that the
- * useful thing to do is move and look again rather than hold more of the world
- * in memory at once.
- */
-export const REVEAL_LIMIT = 96;
 export const REACH = 5;
 
 /** How near the player has to be to put a stop down or take one back up. */

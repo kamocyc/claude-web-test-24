@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 import { TerrainGenerator } from '../world/generation/terrain';
-import type { WorkerRequest, ChunkReadyMessage } from './chunkMessages';
+import type { WorkerRequest, ChunkReadyMessage, SurveyReadyMessage } from './chunkMessages';
 
 /** Terrain generation is the expensive part of loading a chunk, and it depends only on
  *  the seed, so it runs off the main thread. Meshing stays on the main thread where the
@@ -11,6 +11,14 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const message = event.data;
   if (message.type === 'init') {
     generator = new TerrainGenerator(message.seed, message.constants);
+    return;
+  }
+  if (message.type === 'survey') {
+    if (!generator) throw new Error('worker used before init');
+    const survey = generator.surveyRegion(message.x0, message.z0, message.cols, message.rows, message.step);
+    const response: SurveyReadyMessage = { type: 'survey', id: message.id, survey };
+    (self as unknown as Worker).postMessage(response,
+      [survey.height.buffer, survey.block.buffer, survey.water.buffer]);
     return;
   }
   if (message.type === 'generate') {

@@ -12,14 +12,18 @@
  *  here, which is what makes it small enough to keep for thousands of chunks.
  *
  *  What has never been loaded is not in it, and the map draws nothing there. That is the
- *  point: the map shows where the player has been, and stays honest about the rest. */
+ *  point: the map shows where the player has been, and stays honest about the rest.
+ *
+ *  The one exception is a revealed region — a square of ground surveyed straight off the
+ *  generator because somebody asked to look at it. It is kept apart from the walked
+ *  tiles, at a coarser lattice, and is neither saved nor allowed to overwrite them. */
 
 import type { BlockId } from '../world/blocks';
 import { CHUNK_AREA, CHUNK_SIZE, type Chunk, chunkKey, toChunkCoord, toLocalCoord } from '../world/chunk';
 import { base64ToBytes, bytesToBase64, decodeRuns, encodeRuns } from './save';
 import type { World } from '../world/world';
 import type { TreeMapSample } from '../world/trees';
-import type { ChunkSurvey } from '../world/generation/terrain';
+import type { RegionSurvey } from '../world/generation/terrain';
 
 export interface TreeMapSurface {
   canopyAt(x: number, z: number): TreeMapSample | null;
@@ -49,10 +53,31 @@ interface Tile {
   /** The encoded form, kept until the tile is surveyed again. A save re-encodes only
    *  the chunks that have been near the player since the last one. */
   encoded: string | null;
-  /** Taken off the generator by the debug reveal rather than walked past. Kept out
-   *  of the save: the map remembers where the player has been, and a region somebody
-   *  looked at in the console is not that — nor is it worth the megabytes. */
-  revealed?: true;
+}
+
+/**
+ * A region taken off the generator rather than walked, on a lattice of its own.
+ *
+ * One raster for the whole region and not a tile per chunk, because the point of it is
+ * to be wide: ten thousand blocks across is four hundred thousand chunks, and a map of
+ * them at one byte a column would be four hundred megabytes. At one sample per chunk it
+ * is a megabyte and a half, and at the zoom a region that wide is read at, one sample
+ * per chunk is one pixel.
+ *
+ * It is not saved. The map is the record of where the player has been, and a region
+ * somebody asked to look at is not that.
+ */
+interface Revealed {
+  /** World position of sample (0, 0); samples are `step` blocks apart. */
+  x0: number;
+  z0: number;
+  cols: number;
+  rows: number;
+  step: number;
+  /** Top of the column plus one, so 0 means "not surveyed yet". */
+  height: Uint8Array;
+  block: Uint16Array;
+  water: Uint8Array;
 }
 
 function localIndex(x: number, z: number): number {
@@ -61,21 +86,65 @@ function localIndex(x: number, z: number): number {
 
 export class MapMemory implements MapSurface {
   private readonly tiles = new Map<string, Tile>();
+  private revealed: Revealed | null = null;
 
   /** How many chunks have been surveyed. */
   get size(): number {
     return this.tiles.size;
   }
 
-  /** Drops everything the debug reveal put on the map, leaving what was walked. */
-  forgetRevealed(): number {
-    let dropped = 0;
-    for (const [key, tile] of [...this.tiles]) {
-      if (!tile.revealed) continue;
-      this.tiles.delete(key);
-      dropped++;
+  /** The revealed region's span in blocks, or 0 when there is none. */
+  get revealedBlocks(): number {
+    return this.revealed ? this.revealed.cols * this.revealed.step : 0;
+  }
+
+  /** Opens an empty region for `addRevealed` to fill in, replacing any earlier one. */
+  beginReveal(x0: number, z0: number, cols: number, rows: number, step: number): void {
+    this.revealed = {
+      x0, z0, cols, rows, step,
+      height: new Uint8Array(cols * rows),
+      block: new Uint16Array(cols * rows),
+      water: new Uint8Array(cols * rows),
+    };
+  }
+
+  /** Writes one surveyed patch into the open region, ignoring anything outside it. */
+  addRevealed(survey: RegionSurvey): void {
+    const region = this.revealed;
+    if (!region || survey.step !== region.step) return;
+    const i0 = Math.round((survey.x0 - region.x0) / region.step);
+    const j0 = Math.round((survey.z0 - region.z0) / region.step);
+    for (let j = 0; j < survey.rows; j++) {
+      const rj = j0 + j;
+      if (rj < 0 || rj >= region.rows) continue;
+      for (let i = 0; i < survey.cols; i++) {
+        const ri = i0 + i;
+        if (ri < 0 || ri >= region.cols) continue;
+        const from = j * survey.cols + i;
+        const to = rj * region.cols + ri;
+        const top = survey.height[from];
+        region.height[to] = top < 0 ? 0 : Math.min(255, top + 1);
+        region.block[to] = top < 0 ? 0 : survey.block[from];
+        region.water[to] = top < 0 ? 0 : survey.water[from];
+      }
     }
-    return dropped;
+  }
+
+  /** Drops the revealed region, leaving what was walked. Returns its span in blocks. */
+  forgetRevealed(): number {
+    const span = this.revealedBlocks;
+    this.revealed = null;
+    return span;
+  }
+
+  /** Index of the sample covering a column, or -1 when it is outside the region. */
+  private revealedIndex(x: number, z: number): number {
+    const region = this.revealed;
+    if (!region) return -1;
+    const i = Math.floor((x - region.x0) / region.step);
+    const j = Math.floor((z - region.z0) / region.step);
+    if (i < 0 || i >= region.cols || j < 0 || j >= region.rows) return -1;
+    return j * region.cols + i;
   }
 
   /** Whether a chunk has ever been walked past. */
@@ -110,46 +179,27 @@ export class MapMemory implements MapSurface {
     tile.encoded = null;
   }
 
-  /**
-   * Writes down a survey taken from somewhere other than a loaded chunk.
-   *
-   * The map is a record of where the player has been, and this is the one thing
-   * that puts something on it they have not walked past — a debug view of a
-   * whole region, taken straight off the generator. It overwrites, like
-   * `record`, so walking through afterwards replaces the survey with the ground
-   * as it actually turned out, and is not saved with the world.
-   */
-  recordSurvey(cx: number, cz: number, survey: ChunkSurvey): void {
-    const tile: Tile = {
-      height: new Uint8Array(CHUNK_AREA),
-      block: new Uint16Array(CHUNK_AREA),
-      water: new Uint8Array(CHUNK_AREA),
-      encoded: null,
-      revealed: true,
-    };
-    for (let i = 0; i < CHUNK_AREA; i++) {
-      const top = survey.height[i];
-      tile.height[i] = top < 0 ? 0 : Math.min(255, top + 1);
-      tile.block[i] = top < 0 ? 0 : survey.block[i];
-      tile.water[i] = top < 0 ? 0 : survey.water[i];
-    }
-    this.tiles.set(chunkKey(cx, cz), tile);
-  }
-
+  /** Walked ground first, then the revealed region: a chunk the player has actually
+   *  been through is the truer of the two, and the only one that carries a road. */
   heightAt(x: number, z: number): number {
     const tile = this.tiles.get(chunkKey(toChunkCoord(x), toChunkCoord(z)));
-    if (!tile) return -1;
-    return tile.height[localIndex(x, z)] - 1;
+    if (tile) return tile.height[localIndex(x, z)] - 1;
+    const index = this.revealedIndex(x, z);
+    return index < 0 ? -1 : this.revealed!.height[index] - 1;
   }
 
   blockAt(x: number, _top: number, z: number): BlockId {
     const tile = this.tiles.get(chunkKey(toChunkCoord(x), toChunkCoord(z)));
-    return tile ? tile.block[localIndex(x, z)] : 0;
+    if (tile) return tile.block[localIndex(x, z)];
+    const index = this.revealedIndex(x, z);
+    return index < 0 ? 0 : this.revealed!.block[index];
   }
 
   waterAt(x: number, _top: number, z: number): number {
     const tile = this.tiles.get(chunkKey(toChunkCoord(x), toChunkCoord(z)));
-    return tile ? tile.water[localIndex(x, z)] : 0;
+    if (tile) return tile.water[localIndex(x, z)];
+    const index = this.revealedIndex(x, z);
+    return index < 0 ? 0 : this.revealed!.water[index];
   }
 
   /** Chunk key -> the tile, packed as four planes (see `pack`), which comes to around
@@ -157,7 +207,6 @@ export class MapMemory implements MapSurface {
   toJSON(): Record<string, string> {
     const out: Record<string, string> = {};
     for (const [key, tile] of this.tiles) {
-      if (tile.revealed) continue;
       if (tile.encoded === null) tile.encoded = encodeTile(tile);
       out[key] = tile.encoded;
     }

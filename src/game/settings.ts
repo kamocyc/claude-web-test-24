@@ -36,6 +36,10 @@ export interface Settings {
    *  preference and not world state: somebody who reads their railway at eight thousand
    *  blocks across means that about maps, not about one world. */
   mapZoom: number;
+  /** How wide a square the map reveal surveys, in blocks. What it costs is the drainage
+   *  solution over that much ground, so the widest settings are minutes of work — see
+   *  `MAP_REVEAL_RANGE`. */
+  mapReveal: number;
 }
 
 /** The speeds the pause menu offers. Powers of two so the jumps read as jumps, and
@@ -69,6 +73,7 @@ export const DEFAULT_SETTINGS: Settings = {
   creative: false,
   speed: 1,
   mapZoom: 2,
+  mapReveal: 1536,
 };
 
 export const RENDER_DISTANCE_RANGE = { min: 4, max: 12 };
@@ -76,6 +81,20 @@ export const RENDER_DISTANCE_RANGE = { min: 4, max: 12 };
  *  map — this is only the range a stored number has to be inside to be worth passing on. */
 export const MAP_ZOOM_RANGE = { min: 1, max: 16 };
 export const SENSITIVITY_RANGE = { min: 0.0006, max: 0.006 };
+/**
+ * The narrowest and widest square the map reveal will survey, in blocks.
+ *
+ * The top of it is not a memory limit — the region is held at one sample per chunk, so
+ * ten thousand blocks square is under two megabytes. It is a patience limit: a survey
+ * has to solve the drainage over every tile it covers. Measured over three workers,
+ * two thousand blocks square takes about seven seconds and ten thousand about fifty —
+ * the wide one is cheaper than its area because neighbouring tiles share the river
+ * stems they are stitched from. Past that the useful thing to do is walk, and the map
+ * cannot show more than eight thousand blocks at once anyway.
+ */
+export const MAP_REVEAL_RANGE = { min: 512, max: 10240 };
+/** The slider's step, and what a reveal span is rounded to. */
+export const MAP_REVEAL_STEP = 512;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -109,6 +128,11 @@ export function loadSettings(): Settings {
       creative: parsed.creative ?? DEFAULT_SETTINGS.creative,
       speed: nearestSpeed(parsed.speed ?? DEFAULT_SETTINGS.speed),
       mapZoom: clamp(parsed.mapZoom ?? DEFAULT_SETTINGS.mapZoom, MAP_ZOOM_RANGE.min, MAP_ZOOM_RANGE.max),
+      mapReveal: clamp(
+        Math.round((parsed.mapReveal ?? DEFAULT_SETTINGS.mapReveal) / MAP_REVEAL_STEP) * MAP_REVEAL_STEP,
+        MAP_REVEAL_RANGE.min,
+        MAP_REVEAL_RANGE.max,
+      ),
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
