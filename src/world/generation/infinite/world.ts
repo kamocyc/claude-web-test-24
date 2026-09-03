@@ -3,6 +3,7 @@ import { lerp } from './grid';
 import { calibrateTerrain, type TerrainCalibration } from './calibrate';
 import { buildCoarseTile, coarseRiverThreshold, type CoarseTile } from './coarse';
 import { buildSuperChunk, type SuperChunk } from './superchunk';
+import { createSettlementField, type SettlementField } from './settlements';
 import {
   COARSE_FACTOR, COARSE_HALO, COARSE_INTERIOR, COARSE_SIZE, SUPER_HALO, SUPER_INTERIOR, superOrigin,
 } from './constants';
@@ -26,8 +27,14 @@ import {
  *    thread measures once and hands the numbers over in the init message.
  */
 
-/** A coarse tile is ~780 KB and covers 16384 blocks of interior. */
-const COARSE_CACHE = 2;
+/**
+ * A coarse tile is ~780 KB and covers 16384 blocks of interior. Four, not two:
+ * building one civil tile of settlements reads the candidate scatter of its
+ * eight neighbours as well, which spans 12288 blocks and so lands on up to two
+ * coarse tiles in each axis. At two the scan evicted a tile it was about to
+ * read again and every village lookup rebuilt the world.
+ */
+const COARSE_CACHE = 4;
 /** A super-chunk is ~2 MB and covers 2048 blocks of interior. */
 const SUPER_CACHE = 2;
 
@@ -53,6 +60,8 @@ export interface InfiniteWorld {
   coarseTile(tx: number, ty: number): CoarseTile;
   /** Absolute coarse-cell lookups, for cells anywhere in the world. */
   coarseIndex(cx: number, cy: number): { tile: CoarseTile; index: number };
+  /** Where the settlements are. Scored from the coarse level, never from a tile. */
+  settlements: SettlementField;
   superChunk(tx: number, ty: number): SuperChunk;
   /** Without building it, for a caller that would rather answer approximately. */
   peekSuperChunk(tx: number, ty: number): SuperChunk | undefined;
@@ -158,6 +167,8 @@ export function createInfiniteWorld(p: GeneratorParams, known?: WorldConstants):
 
   const peekSuperChunk = (tx: number, ty: number) => supers.get(tileKey(tx, ty));
 
+  const settlements = createSettlementField({ params: p, constants, riverThreshold, coarseIndex });
+
   const cellOwner = (fineX: number, fineY: number) => {
     const tx = Math.floor(fineX / SUPER_INTERIOR), ty = Math.floor(fineY / SUPER_INTERIOR);
     const chunk = superChunk(tx, ty);
@@ -166,10 +177,10 @@ export function createInfiniteWorld(p: GeneratorParams, known?: WorldConstants):
   };
 
   return {
-    params: p, constants, riverThreshold,
+    params: p, constants, riverThreshold, settlements,
     coarseTile, coarseIndex, superChunk, peekSuperChunk, cellOwner,
     stats: () => ({ coarseTiles: coarse.size, superChunks: supers.size, lastBuildMs }),
-    clear() { coarse.clear(); supers.clear(); },
+    clear() { coarse.clear(); supers.clear(); settlements.clear(); },
   };
 }
 
