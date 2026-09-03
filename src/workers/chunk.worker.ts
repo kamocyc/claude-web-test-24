@@ -10,7 +10,7 @@ let generator: TerrainGenerator | null = null;
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const message = event.data;
   if (message.type === 'init') {
-    generator = new TerrainGenerator(message.seed);
+    generator = new TerrainGenerator(message.seed, message.constants);
     return;
   }
   if (message.type === 'generate') {
@@ -25,7 +25,9 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       springs: result.springs,
       villagers: result.villagers,
       chests: result.chests,
+      heights: result.heights,
     };
-    (self as unknown as Worker).postMessage(response, [result.blocks.buffer, result.water.buffer]);
+    (self as unknown as Worker).postMessage(response,
+      [result.blocks.buffer, result.water.buffer, result.heights.buffer]);
   }
 };

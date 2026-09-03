@@ -4,6 +4,7 @@ import { Block } from '../world/blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, Chunk, SEA_LEVEL, blockIndex } from '../world/chunk';
 import { World } from '../world/world';
 import { blocksWater } from '../world/blocks';
+import { Biome } from '../world/generation/biome';
 
 /** The highest y in the world that holds any water, so a sweep can stop there. */
 function topWaterCell(world: World): number {
@@ -68,18 +69,54 @@ describe('TerrainGenerator', () => {
     expect(found).toBeGreaterThan(0);
   });
 
+  /**
+   * A chunk with standing water in it and dry ground beside it.
+   *
+   * A river first, because there is one within a few hundred blocks of anywhere
+   * on land and a coast might be twenty kilometres off — this world is 94 per
+   * cent land around its origin. The coast is the fallback for a seed that
+   * happens to have no river near the middle.
+   */
+  function findWater(gen: TerrainGenerator): { cx: number; cz: number } {
+    for (let radius = 0; radius < 24; radius++) {
+      for (let cz = -radius; cz <= radius; cz++) {
+        for (let cx = -radius; cx <= radius; cx++) {
+          if (Math.max(Math.abs(cx), Math.abs(cz)) !== radius) continue;
+          for (let z = 2; z < CHUNK_SIZE; z += 5) {
+            for (let x = 2; x < CHUNK_SIZE; x += 5) {
+              const river = gen.field.riverAt(cx * CHUNK_SIZE + x, cz * CHUNK_SIZE + z);
+              if (river && river.distance < river.width * 0.4 && river.waterY > SEA_LEVEL) {
+                return { cx, cz };
+              }
+            }
+          }
+          let low = 0, high = 0;
+          for (let z = 0; z < CHUNK_SIZE; z += 4) {
+            for (let x = 0; x < CHUNK_SIZE; x += 4) {
+              const h = gen.height(cx * CHUNK_SIZE + x, cz * CHUNK_SIZE + z);
+              if (h < SEA_LEVEL - 2) low++; else if (h > SEA_LEVEL + 2) high++;
+            }
+          }
+          if (low >= 4 && high >= 4) return { cx, cz };
+        }
+      }
+    }
+    throw new Error('no river or coastline within 24 chunks of the origin');
+  }
+
   it('never leaves generated water standing over dry land', () => {
     // Generated water may only ever spill one block down into the next pool, never
     // sideways onto open ground.
     const gen = new TerrainGenerator(2061350291);
     const world = new World(2061350291);
-    // Out at the coast, where there is water to check: the ground around the origin of
-    // this world stands well above the sea. Which chunk that is depends on where the
-    // coast of the verification world runs, so it moves whenever generation changes —
-    // the assertion below that the sweep found some water surface is what catches a
-    // window that has drifted inland.
-    const originChunkX = -6;
-    const originChunkZ = -7;
+    // Somewhere with water in it, found rather than pinned: the coast moves
+    // whenever generation changes, and a window pinned to where it used to run
+    // reports "no spills" about ground that has been dry for three commits.
+    // `height` is the bare field on a generator with nothing loaded, which is
+    // cheap and quite good enough to find a coastline.
+    const wet = findWater(gen);
+    const originChunkX = wet.cx;
+    const originChunkZ = wet.cz;
     for (let cz = originChunkZ - 1; cz <= originChunkZ + 1; cz++) {
       for (let cx = originChunkX - 1; cx <= originChunkX + 1; cx++) {
         const generated = gen.generateChunk(cx, cz);
@@ -137,18 +174,32 @@ describe('TerrainGenerator', () => {
 
 
 describe('desert decoration', () => {
+  /** The nearest chunk to the origin whose middle is desert. */
+  function findDesert(gen: TerrainGenerator): { cx: number; cz: number } {
+    for (let radius = 0; radius < 60; radius++) {
+      for (let cz = -radius; cz <= radius; cz++) {
+        for (let cx = -radius; cx <= radius; cx++) {
+          if (Math.max(Math.abs(cx), Math.abs(cz)) !== radius) continue;
+          const x = cx * CHUNK_SIZE + CHUNK_SIZE / 2, z = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
+          if (gen.biomeAt(x, z) === Biome.DESERT) return { cx, cz };
+        }
+      }
+    }
+    throw new Error('no desert within 60 chunks of the origin');
+  }
+
   /** Sand surface cells, and how many of them wear a cactus, over real desert. */
   function sandAndCacti(): { sand: number; cacti: number } {
     const gen = new TerrainGenerator(4242);
     let sand = 0;
     let cacti = 0;
-    // Sweep a wide band and take whatever desert it finds. The seed is not pinned to a
-    // desert, so the ratio rather than the count is what can be asserted.
-    // Every third chunk rather than every one: a biome is hundreds of blocks across, so
-    // the stride crosses the same deserts on a ninth of the terrain generation. The band
-    // itself must stay wide, because narrowing it is what risks missing the desert.
-    for (let cz = -7; cz <= 7; cz += 3) {
-      for (let cx = -7; cx <= 7; cx += 3) {
+    // Find a desert first and sweep around it. Sweeping a fixed band and taking
+    // whatever it finds worked while the world had a desert near the origin;
+    // what it does when the world moves is measure a rate over four sand cells
+    // on a beach. `biomeAt` needs nothing loaded, so the search is cheap.
+    const desert = findDesert(gen);
+    for (let cz = desert.cz - 6; cz <= desert.cz + 6; cz += 3) {
+      for (let cx = desert.cx - 6; cx <= desert.cx + 6; cx += 3) {
         const chunk = gen.generateChunk(cx, cz);
         for (let z = 0; z < CHUNK_SIZE; z++) {
           for (let x = 0; x < CHUNK_SIZE; x++) {

@@ -1,7 +1,6 @@
-import { hashFloat, mulberry32, hashInts, type Rng } from '../../core/rng';
-import { smoothstep } from '../../core/noise';
+import { mulberry32, hashInts, type Rng } from '../../core/rng';
 import { Block, type BlockId } from '../blocks';
-import { CHUNK_SIZE, chunkKey, toChunkCoord } from '../chunk';
+import { chunkKey, toChunkCoord } from '../chunk';
 import {
   townBlocks,
   townGrowthBlocks,
@@ -23,10 +22,6 @@ import {
   type VillageArchitecture,
 } from './townBuildings';
 
-/** Villages sit on a coarse grid so their existence can be decided from the seed alone,
- *  without generating any surrounding terrain first. */
-export const VILLAGE_CELL_CHUNKS = 20;
-export const VILLAGE_CELL = VILLAGE_CELL_CHUNKS * CHUNK_SIZE;
 /** Radius of the flattened plateau a town sits on.
  *
  *  Set by the street grid rather than chosen: the corners of the outermost streets land 41
@@ -34,26 +29,15 @@ export const VILLAGE_CELL = VILLAGE_CELL_CHUNKS * CHUNK_SIZE;
  *  inside this radius. A town on a smaller plateau builds its outer blocks down the side
  *  of its own hill. */
 export const VILLAGE_RADIUS = 56;
-/** Share of grid cells that get to try for a village at all.
- *
- *  Lower than it used to be because the *siting* got better, not because there are fewer
- *  towns: a cell no longer stakes everything on one hashed point, it picks the best of
- *  `VILLAGE_TRIES`, so many more of the cells that try end up with a town on them. The
- *  number is set by measurement — see `terrainShape.test.ts`, which pins the villages per
- *  square kilometre this produces against what the old generator produced. */
-const VILLAGE_CHANCE = 0.38;
-
-/** Candidate centres considered inside a cell that has a village.
- *
- *  With features three times as wide, a whole cell can land inside one mountain range or
- *  one plain. One hashed point per cell would answer that by leaving the range empty and
- *  the plain full; a handful of points lets a cell find the flat corner of itself, which
- *  is what a town needs and what somebody founding one would have done. */
-export const VILLAGE_TRIES = 12;
 
 export type VillageVariant = 'plains' | 'desert' | 'snowy';
 
 export interface VillageSite {
+  /**
+   * The settlement lattice's tile this site belongs to. Nothing in the town
+   * fabric reads it; it is here because `VillageSite` is passed around by value
+   * and a site without any provenance is hard to debug.
+   */
   cellX: number;
   cellZ: number;
   /** Block coordinates of the village centre. */
@@ -166,40 +150,6 @@ export interface VillagePlan {
    *  transport addresses them by name. */
   buildings: HouseRecord[];
 }
-
-/** Where a cell would put a village, best candidate first. Empty when the cell has none.
- *
- *  Every candidate lands inside the same inset box the single hashed point used to, so the
- *  nearest two towns in adjacent cells are still at least `VILLAGE_CELL - 2 * margin`
- *  apart however the search goes — 144 blocks, unchanged.
- *
- *  This is deliberately world-blind: it says where a town *could* stand, and the terrain
- *  generator, which is the only thing that knows what the ground is like, decides which of
- *  them it does stand on. */
-export function villageCandidates(seed: number, cellX: number, cellZ: number): VillageSite[] {
-  if (hashFloat(seed ^ 0x5eed1, cellX, cellZ, 17) > VILLAGE_CHANCE) return [];
-  const jitter = mulberry32(hashInts(seed ^ 0x5eed2, cellX, cellZ));
-  const margin = VILLAGE_RADIUS + 16;
-  const span = VILLAGE_CELL - margin * 2;
-  const out: VillageSite[] = [];
-  for (let i = 0; i < VILLAGE_TRIES; i++) {
-    out.push({
-      cellX,
-      cellZ,
-      x: cellX * VILLAGE_CELL + margin + Math.floor(jitter() * span),
-      z: cellZ * VILLAGE_CELL + margin + Math.floor(jitter() * span),
-    });
-  }
-  return out;
-}
-
-/** 1 inside the flat core, falling to 0 at the plateau edge. The band is wide because a
- *  town is wide: the grid has to sit entirely inside the part that reaches 1. */
-export function plateauWeight(site: VillageSite, x: number, z: number): number {
-  const dist = Math.hypot(x - site.x, z - site.z);
-  return 1 - smoothstep(VILLAGE_RADIUS - 14, VILLAGE_RADIUS, dist);
-}
-
 
 /** The professions a town's people have. Kept from the village that came before: what a
  *  villager trades is a separate system from what their building does, and a shopkeeper

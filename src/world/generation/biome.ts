@@ -34,7 +34,19 @@ export interface BiomeDef {
   flowerDensity: number;
   cactusDensity: number;
   sugarCaneDensity: number;
-  /** Villages may generate here. */
+  /** What a river's banks are made of here. */
+  bank: BlockId;
+  /**
+   * Villages may generate here.
+   *
+   * Woodland counts now, which it did not when villages were placed by a grid
+   * cell picking the best of twelve hashed points: there was always a clearing
+   * to move to. The settlement lattice picks one seat per locale on the ground's
+   * own merits, so refusing forest and taiga would have left whole regions
+   * empty rather than moved their towns. What is still refused is ground a town
+   * cannot stand on — ocean, beach, mountainside — and swamp, which the town
+   * fabric has no palette for.
+   */
   allowsVillage: boolean;
 }
 
@@ -48,55 +60,55 @@ def({
   id: Biome.OCEAN, name: 'ocean', label: '海',
   surface: Block.SAND, filler: Block.SAND, fillerDepth: 3, underFiller: null,
   treeDensity: 0, treeLog: Block.OAK_LOG, treeLeaves: Block.OAK_LEAVES,
-  grassDensity: 0, flowerDensity: 0, cactusDensity: 0, sugarCaneDensity: 0, allowsVillage: false,
+  grassDensity: 0, flowerDensity: 0, cactusDensity: 0, bank: Block.SAND, sugarCaneDensity: 0, allowsVillage: false,
 });
 def({
   id: Biome.BEACH, name: 'beach', label: '砂浜',
   surface: Block.SAND, filler: Block.SAND, fillerDepth: 4, underFiller: Block.SANDSTONE,
   treeDensity: 0, treeLog: Block.OAK_LOG, treeLeaves: Block.OAK_LEAVES,
-  grassDensity: 0, flowerDensity: 0, cactusDensity: 0, sugarCaneDensity: 0.03, allowsVillage: false,
+  grassDensity: 0, flowerDensity: 0, cactusDensity: 0, bank: Block.SAND, sugarCaneDensity: 0.03, allowsVillage: false,
 });
 def({
   id: Biome.PLAINS, name: 'plains', label: '平原',
   surface: Block.GRASS, filler: Block.DIRT, fillerDepth: 3, underFiller: null,
   treeDensity: 0.7, treeLog: Block.OAK_LOG, treeLeaves: Block.OAK_LEAVES,
-  grassDensity: 0.22, flowerDensity: 0.03, cactusDensity: 0, sugarCaneDensity: 0.01, allowsVillage: true,
+  grassDensity: 0.22, flowerDensity: 0.03, cactusDensity: 0, bank: Block.SAND, sugarCaneDensity: 0.01, allowsVillage: true,
 });
 def({
   id: Biome.FOREST, name: 'forest', label: '森林',
   surface: Block.GRASS, filler: Block.DIRT, fillerDepth: 3, underFiller: null,
   treeDensity: 9, treeLog: Block.OAK_LOG, treeLeaves: Block.OAK_LEAVES,
-  grassDensity: 0.3, flowerDensity: 0.05, cactusDensity: 0, sugarCaneDensity: 0.01, allowsVillage: false,
+  grassDensity: 0.3, flowerDensity: 0.05, cactusDensity: 0, bank: Block.DIRT, sugarCaneDensity: 0.01, allowsVillage: true,
 });
 def({
   id: Biome.DESERT, name: 'desert', label: '砂漠',
   surface: Block.SAND, filler: Block.SAND, fillerDepth: 5, underFiller: Block.SANDSTONE,
   treeDensity: 0, treeLog: Block.OAK_LOG, treeLeaves: Block.OAK_LEAVES,
-  grassDensity: 0, flowerDensity: 0, cactusDensity: 0.02, sugarCaneDensity: 0, allowsVillage: true,
+  grassDensity: 0, flowerDensity: 0, cactusDensity: 0.02, bank: Block.SAND, sugarCaneDensity: 0, allowsVillage: true,
 });
 def({
   id: Biome.MOUNTAINS, name: 'mountains', label: '山岳',
   surface: Block.STONE, filler: Block.STONE, fillerDepth: 2, underFiller: null,
   treeDensity: 0.3, treeLog: Block.SPRUCE_LOG, treeLeaves: Block.SPRUCE_LEAVES,
-  grassDensity: 0.05, flowerDensity: 0, cactusDensity: 0, sugarCaneDensity: 0, allowsVillage: false,
+  grassDensity: 0.05, flowerDensity: 0, cactusDensity: 0, bank: Block.GRAVEL, sugarCaneDensity: 0, allowsVillage: false,
 });
 def({
   id: Biome.SNOWY_PLAINS, name: 'snowy_plains', label: '雪原',
   surface: Block.SNOW, filler: Block.DIRT, fillerDepth: 3, underFiller: null,
   treeDensity: 0.2, treeLog: Block.SPRUCE_LOG, treeLeaves: Block.SPRUCE_LEAVES,
-  grassDensity: 0, flowerDensity: 0, cactusDensity: 0, sugarCaneDensity: 0, allowsVillage: true,
+  grassDensity: 0, flowerDensity: 0, cactusDensity: 0, bank: Block.GRAVEL, sugarCaneDensity: 0, allowsVillage: true,
 });
 def({
   id: Biome.TAIGA, name: 'taiga', label: 'タイガ',
   surface: Block.SNOW, filler: Block.DIRT, fillerDepth: 3, underFiller: null,
   treeDensity: 6, treeLog: Block.SPRUCE_LOG, treeLeaves: Block.SPRUCE_LEAVES,
-  grassDensity: 0.04, flowerDensity: 0, cactusDensity: 0, sugarCaneDensity: 0, allowsVillage: false,
+  grassDensity: 0.04, flowerDensity: 0, cactusDensity: 0, bank: Block.GRAVEL, sugarCaneDensity: 0, allowsVillage: true,
 });
 def({
   id: Biome.SWAMP, name: 'swamp', label: '湿地',
   surface: Block.GRASS, filler: Block.DIRT, fillerDepth: 3, underFiller: null,
   treeDensity: 2, treeLog: Block.BIRCH_LOG, treeLeaves: Block.BIRCH_LEAVES,
-  grassDensity: 0.35, flowerDensity: 0.02, cactusDensity: 0, sugarCaneDensity: 0.12, allowsVillage: false,
+  grassDensity: 0.35, flowerDensity: 0.02, cactusDensity: 0, bank: Block.DIRT, sugarCaneDensity: 0.12, allowsVillage: false,
 });
 
 for (let i = 0; i < DEFS.length; i++) {

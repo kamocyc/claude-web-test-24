@@ -30,15 +30,23 @@ export interface GeneratorParams {
 }
 
 /**
- * The reference's verification defaults, with one deliberate change.
+ * The reference's verification defaults, unchanged.
  *
- * `settlement` is 0.20 rather than the reference's 0.55. The radius that keeps
- * settlements apart is `0.72 * sqrt(1 / (pi * density))` cells, and at 16 blocks
- * to the cell 0.55 puts towns about 190 blocks apart — two and a half times as
- * dense as this game's world has ever been. Every reach constant in
- * `src/game/roads.ts`, the hamlet spacing in `src/game/outpost.ts` and the quest
- * chain assume roughly 320 blocks between towns, which is what 0.20 gives.
- * `src/test/infiniteSettlements.test.ts` pins it.
+ * `settlement` was the one worth checking rather than inheriting. It sets the
+ * radius that keeps settlements apart, `0.72 * sqrt(1 / (pi * density))` cells,
+ * and the arithmetic says 0.55 should put towns 190 blocks apart and make the
+ * world two and a half times denser in towns than this game has ever been.
+ *
+ * Measured, it does the opposite. The lattice offers a site; whether a village
+ * stands on it is then decided by the biome, the height and the flatness of the
+ * ground (see `../villageSites.ts`), and only about a third of the offers
+ * survive. At 0.20 the world came out at 0.63 villages per million square
+ * blocks against the old generator's 1.72 — towns nearly three times as far
+ * apart as the road reaches in `src/game/roads.ts`, the hamlet spacing in
+ * `src/game/outpost.ts` and the quest chain were tuned for. 0.55 lands back on
+ * the old density with a *larger* minimum separation than the old generator's
+ * 144 blocks, because the lattice enforces one and a hashed grid cell did not.
+ * `src/test/terrainShape.test.ts` pins both numbers.
  */
 export const WORLD_PARAMS = {
   sea: 0.24,
@@ -48,7 +56,7 @@ export const WORLD_PARAMS = {
   river: 0.55,
   meander: 0.68,
   erosion: 0.55,
-  settlement: 0.2,
+  settlement: 0.55,
   agriculture: 0.58,
   agriInfra: 0.65,
   roads: 0.55,

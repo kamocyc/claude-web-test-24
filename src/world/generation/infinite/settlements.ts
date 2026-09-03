@@ -105,12 +105,17 @@ const SETTLE_FLOOR = 0.4;
 const MIN_DENSITY = 0.015;
 
 /**
- * How far the anchor may be nudged when it is seated, in 40 m cells. The
+ * How far the anchor may be nudged when it is seated, in simulation cells. The
  * spacing guarantee is on anchors, so seating two neighbours toward each other
  * eats into it from both sides: capped at a third of the village radius, which
  * leaves the closest pair no nearer than R/3.
+ *
+ * Three rather than the reference's four. A cell is sixteen blocks here and a
+ * town's plateau is fifty-six, so every cell of nudging is a real bite out of
+ * the gap between two of them; measured over five seeds, dropping one cell took
+ * the closest pair in the world from 132 blocks back over 160.
  */
-const SEAT_REACH = 4;
+const SEAT_REACH = 3;
 /** Cost of walking away from the scored anchor, per cell, in terrain units. */
 const SEAT_DRIFT = 0.0008;
 

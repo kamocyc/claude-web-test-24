@@ -2,62 +2,73 @@ import { describe, expect, it } from 'vitest';
 import { TerrainGenerator } from '../world/generation/terrain';
 import {
   planVillage,
-  plateauWeight,
-  villageCandidates,
-  VILLAGE_CELL,
   VILLAGE_RADIUS,
-  VILLAGE_TRIES,
   type VillageVariant,
 } from '../world/generation/village';
+import { plateauWeight } from '../world/generation/villageSites';
 import { Block } from '../world/blocks';
+import { SEA_LEVEL } from '../world/chunk';
 import { onStreet } from '../world/generation/districts';
 import { architectureFor, paletteFor } from '../world/generation/townBuildings';
 
-/** The first cell at or after `from` that offers candidates, so a test can talk about a
- *  real cell without pinning which one a hash happens to pick. */
-function cellWithCandidates(seed: number, from = 0): { cellX: number; cellZ: number } {
-  for (let i = from; i < from + 200; i++) {
-    if (villageCandidates(seed, i, 0).length > 0) return { cellX: i, cellZ: 0 };
-  }
-  throw new Error('no cell in 200 offers a village');
-}
-
 describe('village placement', () => {
-  it('offers the same candidates for the same seed', () => {
-    const a = villageCandidates(4242, 3, -2);
-    const b = villageCandidates(4242, 3, -2);
+  /** Where the towns are is the settlement lattice's answer, refused or accepted by
+   *  `villageSites.ts` on the ground it finds. What is checked here is the part the rest
+   *  of the game depends on: that the answer is the same every time, that a town stands
+   *  somewhere buildable, and that two of them are never on top of one another.
+   *
+   *  The lattice itself — its scoring, its thinning, its tiers — is checked in
+   *  `infiniteSettlements.test.ts`, and the density and spacing it produces across the
+   *  world are pinned in `terrainShape.test.ts`. */
+  it('puts the same towns in the same places for the same seed', () => {
+    const a = new TerrainGenerator(4242).villagesAround(0, 0, 3);
+    const b = new TerrainGenerator(4242).villagesAround(0, 0, 3);
+    expect(a.length).toBeGreaterThan(0);
     expect(a).toEqual(b);
   });
 
-  it('offers different candidates for different seeds', () => {
-    const cells = Array.from({ length: 12 }, (_, i) => [
-      villageCandidates(1, i, 0),
-      villageCandidates(2, i, 0),
-    ]);
-    expect(cells.some(([a, b]) => JSON.stringify(a) !== JSON.stringify(b))).toBe(true);
+  it('puts them in different places for different seeds', () => {
+    const a = new TerrainGenerator(1).villagesAround(0, 0, 3);
+    const b = new TerrainGenerator(2).villagesAround(0, 0, 3);
+    expect(JSON.stringify(a)).not.toEqual(JSON.stringify(b));
   });
 
-  /** A cell offers several places to build so it can find its own flat ground rather than
-   *  going without a town whenever its one hashed point lands on a mountainside. */
-  it('offers a cell a choice of sites, all inside its own plateau margin', () => {
-    const { cellX, cellZ } = cellWithCandidates(11);
-    const candidates = villageCandidates(11, cellX, cellZ);
-    expect(candidates).toHaveLength(VILLAGE_TRIES);
-    // The margin is what keeps two towns in neighbouring cells apart. Every candidate has
-    // to respect it, or the search could pick one that puts two plateaus on top of each
-    // other — which is the one thing the grid exists to prevent.
-    const margin = VILLAGE_RADIUS + 16;
-    for (const site of candidates) {
-      expect(site.x - cellX * VILLAGE_CELL).toBeGreaterThanOrEqual(margin);
-      expect(site.x - cellX * VILLAGE_CELL).toBeLessThan(VILLAGE_CELL - margin);
-      expect(site.z - cellZ * VILLAGE_CELL).toBeGreaterThanOrEqual(margin);
-      expect(site.z - cellZ * VILLAGE_CELL).toBeLessThan(VILLAGE_CELL - margin);
+  it('does not depend on which direction the world was walked in', () => {
+    const forwards = new TerrainGenerator(11);
+    const backwards = new TerrainGenerator(11);
+    // Ask about ground far away first, so the lattice tiles are built in the other order.
+    backwards.villagesAround(6000, -4000, 2);
+    backwards.villagesAround(-3000, 5000, 2);
+    expect(backwards.villagesAround(0, 0, 2)).toEqual(forwards.villagesAround(0, 0, 2));
+  });
+
+  it('answers a radius of zero with the town nearest the point, not with nothing', () => {
+    // `game.ts` counts its radius in the old 320-block grid cells, where zero meant "the
+    // cell this point is in" rather than "a circle of no size".
+    const gen = new TerrainGenerator(31337);
+    const village = gen.findNearestVillage(0, 0, 4);
+    expect(village).not.toBeNull();
+    if (!village) return;
+    expect(gen.villagesAround(village.x, village.z, 0)).toHaveLength(1);
+  });
+
+  it('stands its towns on dry, buildable ground', () => {
+    const gen = new TerrainGenerator(99);
+    const villages = gen.villagesAround(0, 0, 4);
+    expect(villages.length).toBeGreaterThan(2);
+    for (const village of villages) {
+      expect(village.baseY).toBeGreaterThan(SEA_LEVEL + 1);
+      expect(['plains', 'desert', 'snowy']).toContain(village.variant);
+      // The plateau has to be level all the way across the street grid.
+      const centre = gen.height(village.x, village.z);
+      for (const [dx, dz] of [[10, 0], [-10, 0], [0, 10], [0, -10]] as const) {
+        expect(gen.height(village.x + dx, village.z + dz)).toBe(centre);
+      }
     }
   });
 
   it('falls to zero influence outside the plateau', () => {
-    const { cellX, cellZ } = cellWithCandidates(7);
-    const site = villageCandidates(7, cellX, cellZ)[0];
+    const site = { x: 400, z: -200 };
     expect(plateauWeight(site, site.x, site.z)).toBe(1);
     expect(plateauWeight(site, site.x + VILLAGE_RADIUS + 1, site.z)).toBe(0);
   });

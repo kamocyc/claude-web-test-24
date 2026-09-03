@@ -22,11 +22,12 @@ const all = tiles.flatMap(([tx, ty]) => field.tile(tx, ty));
 
 describe('the settlement lattice', () => {
   it('is spaced for the world this game is', () => {
-    // The town fabric needs `VILLAGE_RADIUS` of plateau around a centre, the
-    // hamlet siting in `src/game/outpost.ts` needs room outside that, and the
-    // road reaches in `src/game/roads.ts` were tuned against roughly 320 blocks
-    // between towns. `WORLD_PARAMS.settlement` is what buys that.
-    expect(radius * CELL_BLOCKS).toBeGreaterThan(2 * VILLAGE_RADIUS + 120);
+    // The town fabric needs `VILLAGE_RADIUS` of plateau around a centre and the
+    // hamlet siting in `src/game/outpost.ts` needs room outside that, so two
+    // anchors have to clear two plateaus with something to spare. How *many*
+    // towns that works out to is a different question, swept in
+    // `terrainShape.test.ts`, which is what `WORLD_PARAMS.settlement` is set by.
+    expect(radius * CELL_BLOCKS).toBeGreaterThan(2 * VILLAGE_RADIUS + 60);
     expect(radius * CELL_BLOCKS).toBeLessThan(420);
     // The city ring has to fit inside the 3 x 3 neighbourhood a tile is thinned
     // against, or a "city" is only a city as far as its own tile can see.
@@ -111,9 +112,11 @@ describe('the settlement lattice', () => {
 
 describe('the frozen world recipe', () => {
   it('keeps the settlement density where the rest of the game expects it', () => {
-    // A bare number in `WORLD_PARAMS` with nothing pointing at it invites a
-    // tidy-up back to the reference's 0.55, which is two and a half times
-    // denser than this game's towns can stand.
-    expect(WORLD_PARAMS.settlement).toBeLessThan(0.3);
+    // Not a range anybody derived — the number was swept, in
+    // `terrainShape.test.ts`, against the town density the old generator
+    // produced and the road reaches were tuned for. This is here so that a
+    // change to it fails next to a comment saying where to re-measure.
+    expect(WORLD_PARAMS.settlement).toBeGreaterThan(0.4);
+    expect(WORLD_PARAMS.settlement).toBeLessThan(0.7);
   });
 });

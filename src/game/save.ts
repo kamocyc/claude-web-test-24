@@ -2,15 +2,19 @@
  *  save stays small no matter how far the player has explored. */
 
 export const SAVE_KEY = 'voxelcraft.save.v1';
-/** Bumped for the line network.
+/** Bumped for the new terrain and village generation.
  *
- *  Version 2 knew nothing about stops, lines or industries. Its economy was a road between
- *  two villages that started trading by itself, and there is no honest way to read one of
- *  those into a world where nothing moves until somebody has designed a service — the
- *  goods would be somewhere no line calls, in towns that no longer make what they made.
- *  So a version 2 save is refused rather than half converted, and the player starts a new
- *  world. That is the cost of the change and it is paid once. */
-export const SAVE_VERSION = 5;
+ *  A save stores the seed and the blocks the player changed, and rebuilds the rest of the
+ *  world from the seed on load. Terrain and village placement are now the port of the
+ *  reference generator's infinite mode, so the same seed makes a different world: the
+ *  ground under a saved house is not the ground it was built on, the towns are somewhere
+ *  else, and a village's identity is its coordinates, so every town's stage, stock and
+ *  depot would be orphaned. There is no honest way to convert that, so a version 5 save
+ *  is refused rather than half read and the player starts a new world.
+ *
+ *  The precedent is version 3, which refused version 2 saves for the same reason when the
+ *  line network arrived. That is the cost of the change and it is paid once. */
+export const SAVE_VERSION = 6;
 
 /** The id the old block railway used, and what a world that still has some in it opens
  *  with instead.

@@ -570,7 +570,7 @@ export class Game {
       () => this.closeWarpDialog(),
     );
 
-    this.pool = new ChunkWorkerPool(options.seed);
+    this.pool = new ChunkWorkerPool(options.seed, this.generator.constants());
     this.pool.setHandler((message) => this.onChunkReady(message));
 
     if (options.save) {
@@ -1028,6 +1028,10 @@ export class Game {
     const chunk = new Chunk(message.cx, message.cz, message.blocks, message.water);
     chunk.generated = true;
     this.world.addChunk(chunk);
+    // Before anything asks how high the ground is here. The worker worked these
+    // out while it was generating the chunk, and `TreeStore.ensureChunk` right
+    // below is about to ask about sixty of the 256 columns.
+    this.generator.acceptHeights(message.cx, message.cz, message.heights);
     this.trees.ensureChunk(message.cx, message.cz);
     // Before lighting is seeded, so a village that grew while this chunk was away has its
     // new walls in place when the light is baked against them.

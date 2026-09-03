@@ -1,8 +1,19 @@
 import type { ChestMarker, VillagerMarker } from '../world/generation/village';
+import type { WorldConstants } from '../world/generation/infinite/world';
 
 export interface InitMessage {
   type: 'init';
   seed: number;
+  /**
+   * The calibration and the river threshold, measured once on the main thread.
+   *
+   * Both are properties of the whole world rather than of any tile, and working
+   * them out costs a sampling pass and two probe super-chunks. Every worker
+   * would otherwise pay that separately, for an answer all of them are obliged
+   * to agree on to the last bit — and disagreeing would put the sea at two
+   * different heights in two different chunks.
+   */
+  constants: WorldConstants;
 }
 
 export interface GenerateMessage {
@@ -23,6 +34,14 @@ export interface ChunkReadyMessage {
   springs: { x: number; y: number; z: number }[];
   villagers: VillagerMarker[];
   chests: ChestMarker[];
+  /**
+   * Surface Y for each of the chunk's 256 columns.
+   *
+   * The worker has just worked these out; recomputing them on the main thread
+   * costs a tile it does not have. `TreeStore` alone asks about sixty columns of
+   * a chunk on the frame it arrives.
+   */
+  heights: Int16Array;
 }
 
 export type WorkerResponse = ChunkReadyMessage;

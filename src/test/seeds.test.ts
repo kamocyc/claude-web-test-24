@@ -25,15 +25,16 @@ describe('seeds', () => {
   /** These landmarks are what the browser smoke test walks to. If terrain generation
    *  changes shape they move, and that should be a decision rather than a surprise.
    *
-   *  They last moved when the terrain generator was rewritten around a ruggedness field
-   *  and the sea was dropped from y=46 to y=34 to pay for taller mountains. Every number
-   *  below was re-measured against that world, deliberately, in the same commit. */
+   *  They last moved when terrain and village generation were replaced with the
+   *  port of the reference generator's infinite mode — a real height field with
+   *  drainage, rivers and a scored settlement lattice. Every number below was
+   *  re-measured against that world, deliberately, in the same commit. */
   describe('the verification world', () => {
     const generator = new TerrainGenerator(VERIFICATION_SEED);
     const spawn = findSpawn(generator);
 
     it('starts the player on dry land', () => {
-      expect(spawn).toEqual({ x: 0, y: 42, z: 0 });
+      expect(spawn).toEqual({ x: 0, y: 50, z: 0 });
       expect(generator.height(spawn.x, spawn.z)).toBeGreaterThan(SEA_LEVEL);
     });
 

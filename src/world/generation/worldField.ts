@@ -7,10 +7,11 @@ import { sampleGround } from './infinite/ground';
 import { SUPER_INTERIOR, superTileOf } from './infinite/constants';
 import { terrainSampler } from './infinite/terrain';
 import { paramsFor, type GeneratorParams } from './infinite/params';
+import { FineRelief } from './relief';
 import { createInfiniteWorld, type InfiniteWorld, type WorldConstants } from './infinite/world';
 import type { SettlementField } from './infinite/settlements';
 import type { RiverStem } from './infinite/riverNetwork';
-import { CELL_BLOCKS, MAX_HEIGHT, MIN_HEIGHT, unitsToHeight, unitsToY } from './scale';
+import { CELL_BLOCKS, MAX_HEIGHT, MIN_HEIGHT, unitsToHeight } from './scale';
 
 /**
  * The ported generator, asked block by block.
@@ -37,20 +38,26 @@ import { CELL_BLOCKS, MAX_HEIGHT, MIN_HEIGHT, unitsToHeight, unitsToY } from './
  * the deltas differ by a constant that is the base.
  */
 
-/** Everything about a column that is not a block. */
-export interface ColumnSample {
-  /** Ground height in blocks, carved and levelled, rounded and clamped. */
-  y: number;
-  /** Terrain units, before any of that. */
+/** What the lattice says about a column, before the rivers are cut into it. */
+export interface FieldSample {
+  /** Ground height in blocks, as a real number. */
+  ground: number;
+  /** Terrain units. */
   units: number;
   /** Rise per cell in terrain units, from the hydrology's own slope map. */
   slope: number;
-  sea: boolean;
   /** 0 none, 1 levee, 2 terrace, 3 backswamp, 4 floodplain. */
   landform: number;
   /** Cells to the nearest channel, and to the coast. */
   riverDistance: number;
   coastDistance: number;
+}
+
+/** Everything about a column that is not a block. */
+export interface ColumnSample extends FieldSample {
+  /** Ground height in blocks, carved and levelled, rounded and clamped. */
+  y: number;
+  sea: boolean;
   /** The channel here, when there is one within its banks' reach. */
   river: RiverSample | null;
 }
@@ -76,6 +83,7 @@ export class WorldField {
   readonly world: InfiniteWorld;
   readonly settlements: SettlementField;
   private readonly sampler: ReturnType<typeof terrainSampler>;
+  private readonly relief: FineRelief;
   private readonly seaLevel: number;
   private readonly deltas = new Map<number, number>();
   private readonly stems = new Map<number, RiverStem[]>();
@@ -86,6 +94,7 @@ export class WorldField {
     this.world = createInfiniteWorld(this.params, known);
     this.settlements = this.world.settlements;
     this.sampler = terrainSampler(this.params, this.world.constants);
+    this.relief = new FineRelief(seed);
     this.seaLevel = this.world.constants.seaLevel;
   }
 
@@ -101,11 +110,34 @@ export class WorldField {
    * and the coasts are, which is what a caller with nowhere to stand needs.
    */
   estimate(x: number, z: number): number {
-    return unitsToY(this.sampler.height(x / CELL_BLOCKS, z / CELL_BLOCKS), this.seaLevel);
+    const base = unitsToHeight(this.sampler.height(x / CELL_BLOCKS, z / CELL_BLOCKS), this.seaLevel);
+    const y = Math.round(base + this.relief.at(x, z, this.baseSlope(x, z)));
+    return Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, y));
   }
 
-  /** The full answer, building whatever tiles it takes. */
-  columnAt(x: number, z: number): ColumnSample {
+  /**
+   * How steep the bare height field is at a block, in terrain units per cell —
+   * the same measurement `slopeMap` makes, one stage earlier. Costs four noise
+   * evaluations and needs no tile, which is what lets `biomeAt` be asked about
+   * ground nobody has generated.
+   */
+  baseSlope(x: number, z: number): number {
+    const fx = x / CELL_BLOCKS, fz = z / CELL_BLOCKS;
+    return Math.hypot(
+      this.sampler.height(fx + 1, fz) - this.sampler.height(fx - 1, fz),
+      this.sampler.height(fx, fz + 1) - this.sampler.height(fx, fz - 1)) * 0.5;
+  }
+
+  /**
+   * The lattice's answer for a column, without the rivers.
+   *
+   * Kept apart from `columnAt` because the two cost very different things: this
+   * needs the one super-chunk that owns the cell, and the river curves need
+   * that tile's whole neighbourhood. A caller that only wants to know how
+   * steep and how well-watered the ground is — the land-use survey a growing
+   * village runs — should not pay for nine tiles to find out.
+   */
+  fieldAt(x: number, z: number): FieldSample {
     const fx = x / CELL_BLOCKS, fz = z / CELL_BLOCKS;
     const cx = Math.floor(fx), cz = Math.floor(fz);
     const tx = fx - cx, tz = fz - cz;
@@ -114,27 +146,33 @@ export class WorldField {
     const delta = (d00 * (1 - tx) + d10 * tx) * (1 - tz) + (d01 * (1 - tx) + d11 * tx) * tz;
     const units = this.sampler.height(fx, fz) + delta;
 
-    let ground = unitsToHeight(units, this.seaLevel);
-    const river = this.riverAt(x, z);
-    if (river) ground = leveeHeight(river, channelHeight(river, ground));
-    const y = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, Math.round(ground)));
-
     // The categorical fields have no meaningful average, so they come whole
     // from the tile with the loudest say about the nearest cell.
     const near = sampleGround((a, b) => this.world.superChunk(a, b), Math.round(fx), Math.round(fz));
     const chunk = near.chunk, i = near.index;
     return {
-      y, units,
+      ground: unitsToHeight(units, this.seaLevel),
+      units,
       slope: chunk.slope[i],
-      // The sea is `units <= seaLevel` by construction, and `unitsToHeight` maps
-      // that boundary exactly onto `SEA_LEVEL`, so the block answer and the
-      // tile's mask cannot disagree about where the coast is.
-      sea: y < SEA_LEVEL,
       landform: chunk.landform[i],
       riverDistance: chunk.riverDistance[i],
       coastDistance: chunk.coastDistance[i],
-      river,
     };
+  }
+
+  /** The full answer, rivers included, building whatever tiles it takes. */
+  columnAt(x: number, z: number): ColumnSample {
+    const field = this.fieldAt(x, z);
+    // Before the channel is cut, so `channelHeight` still gets a clean bed and
+    // `leveeHeight` still gets a bank it can guarantee is above the water.
+    let ground = field.ground + this.relief.at(x, z, this.baseSlope(x, z));
+    const river = this.riverAt(x, z);
+    if (river) ground = leveeHeight(river, channelHeight(river, ground));
+    const y = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, Math.round(ground)));
+    // The sea is `units <= seaLevel` by construction, and `unitsToHeight` maps
+    // that boundary exactly onto `SEA_LEVEL`, so the block answer and the
+    // tile's own mask cannot disagree about where the coast is.
+    return { ...field, ground, y, sea: y < SEA_LEVEL, river };
   }
 
   /** The channel at a block, or null where there is none within its banks. */
@@ -150,13 +188,15 @@ export class WorldField {
    */
   landUse(x: number, z: number): LandUse {
     const cellX = Math.round(x / CELL_BLOCKS), cellZ = Math.round(z / CELL_BLOCKS);
-    const column = this.columnAt(x, z);
+    const sample = this.fieldAt(x, z);
     const places = this.settlements.near(cellX, cellZ, landUseReach(this.params) + 2);
     return landUseAt(this.params, places, cellX, cellZ, {
-      slope: column.slope,
-      landform: column.landform,
-      riverDistance: column.riverDistance,
-      onRiver: column.river !== null && column.river.distance <= column.river.width * 0.5,
+      slope: sample.slope,
+      landform: sample.landform,
+      riverDistance: sample.riverDistance,
+      // The cell-level mask rather than the curve: asking the curve would drag
+      // in the eight neighbouring tiles for a question a cell can answer.
+      onRiver: sample.riverDistance === 0,
     });
   }
 

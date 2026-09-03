@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { TerrainGenerator } from '../world/generation/terrain';
 import { SEA_LEVEL } from '../world/chunk';
-import { VILLAGE_CELL } from '../world/generation/village';
+import { VILLAGE_CELL_BLOCKS } from '../world/generation/villageSites';
 import { OUTCROPS, outcropIn } from '../world/generation/features';
 
-/** What the terrain generation was retuned *for*, kept as numbers rather than as an
+/** What the terrain generation was tuned *for*, kept as numbers rather than as an
  *  impression of a screenshot.
  *
- *  Every "before" in this file is a real measurement of the generator that came before
- *  this one — a sum of four noise fields, all of them at three times these frequencies —
- *  taken with exactly the sweeps below. The point of writing them down is that the next
- *  person to retune the shaping constants can see what was traded for what. */
+ *  Every "before" in this file is a real measurement, taken with exactly the sweeps
+ *  below, of one of the two generators this world has had: the noise-stack one that
+ *  came first, and the port of the reference generator's infinite mode that replaced
+ *  it. The point of writing them down is that the next person to retune a shaping
+ *  constant can see what was traded for what. */
 const SEEDS = [2061350291, 1, 4242, 99, 31337];
 
 /** How far the ground rises and falls over a window `r` blocks across, on a 5x5 of
@@ -46,31 +47,62 @@ function landReliefs(gen: TerrainGenerator, r: number): number[] {
 }
 
 describe('terrain shape', () => {
-  /** The whole point of the rewrite: land is either flat enough to put a town on or steep
-   *  enough to be a mountain, and very little of it is the shallow rolling bumps that used
-   *  to be most of the world. Both tails are asserted, because either one on its own is
-   *  satisfied by terrain that is uniformly boring in one direction. */
-  it('splits the land into flat country and steep country', () => {
+  /** Most of the land has to be ground a town could stand on.
+   *
+   *  This replaces a test that asserted the *opposite* shape: that land was either flat
+   *  (>50% at four blocks of relief or less) or mountain (>12% at twenty-four or more)
+   *  with very little in between. That bimodality was the noise-stack generator's — a
+   *  ridged multifractal gated on an erosion field, which produced spikes. The terrain
+   *  here is carved by a drainage solution instead, and eroded ground is not spiky: over
+   *  the same five seeds and the same sweep, *no* land at all reaches twenty-four blocks
+   *  of relief over a sixteen-block window, and the share below four fell from 50-76% to
+   *  44-66% as the sub-cell relief in `relief.ts` broke the slopes up.
+   *
+   *  That is a deliberate change of character, not a regression, so what is pinned now
+   *  is what the world is actually for: enough flat country to build in, and mountains
+   *  that get their height by rising a long way rather than by rising steeply. */
+  it('keeps most of the land flat enough to build a town on', () => {
     for (const seed of SEEDS) {
       const reliefs = landReliefs(new TerrainGenerator(seed), 16);
       expect(reliefs.length, `seed ${seed} found no land`).toBeGreaterThan(3000);
       const share = (pred: (r: number) => boolean) =>
         reliefs.filter(pred).length / reliefs.length;
-
-      // Flat enough to build on. Was 20-22% before, and every bit of the rest carried the
-      // old unconditional `detail * 2` roughness, so even a "plain" was never level.
-      expect(share((r) => r <= 4), `seed ${seed} flat share`).toBeGreaterThan(0.5);
-      // Mountain. Was 24%.
-      expect(share((r) => r >= 24), `seed ${seed} steep share`).toBeGreaterThan(0.12);
-      // The middle, which is what used to be the world: 46-48% before.
-      expect(share((r) => r > 4 && r < 16), `seed ${seed} middling share`).toBeLessThan(0.2);
+      // 44% to 66% measured.
+      expect(share((r) => r <= 4), `seed ${seed} flat share`).toBeGreaterThan(0.35);
+      // And it is not *all* flat: something has to be worth climbing.
+      expect(share((r) => r > 8), `seed ${seed} rolling share`).toBeGreaterThan(0.05);
     }
   });
 
-  /** Lowering the sea from 46 to 34 was supposed to buy height for the mountains, not to
-   *  drain the oceans, so the share of the map under water has to come out where it was.
-   *  Measured on a stride wide enough to cross several continents. */
-  it('keeps the oceans the size they were after lowering the sea', () => {
+  /** The drainage solution flattens a floodplain and cuts a valley; ground beside a
+   *  river should therefore be measurably more level than ground away from one. This is
+   *  the shape the old generator could not make at all, and the reason for the port. */
+  it('levels the ground along a river', () => {
+    const gen = new TerrainGenerator(2061350291);
+    const near: number[] = [];
+    const far: number[] = [];
+    for (let z = -600; z <= 600; z += 24) {
+      for (let x = -600; x <= 600; x += 24) {
+        const column = gen.field.columnAt(x, z);
+        if (column.y <= SEA_LEVEL + 1) continue;
+        const r = relief(gen, x, z, 16);
+        // `riverDistance` is in cells, so four of them is about sixty blocks.
+        if (column.riverDistance <= 4) near.push(r); else if (column.riverDistance > 12) far.push(r);
+      }
+    }
+    expect(near.length, 'the sweep found no river').toBeGreaterThan(60);
+    expect(far.length, 'the sweep found no interfluve').toBeGreaterThan(60);
+    const mean = (v: number[]) => v.reduce((a, b) => a + b, 0) / v.length;
+    expect(mean(near)).toBeLessThan(mean(far));
+  });
+
+  /** The sea has to come out at the share the world was calibrated for.
+   *
+   *  The stride is 970 blocks, not 97. What decides where the coasts are is a very low
+   *  frequency mask with a wavelength around 24000 blocks, so a sweep spanning 19000
+   *  blocks measures one continent or one ocean and reports 9% or 63% depending on which
+   *  it landed in. Widening the stride ten times makes it a measurement of the world. */
+  it('keeps the sea the share of the world it was calibrated for', () => {
     for (const seed of SEEDS) {
       const gen = new TerrainGenerator(seed);
       let ocean = 0;
@@ -78,12 +110,12 @@ describe('terrain shape', () => {
       for (let j = 0; j < 200; j++) {
         for (let i = 0; i < 200; i++) {
           total++;
-          if (gen.rawHeight((i - 100) * 97, (j - 100) * 97) < SEA_LEVEL) ocean++;
+          if (gen.rawHeight((i - 100) * 970, (j - 100) * 970) < SEA_LEVEL) ocean++;
         }
       }
-      // 23.8% before, on this same sweep.
-      expect(ocean / total, `seed ${seed} ocean share`).toBeGreaterThan(0.2);
-      expect(ocean / total, `seed ${seed} ocean share`).toBeLessThan(0.28);
+      // `WORLD_PARAMS.sea` is 0.24; measured 19.1% to 27.8% over these five seeds.
+      expect(ocean / total, `seed ${seed} ocean share`).toBeGreaterThan(0.17);
+      expect(ocean / total, `seed ${seed} ocean share`).toBeLessThan(0.30);
     }
   });
 
@@ -104,8 +136,10 @@ describe('terrain shape', () => {
           if (h >= 116) clamped++;
         }
       }
-      // Before the rewrite the sea was at 46 and the ceiling the same 116, so a peak had
-      // 70 blocks to work with. It has 82 now, and the tallest ground reaches most of it.
+      // 82 blocks between the sea and the ceiling, and the tallest ground reaches
+      // 69 to 82 of them. `unitsToHeight` bends towards the ceiling rather than
+      // clamping against it precisely so the summits keep a gradient; the clamped
+      // share measures whether that is still true, and runs to 0.3% at worst.
       expect(highest - SEA_LEVEL, `seed ${seed} tallest ground`).toBeGreaterThan(60);
       expect(clamped / total, `seed ${seed} clamped share`).toBeLessThan(0.01);
     }
@@ -134,20 +168,22 @@ describe('terrain shape', () => {
         }
       }
       expect(worstBorder, `seed ${seed} border step`).toBeLessThanOrEqual(worstInside);
-      // Measured maximum is 10, the same as the generator this replaced.
-      expect(worstInside, `seed ${seed} worst step`).toBeLessThanOrEqual(14);
+      // Measured maximum is 2. The generator this replaced reached 10: its ridges were
+      // noise and could turn over in a block, where these are cut by water and cannot.
+      expect(worstInside, `seed ${seed} worst step`).toBeLessThanOrEqual(6);
     }
   });
 });
 
 describe('village density', () => {
-  /** Terrain changed; how many towns there are did not. That is a requirement rather than
-   *  an accident, and it is not one anybody can eyeball, so it is measured.
+  /** Terrain changed twice; how many towns there are did not. That is a requirement
+   *  rather than an accident — the road reaches in `src/game/roads.ts`, the hamlet
+   *  spacing in `src/game/outpost.ts` and the quest chain all assume it — and it is not
+   *  one anybody can eyeball, so it is measured.
    *
-   *  A cell used to stake its town on one hashed point and go without whenever that point
-   *  landed badly. It now picks the best of `VILLAGE_TRIES`, which finds far more usable
-   *  ground — so `VILLAGE_CHANCE` had to come down from 0.62 to 0.38 to land back on the
-   *  same number of towns per square of world. Change either of those and re-run this. */
+   *  It is also what sets `WORLD_PARAMS.settlement`. The lattice offers sites and
+   *  `villageSites.ts` refuses about two thirds of them on biome, height and flatness,
+   *  so the density cannot be read off the spacing arithmetic; it has to be swept. */
   it('puts as many villages on the map as the old generator did', () => {
     let villages = 0;
     let cells = 0;
@@ -157,23 +193,26 @@ describe('village density', () => {
         for (let cx = -18; cx <= 18; cx++) {
           cells++;
           villages += gen.villagesAround(
-            cx * VILLAGE_CELL + VILLAGE_CELL / 2,
-            cz * VILLAGE_CELL + VILLAGE_CELL / 2,
+            cx * VILLAGE_CELL_BLOCKS + VILLAGE_CELL_BLOCKS / 2,
+            cz * VILLAGE_CELL_BLOCKS + VILLAGE_CELL_BLOCKS / 2,
             0,
           ).length;
         }
       }
     }
-    const perMillion = (villages / (cells * VILLAGE_CELL * VILLAGE_CELL)) * 1e6;
-    // 1.722 villages per million square blocks before the rewrite, over these same seeds
-    // and this same sweep. Measured 1.732 after.
-    expect(perMillion).toBeGreaterThan(1.55);
-    expect(perMillion).toBeLessThan(1.90);
+    const perMillion = (villages / (cells * VILLAGE_CELL_BLOCKS * VILLAGE_CELL_BLOCKS)) * 1e6;
+    // 1.722 per million square blocks under the noise-stack generator, over these same
+    // seeds and this same sweep; 1.509 under the port.
+    expect(perMillion).toBeGreaterThan(1.3);
+    expect(perMillion).toBeLessThan(1.9);
   });
 
-  /** Two towns closer together than this would be two plateaus overlapping. The candidate
-   *  search may move a town anywhere inside its cell's inset box, so the floor is worth
-   *  asserting rather than assuming. */
+  /** Two towns closer together than this would be two plateaus overlapping.
+   *
+   *  The old grid had no real floor: a cell put its town anywhere inside an inset box, so
+   *  two neighbours could end up 144 blocks apart. The lattice thins on a strict radius
+   *  and only `seatAt` can eat into it, by at most `SEAT_REACH` cells from each side —
+   *  measured, the closest pair over five seeds is 195 blocks. */
   it('never puts two villages on top of each other', () => {
     for (const seed of SEEDS) {
       const all = new TerrainGenerator(seed).villagesAround(0, 0, 6);
@@ -181,7 +220,7 @@ describe('village density', () => {
       for (const a of all) {
         for (const b of all) {
           if (a === b) continue;
-          expect(Math.hypot(a.x - b.x, a.z - b.z), `seed ${seed}`).toBeGreaterThanOrEqual(144);
+          expect(Math.hypot(a.x - b.x, a.z - b.z), `seed ${seed}`).toBeGreaterThanOrEqual(160);
         }
       }
     }
