@@ -165,6 +165,16 @@ export const FAULT_STEP = 3;
 /** Most faults reported at once. The display wants "there is a problem, here"; a hundred
  *  red beacons is the same information with none of the answer. */
 const MAX_FAULTS = 64;
+/**
+ * And most of either kind, so one cannot crowd the other out.
+ *
+ * The two kinds are found by two sweeps, one after the other, and a single shared budget
+ * means whichever runs first can spend all of it. A road buried under a hillside for
+ * sixty-four columns would then be the whole report, and the step that is actually
+ * breaking the route — one column, the last thing the sweep would have found — never
+ * gets mentioned. Half each, and whatever the first sweep leaves is the second's.
+ */
+const FAULTS_PER_KIND = MAX_FAULTS / 2;
 /** Tile size for the column index. An index only: it has no say in what connects. */
 const BUCKET = 16;
 /** Search cap. The graph is only what the player laid, so this is never reached in play. */
@@ -827,7 +837,11 @@ export class RoadNetwork {
    *  a road block with something over its head, and two columns that stand beside one
    *  another with a riser between them the walker cannot climb. Only steps up to
    *  `FAULT_STEP` are reported — past that the two roads are not a broken join, they are
-   *  a road and a hillside. */
+   *  a road and a hillside.
+   *
+   *  Each kind gets its own half of `MAX_FAULTS`, so a long buried stretch cannot spend
+   *  the whole budget and leave the step that is actually breaking the route unmentioned.
+   */
   faults(cx: number, cz: number, radius: number): RoadFault[] {
     const out: RoadFault[] = [];
     const seen = new Set<string>();
@@ -836,12 +850,13 @@ export class RoadNetwork {
     const z0 = cz - radius;
     const z1 = cz + radius;
 
+    let headroom = 0;
     for (let ccz = toChunkCoord(z0); ccz <= toChunkCoord(z1); ccz++) {
       for (let ccx = toChunkCoord(x0); ccx <= toChunkCoord(x1); ccx++) {
         const edits = this.world.edits.get(`${ccx},${ccz}`);
         if (!edits) continue;
         for (const [index, id] of edits) {
-          if (out.length >= MAX_FAULTS) return out;
+          if (headroom >= FAULTS_PER_KIND) break;
           if (!ROAD_BLOCKS.has(id)) continue;
           const x = ccx * CHUNK_SIZE + (index % CHUNK_SIZE);
           const z = ccz * CHUNK_SIZE + (Math.floor(index / CHUNK_SIZE) % CHUNK_SIZE);
@@ -854,8 +869,11 @@ export class RoadNetwork {
           if (seen.has(key(x, z))) continue;
           seen.add(key(x, z));
           out.push({ x, z, y, kind: 'headroom' });
+          headroom++;
         }
+        if (headroom >= FAULTS_PER_KIND) break;
       }
+      if (headroom >= FAULTS_PER_KIND) break;
     }
 
     for (const column of this.columnsIn(x0, z0, x1, z1)) {

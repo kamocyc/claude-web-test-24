@@ -33,6 +33,19 @@ const FULL_SLOPE = 0.028;
 /** Blocks of swing on ground that steep. */
 const GAIN = 3.5;
 
+/**
+ * Blocks of swing everywhere, steep or not.
+ *
+ * Gentle ground has a second problem the slope-gated part cannot fix. A height
+ * field that changes by a fraction of a block over tens of blocks, rounded to
+ * whole ones, comes out as contour bands: long clean terraces following the
+ * lines of the hillside, which is a striking thing to look at once and a rice
+ * paddy to look at for an hour. Half a block of high-frequency noise is enough
+ * to dither the edge of each band without lifting anything a full block, and it
+ * is the same job the old generator's unconditional `detail * 0.8` was doing.
+ */
+const WOBBLE = 0.55;
+
 export class FineRelief {
   private readonly noise: Noise;
 
@@ -42,11 +55,11 @@ export class FineRelief {
 
   /** Blocks to add to a column, given how steep the bare field is there. */
   at(x: number, z: number, slope: number): number {
+    const wobble = this.noise.noise2(x * GRAIN, z * GRAIN) * WOBBLE;
     const gate = slope >= FULL_SLOPE ? 1 : slope / FULL_SLOPE;
-    if (gate <= 0) return 0;
+    if (gate <= 0) return wobble;
     const shape = this.noise.fbm2(x * BROAD, z * BROAD, 2) * 1.4
-      + this.noise.fbm2(x * FINE, z * FINE, 2) * 0.55
-      + this.noise.noise2(x * GRAIN, z * GRAIN) * 0.22;
-    return shape * gate * GAIN;
+      + this.noise.fbm2(x * FINE, z * FINE, 2) * 0.55;
+    return wobble + shape * gate * GAIN;
   }
 }

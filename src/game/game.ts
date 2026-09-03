@@ -5353,8 +5353,14 @@ export class Game {
         }
         return this.options.settings.renderDistance;
       },
-      /** Road the player laid that the index will not have, and why. */
-      roadFaults: (radius = FAULT_REACH): RoadFault[] => this.roadFaults(radius),
+      /** Road the player laid that the index will not have, and why.
+       *
+       *  `at` defaults to the player, which is what the display wants. A caller asking
+       *  about one particular stretch should say so rather than sweep the world and
+       *  filter: the report is capped, so a long buried run somewhere else can use up
+       *  the budget before the sweep reaches the column being asked about. */
+      roadFaults: (radius = FAULT_REACH, at?: { x: number; z: number }): RoadFault[] =>
+        this.roadFaults(radius, at ?? this.player),
       /** Widens the quest route's road to what a cart needs, the way walking its length
        *  again with a shovel would. Three columns for four hundred blocks is the player's
        *  afternoon, not the browser test's. */

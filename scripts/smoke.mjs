@@ -569,9 +569,16 @@ console.log('demand:', JSON.stringify(await evaluate(() =>
 // on the map comes from somewhere the player chose to dig — and the tool that chooses is
 // the survey, which counts what is actually in the ground rather than taking the player's
 // word for it.
-await evaluate(() => {
+// Stand in the town, and see far enough to have the whole of it. The survey below looks
+// 90 to 150 blocks out and a town's field belt reaches 67, both of which are past the
+// four chunks the game streams by default — and ground that is not in memory answers
+// every question with "nothing here". Put back at the end of the section.
+const seeing = await evaluate(() => {
+  const was = window.voxelcraft.renderDistance();
   const here = window.voxelcraft.village();
   window.voxelcraft.teleport(here.x, here.z);
+  window.voxelcraft.renderDistance(7);
+  return was;
 });
 await settled();
 const site = await evaluate(() => {
@@ -597,13 +604,20 @@ const site = await evaluate(() => {
 // --- the town's own fields ---------------------------------------------------
 // The half of the first stage the player never touches. A town ploughs the belt outside
 // its own streets, and what grows there is carried inward from its own depot.
+// Stand in the town whose fields these are. The tutorial ends at the hamlet, which is
+// its own place and has none, and is often the nearest thing to the player.
+const farming = await evaluate(() => window.voxelcraft.fields()
+  .slice().sort((a, b) => a.distance - b.distance)[0]);
+if (!farming) throw new Error('no town near the player reported any fields');
+await evaluate(([x, z]) => window.voxelcraft.teleport(x, z), [farming.x, farming.z]);
+await settled();
 const fields = await evaluate(() => {
   window.voxelcraft.plough();
   return window.voxelcraft.fields();
 });
 console.log('the fields of the town:', JSON.stringify(fields));
-// The one the player is standing at: the only town whose chunks are all in memory, and so
-// the only one whose fields are on the ground rather than only in the plan.
+// The one the player is now standing in, whose chunks are therefore all in memory and
+// whose fields are on the ground rather than only in the plan.
 const farmed = fields.slice().sort((a, b) => a.distance - b.distance)[0];
 if (!farmed) throw new Error('the town underfoot reported no fields');
 if (farmed.parcels < 3) throw new Error(`a town with ${farmed.parcels} parcels is not farming`);
@@ -708,6 +722,13 @@ console.log('and put back up:', JSON.stringify(rebuilt));
 if (!rebuilt.ok) throw new Error(`the ground did not come free: ${JSON.stringify(rebuilt)}`);
 
 await evaluate(([x, z]) => window.voxelcraft.teleport(x, z + 12), [site.x, site.z]);
+// Back to the streaming distance the rest of the run is written for, now that the player
+// is standing on the last thing this section had to see. Everything from the town's field
+// belt to the deposit under it lies further out than four chunks, and every one of these
+// questions — what is ploughed, what is in the ground, what a works built — is answered
+// off the blocks in memory, so ground that is not loaded reads as ground with nothing in
+// it whatever is actually there.
+await evaluate((was) => window.voxelcraft.renderDistance(was), seeing);
 await settled();
 await evaluate(() => {
   window.voxelcraft.game.player.pitch = -0.1;
@@ -860,11 +881,11 @@ const breakAt = async (place) => {
   await advance(`${QUEST_ROUTE}?.connected === false`);
   return {
     at,
-    // The sweep is asked for from where the player is standing, and the player is not
-    // standing on the piece of road being broken — so it has to reach the whole road, and
-    // the filter, not the radius, is what scopes this to the column just broken.
-    faults: await evaluate((c) => window.voxelcraft.roadFaults(400)
-      .filter((f) => Math.hypot(f.x - c.x, f.z - c.z) < 24), bite),
+    // Asked about the column just broken rather than about wherever the player is
+    // standing. The report is capped, so sweeping the whole road and filtering afterwards
+    // means a buried stretch under the hamlet can spend the budget before the sweep gets
+    // this far, and the answer comes back empty about a fault that is certainly there.
+    faults: await evaluate((c) => window.voxelcraft.roadFaults(24, c), bite),
     note: await page.locator('.route-note').first().innerText().catch(() => null),
   };
 };
