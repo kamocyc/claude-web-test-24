@@ -111,6 +111,13 @@ export const Block = {
   SIGN_BLUE: 100,
   AC_UNIT: 101,
   WHITE_TILE_SLAB: 102,
+
+  // --- getting about inside a building ----------------------------------------
+  ELEVATOR: 103,
+  ESCALATOR_EAST: 104,
+  ESCALATOR_WEST: 105,
+  ESCALATOR_SOUTH: 106,
+  ESCALATOR_NORTH: 107,
 } as const;
 
 export type BlockId = number;
@@ -335,6 +342,40 @@ def({ id: B.SIGN_RED, name: 'sign_red', label: '看板（赤）', hardness: 1, t
 def({ id: B.SIGN_BLUE, name: 'sign_blue', label: '看板（青）', hardness: 1, tool: 'axe', light: 9, tex: { all: 'sign_blue' } });
 def({ id: B.AC_UNIT, name: 'ac_unit', label: '室外機', hardness: 1.6, tool: 'pickaxe', tier: 1, tex: { top: 'ac_top', side: 'ac_side', bottom: 'ac_top' } });
 
+// --- getting about inside a building ------------------------------------------
+// A building the player can only reach the ground floor of is a facade. These two are
+// what make a storey above the street somewhere to go: the lift is a cell you stand in
+// and ride, and the escalator is a flight that carries whoever is on it.
+//
+// The lift car is deliberately not solid — walking into one is how you get in, and a
+// door that had to be opened would be a mechanism this game does not have. It lights
+// its own shaft, because a lift shaft has no windows anywhere.
+def({ id: B.ELEVATOR, name: 'elevator', label: 'エレベーター', solid: false, opaque: false, light: 10, hardness: 2.8, tool: 'pickaxe', tier: 1, tex: { top: 'elevator_top', side: 'elevator_side', bottom: 'elevator_top' } });
+
+// The four ways an escalator can rise. Named like the roof wedges — `slope_east` puts
+// the high edge to the east — and, like them, they collide as a full cell, so a flight
+// of them is a staircase that happens to be moving.
+[
+  { shape: 'slope_east' as const, suffix: 'east', label: '東上がり' },
+  { shape: 'slope_west' as const, suffix: 'west', label: '西上がり' },
+  { shape: 'slope_south' as const, suffix: 'south', label: '南上がり' },
+  { shape: 'slope_north' as const, suffix: 'north', label: '北上がり' },
+].forEach((form, index) => {
+  def({
+    id: B.ESCALATOR_EAST + index,
+    name: `escalator_${form.suffix}`,
+    label: `エスカレーター（${form.label}）`,
+    shape: form.shape,
+    opaque: false,
+    light: 4,
+    hardness: 2.8,
+    tool: 'pickaxe',
+    tier: 1,
+    tex: { top: 'escalator_top', side: 'escalator_side', bottom: 'escalator_side' },
+    drop: 'escalator',
+  });
+});
+
 for (let i = 0; i < DEFS.length; i++) {
   if (!DEFS[i]) throw new Error(`block id ${i} has no definition`);
 }
@@ -351,6 +392,9 @@ for (let i = 0; i < DEFS.length; i++) {
  */
 const ROOF_FAMILIES: readonly BlockId[] = [
   B.STONE_ROOF_EAST, B.SLATE_ROOF_EAST, B.ROOF_TILE_EAST, B.COPPER_ROOF_EAST,
+  // An escalator is not a roof, but it is declared the same way and has to turn with a
+  // building for the same reason.
+  B.ESCALATOR_EAST,
 ];
 
 const ROTATIONS = new Map<BlockId, readonly BlockId[]>();
@@ -441,4 +485,30 @@ export function isFarmland(id: BlockId): boolean {
 /** Blocks that a plant/crop can be planted on. */
 export function supportsPlant(id: BlockId): boolean {
   return id === Block.GRASS || id === Block.DIRT || isFarmland(id);
+}
+
+/** Which way an escalator carries whoever is standing on it: the direction its own slope
+ *  rises, as a unit step on the flat. Null for everything that is not one.
+ *
+ *  One way, like the real thing. A building that wants to bring people back down builds
+ *  a second flight pointing the other way, or a lift. */
+export function escalatorRise(id: BlockId): readonly [number, number] | null {
+  if (id === Block.ESCALATOR_EAST) return [1, 0];
+  if (id === Block.ESCALATOR_WEST) return [-1, 0];
+  if (id === Block.ESCALATOR_SOUTH) return [0, 1];
+  if (id === Block.ESCALATOR_NORTH) return [0, -1];
+  return null;
+}
+
+/** The escalator that rises towards a direction. The dominant axis wins, so a diagonal
+ *  look direction still lays a flight square to the world. */
+export function escalatorTowards(dx: number, dz: number): BlockId {
+  if (Math.abs(dx) >= Math.abs(dz)) return dx >= 0 ? Block.ESCALATOR_EAST : Block.ESCALATOR_WEST;
+  return dz >= 0 ? Block.ESCALATOR_SOUTH : Block.ESCALATOR_NORTH;
+}
+
+/** True for the cell of a lift car. What the player rides, and what a mob treats as
+ *  empty air — nobody but the player operates one. */
+export function isElevator(id: BlockId): boolean {
+  return id === Block.ELEVATOR;
 }

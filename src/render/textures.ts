@@ -1454,6 +1454,61 @@ tile('ac_top', (ctx, rng) => {
   speckle(ctx, rng, shade(shell, -20), 6, 0.6);
 });
 
+// --- getting about inside a building -------------------------------------------
+// Both of these are brushed steel with something moving in it. What tells them apart at
+// a glance is the direction of the grain: a lift car is a pair of doors with a vertical
+// seam down the middle, and an escalator tread is combed across the way you travel.
+
+const STEEL_CAR: Color = [176, 180, 186];
+
+tile('elevator_side', (ctx, rng) => {
+  facets(ctx, rng, STEEL_CAR, 2, 4);
+  // The two door leaves, and the seam they meet on.
+  rect(ctx, 0.6, 1, 6.6, U - 2, shade(STEEL_CAR, 12));
+  rect(ctx, 8.8, 1, 6.6, U - 2, shade(STEEL_CAR, 12));
+  rect(ctx, 7.4, 1, 1.2, U - 2, shade(STEEL_CAR, -34));
+  // A brushed grain down each leaf, and the sill and lintel that hold them.
+  for (let x = 1.4; x < U - 1; x += 1.6) {
+    if (x > 7 && x < 9) continue;
+    rect(ctx, x, 1.4, 0.5, U - 2.8, shade(STEEL_CAR, -10), 0.5);
+  }
+  rect(ctx, 0, 0, U, 1, shade(STEEL_CAR, -28));
+  rect(ctx, 0, U - 1, U, 1, shade(STEEL_CAR, -34));
+  // The lit indicator over the doors: the one thing that says the car is working.
+  rect(ctx, 6.4, 0.1, 3.2, 0.8, [252, 226, 150]);
+});
+
+tile('elevator_top', (ctx, rng) => {
+  facets(ctx, rng, shade(STEEL_CAR, -12), 3, 5);
+  rect(ctx, 1, 1, U - 2, U - 2, shade(STEEL_CAR, -22));
+  // The hoist ropes and the hatch, seen from the shaft above.
+  for (const x of [5, 10.6]) rect(ctx, x, 1.5, 0.8, U - 3, shade(STEEL_CAR, 20));
+  rect(ctx, 3, 3, U - 6, U - 6, shade(STEEL_CAR, -34), 0.7);
+});
+
+tile('escalator_top', (ctx, rng) => {
+  facets(ctx, rng, STEEL_CAR, 2, 4);
+  // The comb of a tread. Deep grooves, because that is the whole picture of an escalator
+  // from directly above it.
+  for (let x = 0.8; x < U - 0.5; x += 1.6) {
+    rect(ctx, x, 0, 0.9, U, shade(STEEL_CAR, 16));
+    rect(ctx, x + 0.9, 0, 0.7, U, shade(STEEL_CAR, -30));
+  }
+  rect(ctx, 0, 0, U, 1.1, shade(STEEL_CAR, -38));
+  rect(ctx, 0, U - 1.4, U, 1.4, shade(STEEL_CAR, 24));
+  speckle(ctx, rng, shade(STEEL_CAR, -16), 6, 0.6);
+});
+
+tile('escalator_side', (ctx, rng) => {
+  facets(ctx, rng, shade(STEEL_CAR, -16), 2, 4);
+  // The balustrade: a dark glass panel with the handrail running over the top of it.
+  rect(ctx, 0, 2.4, U, U - 2.4, shade([58, 62, 70], 6), 0.9);
+  rect(ctx, 0, 0.6, U, 1.8, shade(STEEL_CAR, 26));
+  rect(ctx, 0, 2.4, U, 0.5, shade(STEEL_CAR, -34));
+  for (let x = 2; x < U; x += 5) rect(ctx, x, 4, 0.8, U - 5, shade(STEEL_CAR, 8), 0.5);
+  speckle(ctx, rng, shade(STEEL_CAR, 14), 5, 0.6);
+});
+
 // The industry kit, as it looks in the hand. A surveyor's stake driven into a seam: what
 // the tool actually does is *look at the ground and answer*, so the picture is the stake
 // and the rock rather than a factory the player has not earned yet.

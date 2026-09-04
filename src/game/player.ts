@@ -1,5 +1,5 @@
 import { boxIntersectsWorld, type EntityBox, type StandingSurface, STEP_HEIGHT, stepUpMove, sweepMove } from '../core/aabb';
-import { blockDef } from '../world/blocks';
+import { blockDef, escalatorRise, isElevator } from '../world/blocks';
 import { WATER_FULL, waterFraction } from '../world/water';
 import type { World } from '../world/world';
 import { type Damageable, applyDamage, fallDamage } from './combat';
@@ -60,6 +60,18 @@ const BOAT_DRAUGHT = 0.35;
 /** Upward push on stepping out, so the bank is within reach of the hop. */
 const BOAT_STEP_OUT = 5.5;
 
+/** How fast a lift car travels, and how hard an escalator carries whoever is on it.
+ *
+ *  The lift is quick — a six storey building is twenty-four blocks and nobody wants to
+ *  watch that go by — and the escalator is deliberately slower than a walk, so a player
+ *  who would rather climb the flight themselves simply out-walks it. */
+const LIFT_SPEED = 6;
+const ESCALATOR_SPEED = 2.6;
+/** What the belt pushes with. Scaled by the ground friction it is working against, so
+ *  somebody standing still on a flight settles at exactly `ESCALATOR_SPEED` rather than at
+ *  whatever the friction happened to leave — the same arithmetic a river current does. */
+const ESCALATOR_PUSH = ESCALATOR_SPEED * GROUND_FRICTION;
+
 /** Tallest ledge the player walks up without jumping, in blocks. */
 export const AUTO_STEP_BLOCKS = 3;
 
@@ -92,6 +104,29 @@ export interface PlayerInput {
 }
 
 const ZERO_CURRENT = { x: 0, z: 0 };
+
+/** The escalator under somebody's feet, if any of the cells they are standing over is
+ *  one.
+ *
+ *  All four corners of the footprint, not the middle: a step up puts the player on the
+ *  lip of the tread above with their middle still over the one below, and asking about
+ *  one column alone left every rider stuck on the second step of every flight. */
+function escalatorUnder(
+  world: World,
+  x: number,
+  y: number,
+  z: number,
+): readonly [number, number] | null {
+  const level = Math.floor(y - 0.1);
+  const half = PLAYER_WIDTH / 2 - 1e-3;
+  for (const dx of [-half, half]) {
+    for (const dz of [-half, half]) {
+      const rise = escalatorRise(world.getBlock(Math.floor(x + dx), level, Math.floor(z + dz)));
+      if (rise) return rise;
+    }
+  }
+  return null;
+}
 
 export const NO_INPUT: PlayerInput = {
   forward: false,
@@ -215,6 +250,16 @@ export class Player implements Damageable {
       }
     }
 
+    // --- lifts and escalators ------------------------------------------------
+    // Both are read once, from the cell the feet are in and the cell under them, and
+    // both are off in a boat, in the water and in free flight: those already decide
+    // where the player is, and a lift shaft that overrode them would be a trap.
+    const riding = !this.flying && !this.boating && !this.inWater;
+    const inLift = riding && isElevator(world.getBlock(
+      Math.floor(this.x), Math.floor(this.y + 0.1), Math.floor(this.z),
+    ));
+    const carry = riding && !inLift ? escalatorUnder(world, this.x, this.y, this.z) : null;
+
     // --- horizontal movement -------------------------------------------------
     let inputX = 0;
     let inputZ = 0;
@@ -263,6 +308,13 @@ export class Player implements Damageable {
       this.vx += current.x * CURRENT_STRENGTH * dt;
       this.vz += current.z * CURRENT_STRENGTH * dt;
     }
+    // An escalator carries on top of whatever the player is doing, exactly as the current
+    // does, and for the same reason: being carried is not something the walking speed is
+    // allowed to cap. Walking against it still wins, because a walk is three times this.
+    if (carry) {
+      this.vx += carry[0] * ESCALATOR_PUSH * dt;
+      this.vz += carry[1] * ESCALATOR_PUSH * dt;
+    }
 
     // --- vertical movement ---------------------------------------------------
     if (this.flying) {
@@ -270,6 +322,13 @@ export class Player implements Damageable {
     } else if (this.boating) {
       // The hull is put on the surface below, once the horizontal move has settled.
       this.vy = 0;
+    } else if (inLift) {
+      // A lift car is a floor you choose the height of: jump to go up, sneak to come
+      // down, and neither to stand still at the storey you are at. Gravity is off
+      // inside one, which is the whole of what makes it a lift rather than a shaft.
+      this.vy = input.jump ? LIFT_SPEED : input.sneak ? -LIFT_SPEED : 0;
+      // Nobody has fallen anywhere: a ride down twenty blocks must not land as one.
+      this.fallStartY = this.y;
     } else if (this.inWater) {
       // Water is thick. The player sinks slowly rather than dropping like a stone, and
       // a dive carries on past the surface before the drag brings it to a crawl.
@@ -312,11 +371,22 @@ export class Player implements Damageable {
     // move from that much higher and drop back down. Swimming into the bank uses the
     // same move, which is the only way out of the water when the bank stands above it.
     const swimmingOut = this.inWater && !this.submerged;
+    // Somebody standing still on an escalator is pressing nothing, and the flight is a
+    // staircase: without this the carry would hold them against the first riser for as
+    // long as they cared to look at it. So the escalator's own direction stands in for
+    // the input it does not need.
+    const climbX = inputLength > 0 ? wishX : carry ? carry[0] : 0;
+    const climbZ = inputLength > 0 ? wishZ : carry ? carry[1] : 0;
+    // Being carried up a tread is not walking up a kerb, so the auto-step *setting* has
+    // no say in it: somebody who turned that off did so to control their own climbing,
+    // and an escalator that refused to work for them would just be a broken staircase.
+    // One block either way, which is exactly what a tread is.
+    const carried = carry !== null && wasOnGround;
     if (
       (move.collidedX || move.collidedZ) &&
-      (this.autoStep ? wasOnGround || swimmingOut : swimmingOut) &&
+      (this.autoStep ? wasOnGround || swimmingOut : swimmingOut || carried) &&
       !this.flying &&
-      inputLength > 0
+      (inputLength > 0 || carry !== null)
     ) {
       const box: EntityBox = {
         x: beforeX,
@@ -330,7 +400,7 @@ export class Player implements Damageable {
       // three blocks straight away would refuse kerbs that fit under a low ceiling.
       const heights = this.autoStep ? AUTO_STEP_HEIGHTS : SINGLE_STEP;
       for (const height of heights) {
-        if (!stepUpMove(world, box, attemptedX, attemptedZ, wishX, wishZ, achieved, height)) continue;
+        if (!stepUpMove(world, box, attemptedX, attemptedZ, climbX, climbZ, achieved, height)) continue;
         this.x = box.x;
         this.y = box.y;
         this.z = box.z;

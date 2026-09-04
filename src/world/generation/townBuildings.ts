@@ -302,7 +302,7 @@ function clearTo(put: PutFn, x: number, z: number, baseY: number, ground: BlockI
 }
 
 /** The doorway of a building on one of its walls, given which way it faces. */
-function doorOf(plot: Footprint, facing: 0 | 1 | 2 | 3, baseY: number): {
+export function doorOf(plot: Footprint, facing: 0 | 1 | 2 | 3, baseY: number): {
   door: { x: number; y: number; z: number };
   outside: { x: number; y: number; z: number };
 } {

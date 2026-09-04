@@ -16,10 +16,16 @@ import {
   HOME_PEOPLE,
   HOUSEHOLD_GOODS,
   JOURNEY_SECONDS,
+  OFFICE_GOODS,
+  OFFICE_JOBS,
+  SHOP_EVERY,
   SHOP_GOODS,
   SHOP_JOBS,
+  WORK_DWELL,
   WORKS_JOBS,
 } from '../game/townEconomy';
+import { REDEVELOP_BLOCKS, REDEVELOP_STAGE } from '../world/generation/village';
+import { MAX_FLOORS, MIN_FLOORS } from '../world/generation/towers';
 import { MILESTONES, QUEST_STEPS, type QuestStep } from '../game/questline';
 import { CHANNEL_EVERY, FIELD_SIZE } from '../world/generation/fields';
 import {
@@ -480,12 +486,14 @@ export function helpView(state: HelpState): HelpView {
       table: { head: ['段階', '必要な発展度', '変わること'], rows: stageRows() },
     },
     {
-      heading: '町の中 — 住宅・商店・工場',
+      heading: '町の中 — 住宅・商店・工場・事務所',
       notes: [
-        `村の建物には用途がある: ${USE_LABELS.residential} / ${USE_LABELS.commercial} / ${USE_LABELS.industrial}。村が育つと商店と工場が建つ（工場は煙突で分かる）。`,
-        `${USE_LABELS.residential}には人が住み、${USE_LABELS.commercial}や${USE_LABELS.industrial}へ働きに出る。住宅 1 軒あたり ${COMMUTE_EVERY} 秒に 1 人なので、育った町ほど通りがにぎやかになる。近くに立っていれば実際に歩いているのが見える。`,
-        `**人が来た建物だけが品物を使う。** 誰も通ってきていない商店は何も欲しがらないし、何も売らない。`,
-        `${USE_LABELS.residential}が欲しがる物: ${HOUSEHOLD_GOODS.map(itemLabel).join('・')}。${USE_LABELS.commercial}が欲しがる物: ${SHOP_GOODS.map(itemLabel).join('・')}。${USE_LABELS.industrial}はその村の原料を待つ。`,
+        `村の建物には用途がある: ${USE_LABELS.residential} / ${USE_LABELS.commercial} / ${USE_LABELS.industrial} / ${USE_LABELS.office}。村が育つと商店と工場が建つ（工場は煙突で分かる）。`,
+        `${USE_LABELS.residential}には人が住み、${USE_LABELS.commercial}・${USE_LABELS.industrial}・${USE_LABELS.office}へ働きに出る。住宅 1 軒あたり ${COMMUTE_EVERY} 秒に 1 人が出勤し、着いた人は ${WORK_DWELL} 秒働いてから帰る。育った町ほど通りがにぎやかになる。近くに立っていれば実際に歩いているのが見える。`,
+        `**もう 1 つの人の流れが買い物。** 住宅 1 軒あたり ${SHOP_EVERY} 秒に 1 人が、店員のいる商店へ買い物に出る。カゴを持って歩いているのがその人たち。`,
+        `**商店の品物は客が買っていく。** 時間で減るのではなく、人が 1 人来るたびに 1 つ売れる。だから誰も通ってきていない商店は開いてすらいないし、通りが混む町ほど早く品切れになる。`,
+        `**人が来た建物だけが品物を使う。** ${USE_LABELS.industrial}と${USE_LABELS.office}は働きに来た人の数だけ消費する。`,
+        `${USE_LABELS.residential}が欲しがる物: ${HOUSEHOLD_GOODS.map(itemLabel).join('・')}。${USE_LABELS.commercial}: ${SHOP_GOODS.map(itemLabel).join('・')}。${USE_LABELS.office}: ${OFFICE_GOODS.map(itemLabel).join('・')}。${USE_LABELS.industrial}はその村の原料を待つ。`,
         `1 つの建物が持てるのは 1 品目につき ${CELL_STOCK} 個まで。倉庫ではないので、届けた物はいずれ切れてまた欲しがる。`,
         `品物が届かない町は止まらない — 遅くなる。人の出入りも旅立ちも鈍るだけで、育った村が縮むことはない。`,
         `${JOURNEY_SECONDS} 秒に 1 人ほど、隣の町へ行きたい人が出る。**その人たちは荷の無い便に乗る** — 荷が優先で、空で帰るはずだった便に乗るので、運ぶ物を減らさない。`,
@@ -494,11 +502,23 @@ export function helpView(state: HelpState): HelpView {
       table: {
         head: ['用途', '中にいる人（集落）', 'すること'],
         rows: [
-          [USE_LABELS.residential, `${HOME_PEOPLE}`, '人が住む。働きに出る。旅に出たい人が生まれる'],
-          [USE_LABELS.commercial, `${SHOP_JOBS}`, '人が来ると品物が売れる'],
+          [USE_LABELS.residential, `${HOME_PEOPLE}`, '人が住む。働きに出る。買い物に出る。旅に出たい人が生まれる'],
+          [USE_LABELS.commercial, `${SHOP_JOBS}`, '店員が来ると開く。客が来ると品物が売れる'],
           [USE_LABELS.industrial, `${WORKS_JOBS}`, '人が来ると原料を使う'],
+          [USE_LABELS.office, `${OFFICE_JOBS}`, 'ビルの上の階に入る。人が来ると備品を使う'],
         ],
       },
+    },
+    {
+      heading: '街が育つとビルが建つ',
+      notes: [
+        `**${['集落', '村', '大きな村', '町', '都市'][REDEVELOP_STAGE] ?? '町'}になると、町は中心の区画を建て替える。** 広場のまわりの商店が取り壊され、同じ敷地に階のある建物が建つ。以後 1 段階ごとに 1 棟、全部で ${REDEVELOP_BLOCKS} 棟まで。`,
+        `建て替わった建物は **1 階が商店、2 階から上が${USE_LABELS.office}**。階ごとに別々の入居者なので、敷地は同じでも人の行き先は ${MIN_FLOORS} 倍から ${MAX_FLOORS} 倍になる。台帳では「ビル1 2F」のように階まで出る。`,
+        `遅く建った建物ほど高い（${MIN_FLOORS} 階から ${MAX_FLOORS} 階）。街に行くほど背が高くなるのは、そのまま町の歴史。`,
+        '**建て替えは町が自分で建てた物しか壊さない。** 中に置いたチェストや、自分で足した壁はそのまま残り、新しい建物がそれを避けて建つ。',
+        `**エスカレーターとエレベーターで上の階へ行ける。** エスカレーターは 1 階から 2 階まで、乗っているだけで運んでくれる（上りの一方通行）。エレベーターは全階に通じていて、**中で ${'`Space`'} を押すと上へ、${'`Shift`'} で下へ、離せばその場に止まる**。`,
+        'どちらもブロックとして手に入るので、自分の建物にも付けられる。エスカレーターは置いた向き（自分が向いている方向）へ上がる。',
+      ],
     },
     {
       heading: '操作',

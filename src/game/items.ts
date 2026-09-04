@@ -124,6 +124,10 @@ blockItem('shutter', Block.SHUTTER);
 blockItem('sign_red', Block.SIGN_RED);
 blockItem('sign_blue', Block.SIGN_BLUE);
 blockItem('ac_unit', Block.AC_UNIT);
+// The two ways up a building. The escalator is placed facing away from whoever put it
+// down — see `placeBlock` — so one item covers all four of its directions.
+blockItem('elevator', Block.ELEVATOR);
+blockItem('escalator', Block.ESCALATOR_NORTH, { label: 'エスカレーター', tex: 'escalator_top' });
 
 // Cobblestone smelts back into smooth stone.
 ITEMS.get('cobblestone')!.smeltsTo = 'stone';

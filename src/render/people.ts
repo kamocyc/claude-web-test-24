@@ -183,3 +183,19 @@ export function villagerFor(variant: number): PersonSpec {
   const at = Math.abs(Math.floor(variant)) % VILLAGERS.length;
   return VILLAGERS[at];
 }
+
+/** One of the people who is carrying something to put shopping in.
+ *
+ *  There is nothing else to say about a customer that a model can show, and this is
+ *  enough: somebody walking up the street with a basket is on a different errand from
+ *  somebody walking up it with a satchel, and that difference is legible at twenty
+ *  blocks. Falls back to the whole list if nobody is carrying one, so the list stays
+ *  something that can be edited freely. */
+export function shopperVariant(seed: number): number {
+  const carrying: number[] = [];
+  VILLAGERS.forEach((spec, at) => {
+    if (spec.carry === 'basket') carrying.push(at);
+  });
+  if (carrying.length === 0) return seed;
+  return carrying[Math.abs(Math.floor(seed)) % carrying.length];
+}

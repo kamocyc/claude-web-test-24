@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "smoke": "node scripts/smoke.mjs",
     "smoke:economy": "node scripts/smoke.mjs http://localhost:5173/ screenshots --economy",
-    "smoke:vehicles": "node scripts/vehicle-smoke.mjs"
+    "smoke:vehicles": "node scripts/vehicle-smoke.mjs",
+    "smoke:town": "node scripts/town-smoke.mjs"
   },
   "dependencies": {
     "three": "^0.185.1"

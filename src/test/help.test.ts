@@ -14,7 +14,9 @@ import { HARBOUR_REACH } from '../game/sea';
 import { EASY_RADIUS } from '../game/tracks';
 import { MAX_STOCK, PRODUCE_SECONDS, RANKS, STAGE_POINTS } from '../game/villages';
 import { HEADROOM, MAX_STEP, ROAD_SPEED } from '../game/roads';
-import { CELL_STOCK, COMMUTE_EVERY, HOME_PEOPLE, HOUSEHOLD_GOODS } from '../game/townEconomy';
+import { CELL_STOCK, COMMUTE_EVERY, HOME_PEOPLE, HOUSEHOLD_GOODS, OFFICE_GOODS, SHOP_EVERY } from '../game/townEconomy';
+import { REDEVELOP_BLOCKS } from '../world/generation/village';
+import { MAX_FLOORS, MIN_FLOORS } from '../world/generation/towers';
 import { USE_LABELS } from '../game/buildings';
 import { itemLabel } from '../game/items';
 import { MAX_SWITCH_ANGLE } from '../game/tracks';
@@ -176,11 +178,11 @@ describe('the 遊びかた screen', () => {
 describe('the town section', () => {
   const section = view('done').sections.find((s) => s.heading.startsWith('町の中'));
 
-  it('names all three uses and what is inside them', () => {
+  it('names all four uses and what is inside them', () => {
     expect(section).toBeDefined();
     const rows = section?.table?.rows ?? [];
     expect(rows.map((r) => r[0])).toEqual([
-      USE_LABELS.residential, USE_LABELS.commercial, USE_LABELS.industrial,
+      USE_LABELS.residential, USE_LABELS.commercial, USE_LABELS.industrial, USE_LABELS.office,
     ]);
     // Straight off the implementation, so tuning the town does not leave the manual lying.
     expect(rows[0][1]).toBe(`${HOME_PEOPLE}`);
@@ -189,8 +191,22 @@ describe('the town section', () => {
   it('takes its numbers and its shopping lists from the code', () => {
     const words = [section?.heading, ...(section?.notes ?? [])].join('\n');
     expect(words).toContain(`${COMMUTE_EVERY} 秒`);
+    expect(words).toContain(`${SHOP_EVERY} 秒`);
     expect(words).toContain(`${CELL_STOCK} 個`);
     for (const good of HOUSEHOLD_GOODS) expect(words).toContain(itemLabel(good));
+    for (const good of OFFICE_GOODS) expect(words).toContain(itemLabel(good));
+  });
+
+  it('explains the buildings a town puts up when it grows', () => {
+    const towers = view('done').sections.find((s) => s.heading.includes('ビル'));
+    expect(towers).toBeDefined();
+    const words = (towers?.notes ?? []).join('\n');
+    expect(words).toContain(`${REDEVELOP_BLOCKS} 棟`);
+    expect(words).toContain(`${MIN_FLOORS} 階`);
+    expect(words).toContain(`${MAX_FLOORS} 階`);
+    // The two ways up, both of which are things the player operates.
+    expect(words).toContain('エスカレーター');
+    expect(words).toContain('エレベーター');
   });
 
   it('says the thing a player cannot see for themselves', () => {

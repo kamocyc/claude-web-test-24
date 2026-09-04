@@ -2,12 +2,14 @@ import { mulberry32, hashInts, type Rng } from '../../core/rng';
 import { Block, type BlockId } from '../blocks';
 import { chunkKey, toChunkCoord } from '../chunk';
 import {
+  ringOf,
   townBlocks,
   townGrowthBlocks,
   townStreets,
   type TownBlock,
   type TownPlotSurvey,
 } from './districts';
+import { buildTower, floorsFor, towerHeight } from './towers';
 import {
   architectureFor,
   buildHome,
@@ -98,9 +100,13 @@ export const FACING_STEP: readonly (readonly [number, number])[] = [
   [0, 1],
 ];
 
-/** What kind of building this is, which is also what it looks like. One of three
- *  silhouettes, plus the square, which has no building on it at all. */
-export type BuildingRole = 'house' | 'shop' | 'works' | 'plaza';
+/** What kind of building this is, which is also what it looks like. One of four
+ *  silhouettes, plus the square, which has no building on it at all.
+ *
+ *  A `tower` is the only one of them that holds more than one building: see `towers.ts`.
+ *  Every tenant of one has this role and its own `use`, because from the street it is one
+ *  building and to the economy it is four. */
+export type BuildingRole = 'house' | 'shop' | 'works' | 'plaza' | 'tower';
 
 /** What a building is *for*, which is what the town economy trades on.
  *
@@ -109,14 +115,19 @@ export type BuildingRole = 'house' | 'shop' | 'works' | 'plaza';
  *  in another and works in the third, and the goods and the people moving between them are
  *  the game. So every building says which of those it is.
  *
- *  `civic` is the well and anything else that is neither home, shop nor works — it is here
- *  so the type is total, not because anything trades with one.
+ *  `office` is the one that is never a *zone*: nothing on the street grid is zoned for
+ *  offices, because an office is not a thing a village builds — it is a tenant that moves
+ *  into a floor of a building once the town is big enough to have floors. See
+ *  `towers.ts`.
+ *
+ *  `civic` is the well and anything else that is neither home, shop, works nor office —
+ *  it is here so the type is total, not because anything trades with one.
  *
  *  Deliberately *not* drawn from `planVillage`'s random stream. Stage 0's use follows from
  *  the profession the village already rolled, and a growth stage's follows from the stage
  *  and the order the houses went up (`GROWTH_USES`). Drawing even one extra number here
  *  would shift every profession after it, and the fixed verification seed pins those. */
-export type BuildingUse = 'residential' | 'commercial' | 'industrial' | 'civic';
+export type BuildingUse = 'residential' | 'commercial' | 'industrial' | 'office' | 'civic';
 
 /** A building as something the rest of the game can address rather than merely avoid.
  *
@@ -135,6 +146,10 @@ export interface HouseRecord extends Footprint {
   /** The cell immediately outside the doorway: where a porter waits, and where a path to
    *  this building has to reach. */
   outside: { x: number; y: number; z: number };
+  /** Which storey of a `tower` this is, ground floor 0. Absent on everything else, which
+   *  is what keeps a one-storey building's address the pair of numbers it has always
+   *  been — see `buildingId`. */
+  floor?: number;
 }
 
 export interface VillagePlan {
@@ -328,6 +343,7 @@ export function planGrowth(
     villagers: [],
     chests: [],
     buildings: [],
+    replaces: [],
     footprints: [],
     pads: [],
   };
@@ -363,11 +379,97 @@ export interface GrowthPlan {
   chests: ChestMarker[];
   /** The buildings this plan raises, addressable the same way a town's own are. */
   buildings: HouseRecord[];
+  /** Plots whose earlier building this plan takes down. Empty for everything that builds
+   *  on open ground, which is every stage of ordinary growth; a redevelopment names the
+   *  one plot it is rebuilding, and whoever holds the town's building list drops what used
+   *  to stand there. */
+  replaces: Footprint[];
   /** What this stage built on. Stage n + 1 is handed these along with the town's own, or
    *  the two would try to stand in the same place. */
   footprints: Footprint[];
   /** The ground each of those plots needs, for a writer that can see the world. */
   pads: Pad[];
+}
+
+/** The stage at which a town starts rebuilding its middle, and how many of its central
+ *  blocks it ever rebuilds.
+ *
+ *  Three, because the middle four blocks of the grid are the square and the three shops
+ *  around it — so a town that has redeveloped all of them has turned its whole centre over
+ *  and has nothing left in there to knock down. One per stage from 町 onwards, which is
+ *  what makes it something the player watches happen rather than something they find. */
+export const REDEVELOP_STAGE = 3;
+export const REDEVELOP_BLOCKS = 3;
+
+/** The central blocks a town rebuilds, innermost first.
+ *
+ *  Its own commercial blocks in the order it built them, which is `townBlocks`' order —
+ *  so the first plot to be redeveloped is the first shop the town ever had. */
+function redevelopable(seed: number, site: VillageSite): TownBlock[] {
+  return townBlocks(seed, site)
+    .filter((block) => ringOf(block.i, block.j) < 1 && block.zone === 'commercial')
+    .slice(0, REDEVELOP_BLOCKS);
+}
+
+/** What one stage of redevelopment does: takes one central shop down and puts a building
+ *  with floors in its place.
+ *
+ *  Null before `REDEVELOP_STAGE`, and null once the town has run out of middle. Nothing
+ *  here looks at the world — this is a plan like any other, and the writer is the thing
+ *  that knows whether the old shop is still standing where the plan says it was.
+ *
+ *  The building's height follows the stage it was raised at and never changes afterwards.
+ *  That is deliberate: a plan that grew when its town did would leave the previous, shorter
+ *  building's roof floating over the new one, and every plan in this file is an addition
+ *  to the town rather than a re-drawing of it. */
+export function planRedevelopment(
+  seed: number,
+  site: VillageSite,
+  baseY: number,
+  variant: VillageVariant,
+  stage: number,
+): GrowthPlan | null {
+  const which = stage - REDEVELOP_STAGE;
+  if (which < 0 || which >= REDEVELOP_BLOCKS) return null;
+  const block = redevelopable(seed, site)[which];
+  if (!block) return null;
+  const plan: GrowthPlan = {
+    placements: [],
+    villagers: [],
+    chests: [],
+    buildings: [],
+    replaces: [],
+    footprints: [],
+    pads: [],
+  };
+  const rng = mulberry32(hashInts(seed ^ 0xb17d, site.x, site.z, stage));
+  const put: PutFn = (x, y, z, b) => {
+    plan.placements.push({ x, y, z, b });
+  };
+  const sink: BuildSink = {
+    buildings: plan.buildings,
+    villagers: plan.villagers,
+    chests: plan.chests,
+  };
+  const plot: Footprint = { x0: block.x0, z0: block.z0, w: block.w, d: block.d };
+  const floors = floorsFor(stage, REDEVELOP_STAGE);
+  // One profession per floor, drawn here rather than inside the builder so that the
+  // builder stays a pure function of its arguments like every other one in this file.
+  const professions = Array.from({ length: floors }, () => pick(rng));
+  buildTower(put, sink, plot, facingFor(block), baseY + 1, floors, professions);
+  plan.replaces.push(plot);
+  plan.footprints.push(plot);
+  // No pad: the plot was flat enough for the shop that stood on it, and levelling a
+  // block in the middle of a town that has been lived in for five stages would take the
+  // street with it. `variant` is unused for the same reason a works ignores it.
+  void variant;
+  return plan;
+}
+
+/** How far above the street a town's tallest redevelopment reaches. What the growth writer
+ *  clears the air to before it starts building. */
+export function redevelopmentHeight(): number {
+  return towerHeight(floorsFor(REDEVELOP_STAGE + REDEVELOP_BLOCKS - 1, REDEVELOP_STAGE));
 }
 
 /** Radius of the ground a hamlet levels for itself, and how far it will fill downwards to
@@ -393,6 +495,7 @@ export function planOutpost(
     villagers: [],
     chests: [],
     buildings: [],
+    replaces: [],
     footprints: [],
     pads: [],
   };

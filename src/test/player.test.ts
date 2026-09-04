@@ -540,3 +540,115 @@ describe('a surface that is not in the block grid', () => {
     expect(player.y).toBeGreaterThan(28);
   });
 });
+
+describe('getting about inside a building', () => {
+  /** A lift shaft standing on the flat: a column of cars from the floor upwards, with a
+   *  landing at the top so there is somewhere to step out. */
+  function withLift(height = 12): World {
+    const world = flatWorld(20);
+    for (let y = 21; y <= 20 + height; y++) world.setBlock(0, y, 0, Block.ELEVATOR);
+    return world;
+  }
+
+  it('carries the player up a shaft and holds them where they stop', () => {
+    const world = withLift();
+    const player = new Player();
+    player.x = 0.5;
+    player.y = 21;
+    player.z = 0.5;
+    run(player, world, 60, { ...NO_INPUT, jump: true });
+    const risen = player.y;
+    expect(risen, 'a second of holding jump is several floors').toBeGreaterThan(24);
+    // Let go, and the car stays where it is rather than dropping the passenger.
+    run(player, world, 30, NO_INPUT);
+    expect(player.y).toBeCloseTo(risen, 1);
+  });
+
+  it('comes back down for somebody who sneaks, and never as a fall', () => {
+    const world = withLift();
+    const player = new Player();
+    player.x = 0.5;
+    player.y = 21;
+    player.z = 0.5;
+    run(player, world, 60, { ...NO_INPUT, jump: true });
+    const top = player.y;
+    let hurt = 0;
+    for (let i = 0; i < 120; i++) {
+      const events = player.update(1 / 60, world, { ...NO_INPUT, sneak: true });
+      hurt += events.tookDamage;
+    }
+    expect(player.y).toBeLessThan(top - 4);
+    expect(hurt, 'riding a lift down is not falling down a shaft').toBe(0);
+  });
+
+  it('lifts nobody who is not standing in it', () => {
+    const world = withLift();
+    const beside = new Player();
+    beside.x = 2.5;
+    beside.y = 21;
+    beside.z = 0.5;
+    const inside = new Player();
+    inside.x = 0.5;
+    inside.y = 21;
+    inside.z = 0.5;
+    run(beside, world, 60, { ...NO_INPUT, jump: true });
+    run(inside, world, 60, { ...NO_INPUT, jump: true });
+    // One of them jumped a dozen times and is back on the floor; the other is upstairs.
+    expect(beside.y).toBeLessThan(23);
+    expect(inside.y).toBeGreaterThan(beside.y + 3);
+  });
+
+  /** A flight of escalator treads climbing east from x = 1, and the floor they arrive on. */
+  function withEscalator(steps = 4): World {
+    const world = flatWorld(20);
+    for (let step = 0; step < steps; step++) {
+      for (let z = -1; z <= 1; z++) world.setBlock(1 + step, 21 + step, z, Block.ESCALATOR_EAST);
+    }
+    for (let x = 1 + steps; x < 12; x++) {
+      for (let z = -1; z <= 1; z++) {
+        for (let y = 21; y <= 20 + steps; y++) world.setBlock(x, y, z, Block.STONE);
+      }
+    }
+    return world;
+  }
+
+  it('carries somebody up a flight without them pressing anything', () => {
+    const world = withEscalator();
+    const player = new Player();
+    player.x = 1.5;
+    player.y = 22;
+    player.z = 0.5;
+    run(player, world, 240, NO_INPUT);
+    // Four treads, so the top of the flight is four blocks above the floor it left.
+    expect(player.y).toBeGreaterThanOrEqual(24.9);
+    expect(player.x, 'and off the end of it').toBeGreaterThan(5);
+  });
+
+  it('carries somebody who has turned auto-step off', () => {
+    // That setting is about what walking does. An escalator moves the person standing on
+    // it, and refusing to would leave them stuck against the first riser.
+    const world = withEscalator();
+    const player = new Player();
+    player.autoStep = false;
+    player.x = 1.5;
+    player.y = 22;
+    player.z = 0.5;
+    run(player, world, 240, NO_INPUT);
+    expect(player.y).toBeGreaterThanOrEqual(24.9);
+  });
+
+  it('lets somebody walk down against it', () => {
+    // One way, like the real thing: the flight pushes east, and a walk is three times
+    // what it pushes with, so somebody who wants to go back down can.
+    const world = withEscalator();
+    const player = new Player();
+    player.x = 4.5;
+    player.y = 25;
+    player.z = 0.5;
+    // Yaw PI/2 looks towards -X.
+    player.yaw = Math.PI / 2;
+    run(player, world, 120, { ...NO_INPUT, forward: true });
+    expect(player.x).toBeLessThan(1.5);
+    expect(player.y).toBeLessThan(22);
+  });
+});

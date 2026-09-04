@@ -15,6 +15,11 @@ import type { World } from '../world/world';
 import {
   planGrowth,
   planOutpost,
+  planRedevelopment,
+  planVillage,
+  redevelopmentHeight,
+  REDEVELOP_BLOCKS,
+  REDEVELOP_STAGE,
   type Footprint,
   type GrowthPlan,
   type Pad,
@@ -114,9 +119,107 @@ export function outpostBuildings(seed: number, village: VillageRecord): GrowthPl
   return plan;
 }
 
+/** The building a town puts up at one stage, cached like everything else here. Null for
+ *  a stage that redevelops nothing, and for a hamlet, which has no middle to rebuild. */
+export function redevelopmentFor(
+  seed: number,
+  village: VillageRecord,
+  stage: number,
+): GrowthPlan | null {
+  if (village.outpost) return null;
+  const key = `${village.id},redevelop,${stage}`;
+  const known = cache.get(key);
+  if (known) return known;
+  if (missing.has(key)) return null;
+  const plan = planRedevelopment(
+    seed,
+    { cellX: 0, cellZ: 0, x: village.x, z: village.z },
+    village.baseY,
+    village.variant,
+    stage,
+  );
+  if (!plan) {
+    missing.add(key);
+    return null;
+  }
+  cache.set(key, plan);
+  return plan;
+}
+
+/** Plots whose original building a town has taken down. Whoever holds the building list
+ *  drops what used to stand on one: the shop is not there any more, and an economy still
+ *  trading with it would be trading with a memory. */
+export function replacedPlots(seed: number, village: VillageRecord): Footprint[] {
+  const out: Footprint[] = [];
+  for (let stage = REDEVELOP_STAGE; stage <= village.stage; stage++) {
+    const plan = redevelopmentFor(seed, village, stage);
+    if (plan) out.push(...plan.replaces);
+  }
+  return out;
+}
+
+/** True when a building record stands on one of those plots. */
+export function isReplaced(plots: readonly Footprint[], house: Footprint): boolean {
+  return plots.some((plot) => plot.x0 === house.x0 && plot.z0 === house.z0);
+}
+
+/** What the town's own generated plan put on the plots it is now rebuilding.
+ *
+ *  This is the whole of what makes demolition safe. Growth may only build over soil, air
+ *  and plants — which is right, and which would also refuse to take down the shop that is
+ *  standing exactly where the new building goes. So a redevelopment is additionally
+ *  allowed to overwrite a cell whose block is *the one the town itself planned to put
+ *  there*: the town takes down its own building and nothing else. A wall somebody has
+ *  since mined out is air and is built over; a chest somebody has put inside the old shop
+ *  is not on this list, so it stays, and the new building is built around it.
+ *
+ *  Read off `planVillage`, which is pure and is the same plan terrain generation used. */
+function demolitionOf(seed: number, village: VillageRecord): ReadonlyMap<string, BlockId> {
+  const key = village.id;
+  const known = demolition.get(key);
+  if (known) return known;
+  const out = new Map<string, BlockId>();
+  const plots: Footprint[] = [];
+  for (let stage = REDEVELOP_STAGE; stage < REDEVELOP_STAGE + REDEVELOP_BLOCKS; stage++) {
+    const plan = redevelopmentFor(seed, village, stage);
+    if (plan) plots.push(...plan.replaces);
+  }
+  if (plots.length > 0) {
+    const plan = planVillage(
+      seed,
+      { cellX: 0, cellZ: 0, x: village.x, z: village.z },
+      village.baseY,
+      village.variant,
+    );
+    const reach = redevelopmentHeight();
+    for (const list of plan.byChunk.values()) {
+      for (const p of list) {
+        if (p.y < village.baseY - 1 || p.y > village.baseY + reach) continue;
+        // One block beyond the plot: the shop's roof oversailed its walls and its awning
+        // hung over the pavement, and both have to come down with it.
+        if (!plots.some((plot) => near(plot, p.x, p.z))) continue;
+        out.set(`${p.x},${p.y},${p.z}`, p.b);
+      }
+    }
+  }
+  demolition.set(key, out);
+  return out;
+}
+
+/** Whether a column is on a plot or in the one-block margin around it. */
+function near(plot: Footprint, x: number, z: number): boolean {
+  return x >= plot.x0 - 1 && x < plot.x0 + plot.w + 1
+    && z >= plot.z0 - 1 && z < plot.z0 + plot.d + 1;
+}
+
+const missing = new Set<string>();
+const demolition = new Map<string, ReadonlyMap<string, BlockId>>();
+
 export function clearGrowthCache(): void {
   cache.clear();
   paving.clear();
+  missing.clear();
+  demolition.clear();
 }
 
 function inChunk(chunk: Chunk, p: { x: number; z: number }): boolean {
@@ -205,10 +308,13 @@ function place(
   p: Placement,
   roadAt?: RoadLookup,
   own?: ReadonlyMap<string, BlockId>,
+  over?: ReadonlyMap<string, BlockId>,
 ): boolean {
   const current = world.getBlock(p.x, p.y, p.z);
   if (current === p.b) return false;
-  if (!buildableOver(current)) return false;
+  // A redevelopment may take down the building the town itself put here, and only that:
+  // the cell has to still hold the block the old plan asked for. See `demolitionOf`.
+  if (!buildableOver(current) && over?.get(`${p.x},${p.y},${p.z}`) !== current) return false;
   // A village growing over its own road used to be invisible, because a road was allowed
   // to skip twenty blocks and the survey simply stepped over the sealed column. Now one
   // column is the difference between one road and two, so the wall yields: the road was
@@ -355,7 +461,7 @@ export function applyGrowth(
   const surface = padSurface(village);
   const plans = plansFor(seed, village, occupied, survey);
   const own = roadAt ? ownPaving(seed, village, occupied, survey) : undefined;
-  for (const { plan, floorY, optional } of plans) {
+  for (const { plan, floorY, optional, over } of plans) {
     // A road through a plot means the village builds somewhere else instead. A hamlet is
     // exempt: it is somewhere the game sends the player, so it has to exist.
     const dropped = optional ? givenUp(plan, floorY, world, roadAt, own) : [];
@@ -366,7 +472,7 @@ export function applyGrowth(
     for (const p of finalPlacements(plan)) {
       if (!inChunk(chunk, p)) continue;
       if (within(dropped, p.x, p.z)) continue;
-      if (place(world, p, roadAt, own)) result.changed++;
+      if (place(world, p, roadAt, own, over)) result.changed++;
     }
     for (const v of plan.villagers) {
       if (inChunk(chunk, v) && !within(dropped, v.x, v.z)) result.villagers.push(v);
@@ -405,13 +511,22 @@ const paving = new Map<string, Map<string, BlockId>>();
  *  the plateau, which is the top solid block of it. The two numbers differ by one and
  *  everything that has to reason about a plot — is there a road through it, how high does
  *  its ground have to be — needs the right one. */
+interface StagePlan {
+  plan: GrowthPlan;
+  floorY: number;
+  optional: boolean;
+  /** Blocks this plan is allowed to build over as well as soil and air. Only a
+   *  redevelopment has any: it is standing where a building already is. */
+  over?: ReadonlyMap<string, BlockId>;
+}
+
 function plansFor(
   seed: number,
   village: VillageRecord,
   occupied: readonly { x0: number; z0: number; w: number; d: number }[],
   survey?: TownPlotSurvey,
-): { plan: GrowthPlan; floorY: number; optional: boolean }[] {
-  const out: { plan: GrowthPlan; floorY: number; optional: boolean }[] = [];
+): StagePlan[] {
+  const out: StagePlan[] = [];
   // A hamlet has no generated buildings at all, so its own two houses are what it is
   // made of; everything after that is the growth it earns like anywhere else.
   if (village.outpost) {
@@ -419,6 +534,19 @@ function plansFor(
   }
   for (let stage = 1; stage <= village.stage; stage++) {
     out.push({ plan: growthFor(seed, village, stage, occupied, survey), floorY: village.baseY + 1, optional: true });
+  }
+  // The rebuilt middle, last, so it is written over the town rather than under it. Never
+  // optional: unlike a new plot, this one already has a building on it, and giving it up
+  // would leave the town's own shop standing on a plot the economy no longer trades with.
+  for (let stage = REDEVELOP_STAGE; stage <= village.stage; stage++) {
+    const plan = redevelopmentFor(seed, village, stage);
+    if (!plan) continue;
+    out.push({
+      plan,
+      floorY: village.baseY + 1,
+      optional: false,
+      over: demolitionOf(seed, village),
+    });
   }
   return out;
 }
@@ -458,6 +586,10 @@ export function growthChunks(
   if (village.outpost) plans.push(outpostBuildings(seed, village));
   for (let stage = 1; stage <= village.stage; stage++) {
     plans.push(growthFor(seed, village, stage, occupied, survey));
+  }
+  for (let stage = REDEVELOP_STAGE; stage <= village.stage; stage++) {
+    const plan = redevelopmentFor(seed, village, stage);
+    if (plan) plans.push(plan);
   }
   const reach = (x: number, z: number): void => {
     const cx = Math.floor(x / CHUNK_SIZE);

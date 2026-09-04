@@ -6,9 +6,13 @@ import {
   HOME_PEOPLE,
   HOUSEHOLD_GOODS,
   HOUSEHOLD_SECONDS,
+  HUNGRY_FACTOR,
   JOURNEY_SECONDS,
   MAX_COMMUTERS,
   MAX_WAITING,
+  OFFICE_GOODS,
+  OFFICE_JOBS,
+  SHOP_EVERY,
   SHOP_GOODS,
   SHOP_STAPLE,
   SHOP_JOBS,
@@ -212,7 +216,28 @@ describe('people moving', () => {
     const record = village({ stage: 4 });
     supply(economy_, record);
     run(economy_, [record], COMMUTE_WALK * 40);
-    expect(economy_.get(record.id)!.commutes.length).toBeLessThanOrEqual(MAX_COMMUTERS);
+    // Counted per errand: going to work and going shopping are separate queues, because
+    // a town whose jobs were all full would otherwise never send anybody to the shops.
+    for (const purpose of ['work', 'shopping'] as const) {
+      const out = economy_.get(record.id)!.commutes.filter((c) => c.purpose === purpose);
+      expect(out.length).toBeLessThanOrEqual(MAX_COMMUTERS);
+    }
+  });
+
+  it('spreads its workers over its buildings instead of crowding one door', () => {
+    // The destination is picked off who has arrived *and* who is on their way. Counting
+    // only arrivals sends the whole first shift to the same building, because for a
+    // whole walk's worth of seconds every building still looks empty.
+    const economy_ = economy(town(
+      'residential', 'residential', 'commercial', 'industrial', 'office',
+    ));
+    const record = village();
+    supply(economy_, record);
+    run(economy_, [record], COMMUTE_WALK * 4);
+    const heading = new Set(
+      economy_.get(record.id)!.commutes.filter((c) => c.purpose === 'work').map((c) => c.to),
+    );
+    expect(heading.size).toBeGreaterThan(1);
   });
 
   it('keeps walking whether or not anybody is watching', () => {
@@ -228,7 +253,7 @@ describe('people moving', () => {
 });
 
 describe('a shop that has customers', () => {
-  it('uses up its stock only once somebody has walked in', () => {
+  it('sells nothing until somebody has walked in and bought it', () => {
     const economy_ = economy(town('residential', 'commercial'));
     const record = village();
     supply(economy_, record);
@@ -238,27 +263,50 @@ describe('a shop that has customers', () => {
     expect(shop.staff).toBe(0);
     run(economy_, [record], COMMUTE_EVERY + COMMUTE_WALK - 1);
     expect(shop.wants.get(good)).toBe(CELL_STOCK);
-    // Once the walk finishes, the shop starts selling.
-    run(economy_, [record], COMMUTE_WALK + TRADE_SECONDS * 2);
-    expect(shop.wants.get(good)!).toBeLessThan(CELL_STOCK);
+    // A shop is opened by somebody walking to work, and emptied by somebody walking in
+    // to buy. Both walks have to finish before a single unit moves.
+    run(economy_, [record], COMMUTE_WALK + SHOP_EVERY + COMMUTE_WALK + 1);
+    expect(shop.customers).toBeGreaterThan(0);
+    let held = 0;
+    for (const stock of shop.wants.values()) held += stock;
+    expect(held).toBeLessThan(CELL_STOCK * shop.wants.size);
   });
 
-  it('keeps the half sale it was partway through when the shop empties', () => {
-    // Custom comes and goes as people walk in and out. A shop that reset its counter
-    // every time the last customer left would never reach a sale at all — which is what
-    // it did, until it did not.
+  it('sends nobody shopping at a shop nobody has opened', () => {
+    // No homes means no staff, so the shop is shut — and a shut shop gets no customers
+    // however long the town runs.
+    const economy_ = economy(town('commercial'));
+    const record = village();
+    run(economy_, [record], SHOP_EVERY * 20);
+    expect(economy_.get(record.id)!.cells.get('0,0')!.customers).toBe(0);
+  });
+
+  it('lets a customer in even when the shelves are bare', () => {
+    // The empty shop is the interesting one: the customer still walks in, and standing
+    // in a shop with nothing in it is how the shortage is meant to read.
     const economy_ = economy(town('residential', 'commercial'));
     const record = village();
-    supply(economy_, record);
+    // Slower than a fed town: nothing has ever been delivered here, so both errands run
+    // at `HUNGRY_FACTOR`.
+    run(economy_, [record], (COMMUTE_EVERY + SHOP_EVERY) * HUNGRY_FACTOR + COMMUTE_WALK * 2 + 4);
     const shop = economy_.get(record.id)!.cells.get('10,0')!;
-    const good = [...shop.wants.keys()][0];
-    let emptied = false;
-    for (let t = 0; t < TRADE_SECONDS * 3; t += 0.05) {
-      economy_.update(0.05, [record]);
-      if (shop.staff === 0 && shop.progress > 0) emptied = true;
-    }
-    expect(emptied, 'the shop never stood empty, so this proves nothing').toBe(true);
-    expect(shop.wants.get(good)!).toBeLessThan(CELL_STOCK);
+    expect(shop.customers).toBeGreaterThan(0);
+    for (const held of shop.wants.values()) expect(held).toBe(0);
+  });
+
+  it('keeps the half sale a building was partway through when its staff go home', () => {
+    // Staff come and go as people walk in and out. A building that reset its counter
+    // every time the last of them left would never reach a whole unit at all — which is
+    // what it did, until it did not. `consume` runs before anybody arrives, so what this
+    // reads is exactly the empty building's own clock.
+    const economy_ = economy(town('residential', 'office'));
+    const record = village();
+    supply(economy_, record);
+    const office = economy_.get(record.id)!.cells.get('10,0')!;
+    office.progress = TRADE_SECONDS / 2;
+    office.staff = 0;
+    economy_.update(0.05, [record]);
+    expect(office.progress).toBe(TRADE_SECONDS / 2);
   });
 
   it('lets a home eat with nobody arriving at all', () => {
@@ -289,6 +337,38 @@ describe('a shop that has customers', () => {
     for (let i = 1; i < short.length; i++) {
       expect(short[i - 1].short).toBeGreaterThanOrEqual(short[i].short);
     }
+  });
+});
+
+describe('a floor of offices', () => {
+  it('holds more people than the shop under it', () => {
+    expect(peopleFor('office', 0)).toBe(OFFICE_JOBS);
+    expect(peopleFor('office', 0)).toBeGreaterThan(peopleFor('commercial', 0));
+  });
+
+  it('asks for the things an office gets through, and not for a town staple', () => {
+    const economy_ = economy(town('office'));
+    const record = village();
+    economy_.update(1, [record]);
+    const cell = economy_.get(record.id)!.cells.get('0,0')!;
+    expect(cell.wants.size).toBeGreaterThan(0);
+    for (const good of cell.wants.keys()) {
+      expect(OFFICE_GOODS).toContain(good);
+      expect(good).not.toBe(SHOP_STAPLE);
+    }
+  });
+
+  it('uses nothing until somebody has commuted to it', () => {
+    const economy_ = economy(town('residential', 'office'));
+    const record = village();
+    supply(economy_, record);
+    const office = economy_.get(record.id)!.cells.get('10,0')!;
+    const good = [...office.wants.keys()][0];
+    run(economy_, [record], COMMUTE_EVERY + COMMUTE_WALK - 1);
+    expect(office.wants.get(good)).toBe(CELL_STOCK);
+    run(economy_, [record], COMMUTE_WALK + TRADE_SECONDS);
+    expect(office.staff).toBeGreaterThan(0);
+    expect(office.wants.get(good)!).toBeLessThan(CELL_STOCK);
   });
 });
 
@@ -350,7 +430,10 @@ describe('a town that has grown', () => {
     run(big, [record], COMMUTE_WALK * 4);
     expect(big.get(record.id)!.commutes.length)
       .toBeGreaterThan(small.get(record.id)!.commutes.length);
-    // And never more than the town will draw.
-    expect(big.get(record.id)!.commutes.length).toBeLessThanOrEqual(MAX_COMMUTERS);
+    // And never more than the town will draw, on either errand.
+    for (const purpose of ['work', 'shopping'] as const) {
+      const out = big.get(record.id)!.commutes.filter((c) => c.purpose === purpose);
+      expect(out.length).toBeLessThanOrEqual(MAX_COMMUTERS);
+    }
   });
 });

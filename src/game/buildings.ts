@@ -36,6 +36,7 @@ export const USE_LABELS: Record<BuildingUse, string> = {
   residential: '住宅',
   commercial: '商店',
   industrial: '工場',
+  office: '事務所',
   civic: '公共',
 };
 
@@ -43,8 +44,15 @@ export function useLabel(use: BuildingUse): string {
   return USE_LABELS[use];
 }
 
-export function buildingId(house: { x0: number; z0: number }): BuildingId {
-  return `${house.x0},${house.z0}`;
+/** A building's address.
+ *
+ *  The corner alone, for everything that stands on its own plot — which is every building
+ *  the game had before towers, and is why a save written before them still names its
+ *  depot correctly. A tenant of a tower adds its floor, because four of them share one
+ *  corner and each is somewhere different to deliver to. */
+export function buildingId(house: { x0: number; z0: number; floor?: number }): BuildingId {
+  const corner = `${house.x0},${house.z0}`;
+  return house.floor ? `${corner}#${house.floor}` : corner;
 }
 
 const PROFESSION_LABELS: Record<string, string> = {
@@ -61,7 +69,19 @@ const PROFESSION_LABELS: Record<string, string> = {
  *  the player is reading the name for. A home keeps its trade in the name — a 農家 is still
  *  a 農家 — because those are homes with a job in them and calling every one of them 住宅
  *  would throw away the only thing that told them apart. */
-function labelFor(house: HouseRecord, taken: Map<string, number>): string {
+function labelFor(house: HouseRecord, taken: Map<string, number>, towers: Map<string, number>): string {
+  // A tenant is named after the building it is in and the floor it is on, because that is
+  // how somebody standing in the street would say it. The building's number is counted
+  // per plot rather than per tenant: four floors of one building are one ビル.
+  if (house.role === 'tower') {
+    const corner = `${house.x0},${house.z0}`;
+    let number = towers.get(corner);
+    if (number === undefined) {
+      number = towers.size + 1;
+      towers.set(corner, number);
+    }
+    return `ビル${number} ${(house.floor ?? 0) + 1}F`;
+  }
   const stem = stemFor(house);
   const seen = (taken.get(stem) ?? 0) + 1;
   taken.set(stem, seen);
@@ -82,6 +102,7 @@ export function buildingsOf(
   houses: readonly HouseRecord[],
 ): VillageBuilding[] {
   const taken = new Map<string, number>();
+  const towers = new Map<string, number>();
   const out: VillageBuilding[] = [];
   for (const house of houses) {
     const centreX = house.x0 + house.w / 2;
@@ -90,7 +111,7 @@ export function buildingsOf(
       ...house,
       id: buildingId(house),
       villageId: village.id,
-      label: labelFor(house, taken),
+      label: labelFor(house, taken, towers),
       fromCentre: Math.hypot(centreX - village.x, centreZ - village.z),
     });
   }
@@ -130,6 +151,8 @@ export function buildingAt(
   for (const building of buildings) {
     if (x < building.x0 || x >= building.x0 + building.w) continue;
     if (z < building.z0 || z >= building.z0 + building.d) continue;
+    // A tower's tenants all stand on the same plot, and the first of them is its ground
+    // floor: what somebody outside is looking at is the shop, not the fourth floor.
     return building;
   }
   return null;

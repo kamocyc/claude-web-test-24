@@ -9,8 +9,9 @@
  *  So this module gives every building its own appetite, and a town its own people. The
  *  loop it is here to close is:
  *
- *      住宅に人が住む → 通勤で商店・工場へ行く → 客が来た商店が品物を欲しがる
- *      → プレイヤーが運ぶ → 村が育つ → 住宅が増える → 人が増える
+ *      住宅に人が住む → 通勤で商店・工場・事務所へ行く → 買い物に来た客が品物を買う
+ *      → 品切れの商店が品物を欲しがる → プレイヤーが運ぶ → 町が育つ
+ *      → ビルが建って店と事務所が入居する → 働き口が増え、人が増える
  *
  *  Demand is *created by people moving*, which is the only reason the moving is worth
  *  simulating. Nothing here hands out development points by itself: a town that nobody
@@ -58,6 +59,13 @@ export interface TownSource {
 export const HOME_PEOPLE = 4;
 export const SHOP_JOBS = 2;
 export const WORKS_JOBS = 3;
+/** Jobs on one floor of offices.
+ *
+ *  The largest of the four, because that is the point of an office: a floor of a building
+ *  holds more people than the shop under it, and a town that has stacked five of them
+ *  over one shopfront has found somewhere to put its people other than further out along
+ *  the road. */
+export const OFFICE_JOBS = 5;
 
 /** Seconds one person takes to eat one unit of something, and seconds one filled job
  *  takes to use up one unit of what its building was stocked with.
@@ -84,6 +92,23 @@ export const COMMUTE_WALK = 20;
  *  thing you have to open the ledger to read. Shorter than `COMMUTE_WALK` at any size, so
  *  there is always more than one person out. */
 export const COMMUTE_EVERY = 24;
+/** Seconds between people setting out to *buy* something, per home in the town.
+ *
+ *  Shorter than a commute, because a town's people go to work once and to the shops
+ *  rather more often than that — and because this is the errand the player's deliveries
+ *  are actually for. Divided by the homes exactly as the commute is. */
+export const SHOP_EVERY = 15;
+/** How long somebody stays where they walked to.
+ *
+ *  A working day, and a visit to the shops. Both matter more than they look: a job that
+ *  emptied the moment its walk finished meant a shop was open for the twenty seconds
+ *  somebody happened to be standing in it, and nobody could ever have gone shopping
+ *  there. With a day in it, a town that has staffed its shops keeps them open. */
+export const WORK_DWELL = 90;
+export const SHOP_DWELL = 8;
+/** What one customer buys. A shop's whole stock is `CELL_STOCK`, so this is a visit
+ *  emptying an eighth of a shelf: a delivery lasts a while, and not forever. */
+export const SHOP_BASKET = 1;
 /** How much longer a hungry home takes over all of that. A town nobody supplies does not
  *  stop — it slows down, which reads as somewhere going quiet rather than somewhere
  *  broken. */
@@ -99,14 +124,17 @@ export const JOURNEY_SECONDS = 600;
 export const CELL_STOCK = 8;
 /** The most people waiting for a train out of one town. */
 export const MAX_WAITING = 32;
-/** How many people may be walking across one town at once. Beyond this the town is busy
- *  and the rest wait their turn.
+/** How many people may be out on one errand at once. Beyond this the town is busy and
+ *  the rest wait their turn.
  *
  *  A drawing limit rather than an economic one: every commute inside the town the player
  *  is standing in is a villager mob, and a 都市 that sent everybody out at once would be
- *  sixty of them on one street. Set above what the rate above actually reaches at any
- *  stage, so it guards the extreme instead of deciding the traffic. */
-export const MAX_COMMUTERS = 12;
+ *  sixty of them on one street.
+ *
+ *  Counted per errand, because the two do not compete for the same thing: what actually
+ *  limits the walk to work is the number of jobs there are to fill, and a town whose
+ *  offices were full would otherwise never manage to send anybody shopping. */
+export const MAX_COMMUTERS = 8;
 
 /** What a home eats, burns and mends itself with. Every one of these comes out of some
  *  town's works, so a demand always has a supplier somewhere on the map — and that
@@ -114,6 +142,10 @@ export const MAX_COMMUTERS = 12;
 export const HOUSEHOLD_GOODS: readonly GoodId[] = ['bread', 'torch', 'oak_planks'];
 /** What a shop sells. Same rule. */
 export const SHOP_GOODS: readonly GoodId[] = ['glass', 'sandstone', 'iron_ingot'];
+/** What a floor of offices gets through. Paper and light and the fittings of the place —
+ *  which in this game's vocabulary is planks, glass and something to burn. Same rule
+ *  again: every one of them is some other town's works. */
+export const OFFICE_GOODS: readonly GoodId[] = ['oak_planks', 'torch', 'glass'];
 /** And what every shop sells whatever else it sells: the food off the town's own fields.
  *
  *  Guaranteed rather than shuffled in with the rest, because it is the only good with
@@ -135,10 +167,21 @@ export interface BuildingCell {
   wants: Map<GoodId, number>;
   /** Fractional carry, so consumption does not depend on the frame rate. */
   progress: number;
-  /** Jobs currently filled by somebody who walked here. Only shops and works have these,
-   *  and it is what turns "a building exists" into "a building wants something". */
+  /** Jobs currently filled by somebody who walked here. Only shops, works and offices
+   *  have these, and it is what turns "a building exists" into "a building wants
+   *  something". */
   staff: number;
+  /** Customers inside right now. Only a shop has any: this is the other half of what a
+   *  shop is for, and the number the stock actually comes off for. */
+  customers: number;
 }
+
+/** Why somebody is out on the street.
+ *
+ *  The two errands are the same walk and different consequences: going to work fills a
+ *  job, which is what makes a building want anything at all, and going shopping empties
+ *  a shelf, which is what makes the player's last delivery run out. */
+export type Errand = 'work' | 'shopping';
 
 /** Somebody walking from their home to their job or their shop. `t` is the truth; the
  *  villager the player sees is drawn from it. */
@@ -146,9 +189,14 @@ export interface Commute {
   villageId: VillageId;
   from: BuildingId;
   to: BuildingId;
+  purpose: Errand;
   /** 0 at `from`, 1 at `to`. */
   t: number;
   dir: 1 | -1;
+  /** Seconds left of the stop at the far end: a working day, or a visit to the shops.
+   *  While it runs the person is *there* — filling a job, or standing in the shop — and
+   *  the walk home starts when it is up. */
+  dwell: number;
   /** The mob currently drawing this one, when the player is near enough to see it. */
   mobId: number | null;
 }
@@ -160,8 +208,9 @@ export interface Town {
   commutes: Commute[];
   /** People who want to travel to another town, waiting at the 集荷所. */
   waiting: number;
-  /** Fractional carries for the two things a town does as a whole. */
+  /** Fractional carries for the things a town does as a whole. */
   commuteProgress: number;
+  shopProgress: number;
   journeyProgress: number;
   /** The stage the cells were last laid out for, so people are recounted when a village
    *  grows and not on every frame. */
@@ -176,6 +225,7 @@ export function peopleFor(use: BuildingUse, stage: number): number {
   const density = Math.min(4, Math.max(0, stage));
   if (use === 'residential') return HOME_PEOPLE + density;
   if (use === 'commercial') return SHOP_JOBS + density;
+  if (use === 'office') return OFFICE_JOBS + density;
   if (use === 'industrial') return WORKS_JOBS + density;
   return 0;
 }
@@ -196,7 +246,9 @@ export function goodsFor(
   // short of coal is a glassworks standing still, so half a shopping list is no use.
   if (cell.use === 'industrial') return [...village.inputs];
   if (cell.use === 'civic') return [];
-  const pool = (cell.use === 'residential' ? HOUSEHOLD_GOODS : SHOP_GOODS)
+  const pool = (cell.use === 'residential'
+    ? HOUSEHOLD_GOODS
+    : cell.use === 'office' ? OFFICE_GOODS : SHOP_GOODS)
     .filter((good) => good !== village.produces);
   const staple = cell.use === 'commercial' ? [SHOP_STAPLE] : [];
   if (pool.length === 0) return staple;
@@ -258,6 +310,7 @@ export class TownEconomy {
         commutes: [],
         waiting: 0,
         commuteProgress: 0,
+        shopProgress: 0,
         journeyProgress: 0,
         laidOutAt: -1,
       };
@@ -284,6 +337,7 @@ export class TownEconomy {
           wants: new Map(),
           progress: 0,
           staff: 0,
+          customers: 0,
         };
         town.cells.set(building.id, cell);
       }
@@ -328,7 +382,9 @@ export class TownEconomy {
       if (!village.discovered) continue;
       const town = this.ensure(village);
       this.consume(town, dt);
+      this.walk(town, dt);
       this.commute(town, village, dt);
+      this.shopping(town, village, dt);
       this.journey(town, dt);
     }
   }
@@ -338,6 +394,11 @@ export class TownEconomy {
   private consume(town: Town, dt: number): void {
     for (const cell of town.cells.values()) {
       if (cell.wants.size === 0) continue;
+      // A shop is the one building that does not use its own stock up. Somebody walks in
+      // and buys it — see `shopping` — which is the only reason the walking is worth
+      // simulating: a shop nobody visits keeps its shelves and a shop on a busy street
+      // does not, and both of those are things the player can stand in the road and see.
+      if (cell.use === 'commercial') continue;
       const users = cell.use === 'residential' ? cell.people : cell.staff;
       // An empty shop sells nothing — but it does not forget the half sale it was partway
       // through either. The clock is held, not reset. Resetting it (which is what
@@ -355,60 +416,156 @@ export class TownEconomy {
     }
   }
 
-  /** Sends people out of their homes, walks the ones already out, and takes them home
-   *  again. A commute that arrives fills a job, and a filled job is what makes a shop want
-   *  stock — which is the whole reason any of this moves. */
-  private commute(town: Town, village: VillageRecord, dt: number): void {
-    const homes: BuildingCell[] = [];
-    const jobs: BuildingCell[] = [];
-    for (const cell of town.cells.values()) {
-      if (cell.use === 'residential') homes.push(cell);
-      else if (cell.use === 'commercial' || cell.use === 'industrial') jobs.push(cell);
-    }
-
+  /** Walks everybody who is already out, and settles what happens at each end.
+   *
+   *  One pass for both errands, because the walk is the same walk: what differs is what
+   *  arriving means. Somebody who came to work fills a job for as long as they stay;
+   *  somebody who came to shop stands in the shop for a while and buys something.
+   *
+   *  Note the order against `consume`: an arrival this frame is counted before the next
+   *  frame's consumption, so a job filled and a job used are never the same tick twice. */
+  private walk(town: Town, dt: number): void {
     for (let i = town.commutes.length - 1; i >= 0; i--) {
       const commute = town.commutes[i];
+      // Standing in the shop. Nothing moves until the visit is over.
+      if (commute.dwell > 0) {
+        commute.dwell = Math.max(0, commute.dwell - dt);
+        if (commute.dwell > 0) continue;
+      }
       commute.t += (dt * commute.dir) / COMMUTE_WALK;
       if (commute.t < 1 && commute.t > 0) continue;
+      const cell = town.cells.get(commute.to);
       if (commute.dir === 1) {
-        // Arrived at work. The job is filled until this person walks home again.
         commute.t = 1;
         commute.dir = -1;
-        const cell = town.cells.get(commute.to);
-        if (cell) cell.staff = Math.min(cell.people, cell.staff + 1);
+        if (commute.purpose === 'work') {
+          // Arrived at work. The job is filled for the day, and then they walk home.
+          if (cell) cell.staff = Math.min(cell.people, cell.staff + 1);
+          commute.dwell = WORK_DWELL;
+        } else if (cell) {
+          // Arrived at the shop, and bought what there was to buy. An empty shop is not
+          // a failed errand — the customer is still standing in it, which is exactly what
+          // makes the empty shelf worth looking at.
+          cell.customers += 1;
+          commute.dwell = SHOP_DWELL;
+          for (let bought = 0; bought < SHOP_BASKET; bought++) {
+            if (!take(cell)) break;
+          }
+        }
         continue;
       }
-      // Home again. The job empties, and the town is free to send somebody out.
+      // Home again. Whatever they were counted as, they are not that any more.
       commute.t = 0;
-      const cell = town.cells.get(commute.to);
-      if (cell) cell.staff = Math.max(0, cell.staff - 1);
+      if (cell) {
+        if (commute.purpose === 'work') cell.staff = Math.max(0, cell.staff - 1);
+        else cell.customers = Math.max(0, cell.customers - 1);
+      }
       town.commutes.splice(i, 1);
     }
+  }
 
+  /** Sends people out of their homes to work. A commute that arrives fills a job, and a
+   *  filled job is what makes a works or an office want anything — which is the whole
+   *  reason any of this moves. */
+  private commute(town: Town, village: VillageRecord, dt: number): void {
+    const homes = this.homesOf(town);
+    const jobs: BuildingCell[] = [];
+    for (const cell of town.cells.values()) {
+      if (cell.use === 'commercial' || cell.use === 'industrial' || cell.use === 'office') {
+        jobs.push(cell);
+      }
+    }
     if (homes.length === 0 || jobs.length === 0) return;
-    if (town.commutes.length >= MAX_COMMUTERS) return;
+    town.commuteProgress = this.setOut(
+      town, village, dt, town.commuteProgress, COMMUTE_EVERY, homes, 0x0c0f,
+      (heading) => leastStaffed(jobs, heading),
+      'work',
+    );
+  }
+
+  /** Sends people out of their homes to buy something.
+   *
+   *  Only to a shop with somebody working in it: a shop nobody has come to open is shut,
+   *  and walking a customer up to a locked door would be the wrong picture of a town that
+   *  is short of people. That also chains the two errands, which is the point — nothing
+   *  is sold anywhere until somebody has walked to work first. */
+  private shopping(town: Town, village: VillageRecord, dt: number): void {
+    const homes = this.homesOf(town);
+    const open: BuildingCell[] = [];
+    for (const cell of town.cells.values()) {
+      if (cell.use === 'commercial' && cell.staff > 0) open.push(cell);
+    }
+    if (homes.length === 0 || open.length === 0) return;
+    town.shopProgress = this.setOut(
+      town, village, dt, town.shopProgress, SHOP_EVERY, homes, 0x5107,
+      (heading) => quietest(open, heading),
+      'shopping',
+    );
+  }
+
+  private homesOf(town: Town): BuildingCell[] {
+    const homes: BuildingCell[] = [];
+    for (const cell of town.cells.values()) {
+      if (cell.use === 'residential') homes.push(cell);
+    }
+    return homes;
+  }
+
+  /** Puts people on the street at a rate, and hands back the fractional carry.
+   *
+   *  Shared by both errands because the rate is the same shape for both: so many seconds
+   *  per home, slower when the town is going hungry, and never past the drawing limit. */
+  private setOut(
+    town: Town,
+    village: VillageRecord,
+    dt: number,
+    carried: number,
+    every: number,
+    homes: readonly BuildingCell[],
+    salt: number,
+    destination: (heading: ReadonlyMap<BuildingId, number>) => BuildingCell | null,
+    purpose: Errand,
+  ): number {
     // A hungry town is a slow town. Nothing stops, so a place nobody supplies keeps
     // ticking over quietly instead of falling off the map.
     const fed = homes.some((home) => !hungry(home));
-    town.commuteProgress += dt;
-    const every = (COMMUTE_EVERY / homes.length) * (fed ? 1 : HUNGRY_FACTOR);
-    while (town.commuteProgress >= every && town.commutes.length < MAX_COMMUTERS) {
-      town.commuteProgress -= every;
+    const interval = (every / homes.length) * (fed ? 1 : HUNGRY_FACTOR);
+    let out = 0;
+    // Who is already on their way where. A destination picked off the people who have
+    // *arrived* sends the whole town to the same door: nobody arrives for twenty seconds,
+    // so for twenty seconds every building still looks empty. Counting the walk as well
+    // is what spreads a town's jobs across its buildings.
+    const heading = new Map<BuildingId, number>();
+    for (const commute of town.commutes) {
+      if (commute.purpose !== purpose) continue;
+      out++;
+      if (commute.dir === 1) heading.set(commute.to, (heading.get(commute.to) ?? 0) + 1);
+    }
+    let progress = carried + dt;
+    while (progress >= interval && out < MAX_COMMUTERS) {
+      progress -= interval;
       const pick = mulberry32(hashInts(
-        this.seed ^ 0x0c0f, village.x, village.z, town.commutes.length,
+        this.seed ^ salt, village.x, village.z, town.commutes.length,
       ));
       const home = homes[Math.floor(pick() * homes.length)];
-      const job = leastStaffed(jobs);
-      if (!home || !job) break;
+      const to = destination(heading);
+      if (!home || !to) break;
+      out++;
+      heading.set(to.id, (heading.get(to.id) ?? 0) + 1);
       town.commutes.push({
         villageId: town.id,
         from: home.id,
-        to: job.id,
+        to: to.id,
+        purpose,
         t: 0,
         dir: 1,
+        dwell: 0,
         mobId: null,
       });
     }
+    // The carry is capped at one interval so a town that spent a while at its drawing
+    // limit does not empty every home onto the street the moment a slot frees up.
+    return Math.min(progress, interval);
   }
 
   /** Fills the queue of people who want to go somewhere else. A town that is fed produces
@@ -531,13 +688,39 @@ function take(cell: BuildingCell): boolean {
   return true;
 }
 
+/** The open shop with the fewest people in it. Same idea as `leastStaffed`, and for the
+ *  same reason: a town with three shops should be a town where all three have somebody in
+ *  them, not one queue and two empty rooms. A shop is never full — there is no such thing
+ *  as a shop that turns customers away — so this always answers. */
+function quietest(
+  shops: readonly BuildingCell[],
+  heading: ReadonlyMap<BuildingId, number>,
+): BuildingCell | null {
+  let best: BuildingCell | null = null;
+  let fewest = Infinity;
+  for (const cell of shops) {
+    const expected = cell.customers + (heading.get(cell.id) ?? 0);
+    if (expected >= fewest) continue;
+    best = cell;
+    fewest = expected;
+  }
+  return best;
+}
+
 /** The job with the most room in it, so a town fills its buildings evenly rather than
  *  crowding everybody into whichever one the shuffle happened to pick first. */
-function leastStaffed(jobs: BuildingCell[]): BuildingCell | null {
+function leastStaffed(
+  jobs: readonly BuildingCell[],
+  heading: ReadonlyMap<BuildingId, number>,
+): BuildingCell | null {
   let best: BuildingCell | null = null;
+  let fewest = Infinity;
   for (const cell of jobs) {
-    if (cell.staff >= cell.people) continue;
-    if (!best || cell.staff < best.staff) best = cell;
+    const expected = cell.staff + (heading.get(cell.id) ?? 0);
+    if (expected >= cell.people) continue;
+    if (expected >= fewest) continue;
+    best = cell;
+    fewest = expected;
   }
   return best;
 }

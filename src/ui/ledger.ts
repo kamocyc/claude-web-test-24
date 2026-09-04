@@ -45,6 +45,11 @@ export interface LedgerBuilding {
   /** Jobs currently filled by somebody who walked in. A shop with nobody in it sells
    *  nothing, which is the whole reason the walking is simulated. */
   staff: number;
+  /** Customers in a shop right now. Nothing else has any: this is the number that says
+   *  where the delivered stock is actually going. */
+  customers: number;
+  /** True for a building whose people are staff rather than residents. */
+  staffed: boolean;
   /** What it is waiting for, and how much of it is in. */
   wants: { good: string; held: number; of: number }[];
 }
@@ -202,19 +207,21 @@ export function buildLedger(view: LedgerView): HTMLElement {
     );
     root.appendChild(summary);
     const table = el('div', 'ledger-table');
-    table.appendChild(row('ledger-row head', ['建物', '用途', '人', '働いている人', '待っている物']));
+    table.appendChild(row('ledger-row head', ['建物', '用途', '人', '働いている人', '客', '待っている物']));
     for (const building of view.town.buildings) {
       const wants = building.wants.length > 0
         ? building.wants.map((w) => `${w.good} ${w.held}/${w.of}`).join('・')
         : '—';
       // A shop with nobody in it is not broken and it is not selling either, and the
       // difference between those two is the one thing this table is here to say.
-      const idle = building.people > 0 && building.staff === 0 && building.use !== '住宅';
+      const idle = building.people > 0 && building.staff === 0 && building.staffed;
       const node = row(`ledger-row${idle ? ' starved' : ''}`, [
         building.label,
         building.use,
         `${building.people}`,
-        building.use === '住宅' ? '—' : `${building.staff} / ${building.people}`,
+        building.staffed ? `${building.staff} / ${building.people}` : '—',
+        // Only a shop has customers, and only a shop's stock leaves by the door.
+        building.customers > 0 ? `${building.customers}` : building.use === '商店' ? '0' : '—',
         wants,
       ]);
       if (idle) node.title = 'まだ誰も来ていないので、何も売れていない';

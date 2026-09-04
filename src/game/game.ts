@@ -3,6 +3,7 @@ import { boxIntersectsWorld, type StandingSurface } from '../core/aabb';
 import { mulberry32, hashInts } from '../core/rng';
 import { ChunkRenderer } from '../render/chunkRenderer';
 import { Effects } from '../render/effects';
+import { shopperVariant } from '../render/people';
 import { EntityRenderer } from '../render/entityRenderer';
 import { CargoRenderer, type CargoDisplay, type CargoDisplayKind } from '../render/cargoRenderer';
 import { TreeRenderer } from '../render/treeRenderer';
@@ -42,7 +43,7 @@ import {
   type CarDeck,
   type CarPose,
 } from './consist';
-import { Block, type BlockId, blockDef, isFarmland, isReplaceable, supportsPlant } from '../world/blocks';
+import { Block, type BlockId, blockDef, escalatorRise, escalatorTowards, isFarmland, isReplaceable, supportsPlant } from '../world/blocks';
 import {
   CHUNK_HEIGHT,
   CHUNK_SIZE,
@@ -95,7 +96,7 @@ import { findSpawn } from './seeds';
 import { MAP_REVEAL_RANGE, MAP_REVEAL_STEP, SPEEDS, nearestSpeed, saveSettings } from './settings';
 import { tickFurnace } from './smelting';
 import { generateTrades, restockTrades } from './trading';
-import { VILLAGE_RADIUS, type Footprint, type HouseRecord } from '../world/generation/village';
+import { REDEVELOP_STAGE, VILLAGE_RADIUS, type Footprint, type HouseRecord } from '../world/generation/village';
 import { VILLAGE_CELL_BLOCKS } from '../world/generation/villageSites';
 import {
   HEADROOM,
@@ -180,7 +181,18 @@ import {
   fieldsAt,
   type FieldSurvey,
 } from '../world/generation/fields';
-import { applyGrowth, growthChunks, growthFor, growthVillagers, outpostBuildings, ownPaving, roadCrosses } from './villageGrowth';
+import {
+  applyGrowth,
+  growthChunks,
+  growthFor,
+  growthVillagers,
+  isReplaced,
+  outpostBuildings,
+  ownPaving,
+  redevelopmentFor,
+  replacedPlots,
+  roadCrosses,
+} from './villageGrowth';
 import type { TownPlotSurvey } from '../world/generation/districts';
 import {
   buildingAt,
@@ -1397,6 +1409,13 @@ export class Game {
     if (cell.staff <= 0) return 'まだ誰も通ってきていない';
     const empty = [...cell.wants].filter(([, held]) => held <= 0).map(([good]) => good);
     if (empty.length > 0) return `${empty.map((g) => this.goodName(g)).join('・')}を待っている`;
+    // A shop is the one building whose stock goes out of the door rather than being used
+    // up inside, so the number worth putting on it is how many people are buying.
+    if (cell.use === 'commercial') {
+      return cell.customers > 0
+        ? `${cell.staff} 人が働き、${cell.customers} 人が買い物をしている`
+        : `${cell.staff} 人が働いている（客待ち）`;
+    }
     return `${cell.staff} 人が働いている`;
   }
 
@@ -1797,7 +1816,13 @@ export class Game {
     }
 
     if (def.placesBlock === undefined) return;
-    this.placeBlock(hit, def.placesBlock);
+    // An escalator is the one block whose direction the player cares about, so it is laid
+    // rising away from them: a flight built by walking backwards up its own steps is not
+    // a flight anybody meant to build.
+    const facing = escalatorRise(def.placesBlock) === null
+      ? def.placesBlock
+      : escalatorTowards(-Math.sin(this.player.yaw), -Math.cos(this.player.yaw));
+    this.placeBlock(hit, facing);
   }
 
   /**
@@ -3049,8 +3074,15 @@ export class Game {
     const houses: HouseRecord[] = [];
     // A hamlet is not on the village grid, so it has no generated houses at all: the two
     // it was written with are its whole stock of buildings.
+    const replaced = replacedPlots(this.options.seed, village);
     if (village.outpost) houses.push(...outpostBuildings(this.options.seed, village).buildings);
-    else houses.push(...this.generator.villageBuildings(village.x, village.z));
+    else {
+      // A plot the town has rebuilt no longer holds the shop it was generated with. The
+      // building standing there now is the tower, and its tenants are added below.
+      for (const house of this.generator.villageBuildings(village.x, village.z)) {
+        if (!isReplaced(replaced, house)) houses.push(house);
+      }
+    }
     const occupied = village.outpost ? [] : this.generator.villageBuildings(village.x, village.z);
     const paved = ownPaving(this.options.seed, village, occupied, this.growthSurvey(village));
     for (let stage = 1; stage <= village.stage; stage++) {
@@ -3060,6 +3092,13 @@ export class Game {
         if (roadCrosses(house, village.baseY + 1, this.world, this.roadLevelAt, paved)) continue;
         houses.push(house);
       }
+    }
+    // The tenants of every building the town has put up, ground floor first. Not tested
+    // against the road index: a redevelopment stands where the town's own shop already
+    // stood, so the ground it needs is ground it has had since the world was made.
+    for (let stage = REDEVELOP_STAGE; stage <= village.stage; stage++) {
+      const plan = redevelopmentFor(this.options.seed, village, stage);
+      if (plan) houses.push(...plan.buildings);
     }
     const list = buildingsOf(village, houses);
     this.villageBuildings.set(village.id, { stage: village.stage, roads: this.roads.revision, list });
@@ -3978,6 +4017,8 @@ export class Game {
           use: useLabel(cell.use),
           people: cell.people,
           staff: cell.staff,
+          customers: cell.customers,
+          staffed: cell.use !== 'residential' && cell.use !== 'civic',
           wants: [...cell.wants].map(([good, held]) => ({
             good: this.goodName(good),
             held,
@@ -4397,7 +4438,12 @@ export class Game {
     const from = buildings.find((b) => b.id === commute.from);
     const to = buildings.find((b) => b.id === commute.to);
     if (!from || !to) return null;
-    const plots = buildings.filter((b) => b.id !== from.id && b.id !== to.id);
+    // By plot, not by id: the tenants of one tower all stand on the same eleven by eleven
+    // block, so filtering the destination out by its address alone leaves its neighbours
+    // on the list and walls its own doorway off.
+    const ends = (b: VillageBuilding): boolean =>
+      (b.x0 === from.x0 && b.z0 === from.z0) || (b.x0 === to.x0 && b.z0 === to.z0);
+    const plots = buildings.filter((b) => !ends(b));
     const walk = pathAroundPlots(from.outside, to.outside, plots)
       // No way round at all — a doorway somebody has walled in. The straight line is at
       // least somewhere to go, and the villager's own step and hop deal with the rest.
@@ -4416,7 +4462,11 @@ export class Game {
     // Keyed on the journey rather than on the mob: a commuter is dropped and redrawn
     // every time they walk out of sight, and somebody who changed clothes each time
     // would be a different person walking the same errand.
-    mob.variant = hashInts(this.world.seed ^ 0x5c0117, textSeed(commute.from), textSeed(commute.to));
+    mob.variant = commute.purpose === 'shopping'
+      // Somebody who has gone out to buy something is carrying what they will bring back
+      // in. It is the one errand in the game whose purpose can be read off the person.
+      ? shopperVariant(hashInts(this.world.seed ^ 0x5b0b, textSeed(commute.from), textSeed(commute.to)))
+      : hashInts(this.world.seed ^ 0x5c0117, textSeed(commute.from), textSeed(commute.to));
     // Home is the village rather than the house, which is what `ensureVillageTrades` and
     // the tutorial's villagers both read: somebody walking to work is still somebody the
     // player can stop and talk to.
@@ -5677,6 +5727,7 @@ export class Game {
             use: cell.use,
             people: cell.people,
             staff: cell.staff,
+            customers: cell.customers,
             wants: [...cell.wants].map(([good, held]) => ({ good, held })),
           })),
         };
@@ -5691,8 +5742,10 @@ export class Game {
         return town.commutes.map((commute) => ({
           from: commute.from,
           to: commute.to,
+          purpose: commute.purpose,
           t: Number(commute.t.toFixed(3)),
           dir: commute.dir,
+          dwell: Number(commute.dwell.toFixed(2)),
           drawn: commute.mobId !== null,
         }));
       },
@@ -5750,6 +5803,13 @@ export class Game {
       roadIndex: () => ({ columns: this.roads.columns.size, revision: this.roads.revision }),
       /** The world's clock speed, and how much of it the machine is keeping up with. */
       speed: () => ({ set: this.options.settings.speed, effective: this.effectiveSpeed }),
+      /** Hands the town the player is standing in a delivery, the way a route arriving
+       *  does. Carting eight crates to every shop by hand is the game rather than the
+       *  browser scenario that wants to watch one of them empty again. */
+      deliverHere: (good: GoodId, count = CELL_STOCK): number => {
+        const here = this.villages.at(this.player.x, this.player.z);
+        return here ? this.towns.deliver(here.id, good, count) : 0;
+      },
       setSpeed: (speed: number): number => this.setSpeed(speed),
       /** Turns the world's clock by hand. See `fastForward`: the same seconds the game
        *  would have run, without the wall clock going with them. */

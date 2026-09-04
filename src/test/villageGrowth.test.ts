@@ -8,8 +8,16 @@ import {
   ownPaving,
   roadCrosses,
 } from '../game/villageGrowth';
-import { overlaps, planGrowth, planVillage, type Footprint } from '../world/generation/village';
-import { Block, blockDef, type BlockId } from '../world/blocks';
+import { MIN_FLOORS, STOREY } from '../world/generation/towers';
+import {
+  REDEVELOP_STAGE,
+  overlaps,
+  planGrowth,
+  planRedevelopment,
+  planVillage,
+  type Footprint,
+} from '../world/generation/village';
+import { Block, blockDef, isElevator, type BlockId } from '../world/blocks';
 import { Chunk, CHUNK_SIZE, CHUNK_VOLUME } from '../world/chunk';
 import { World } from '../world/world';
 import { ROAD_BLOCKS, RoadNetwork } from '../game/roads';
@@ -650,5 +658,110 @@ describe('a village that has already built something', () => {
     expect(roadCrosses(plot, BASE_Y + 1, world, roadAt, own)).toBe(false);
     // Without knowing what it laid, it cannot tell its own doorstep from anybody's road.
     expect(roadCrosses(plot, BASE_Y + 1, world, roadAt)).toBe(true);
+  });
+});
+
+describe('a town that rebuilds its middle', () => {
+  /** A world with the town's own generated buildings standing in it, which is what a
+   *  redevelopment finds when it arrives. */
+  function built() {
+    const world = grassWorld();
+    const plan = planVillage(1, SITE, BASE_Y, 'plains');
+    for (const list of plan.byChunk.values()) {
+      for (const p of list) world.setBlock(p.x, p.y, p.z, p.b);
+    }
+    return { world, plan };
+  }
+
+  function apply(world: World, stage: number): void {
+    for (const chunk of chunksOf(world)) applyGrowth(world, 1, record(stage), chunk, []);
+  }
+
+  /** Every cell the old shop stood in, and what it was made of. */
+  function oldShop(plan: ReturnType<typeof planVillage>, plot: Footprint) {
+    const out = new Map<string, BlockId>();
+    for (const list of plan.byChunk.values()) {
+      for (const p of list) {
+        if (p.x < plot.x0 || p.x >= plot.x0 + plot.w) continue;
+        if (p.z < plot.z0 || p.z >= plot.z0 + plot.d) continue;
+        out.set(`${p.x},${p.y},${p.z}`, p.b);
+      }
+    }
+    return out;
+  }
+
+  it('takes the old shop down and puts a building with floors up', () => {
+    clearGrowthCache();
+    const { world, plan } = built();
+    const redevelopment = planRedevelopment(1, SITE, BASE_Y, 'plains', REDEVELOP_STAGE)!;
+    const plot = redevelopment.replaces[0];
+    const before = oldShop(plan, plot);
+    // The shop is really standing there first, or this proves nothing.
+    let standing = 0;
+    for (const [key, block] of before) {
+      const [x, y, z] = key.split(',').map(Number);
+      if (block !== Block.AIR && world.getBlock(x, y, z) === block) standing++;
+    }
+    expect(standing, 'the shop this rebuilds was standing').toBeGreaterThan(40);
+
+    apply(world, REDEVELOP_STAGE);
+    // Every block the new building asked for is in the world, old walls and all. The
+    // plan is read the way the writer reads it: one block per cell, the last one asked
+    // for, because a builder raises a wall and then knocks the door out of it.
+    const wanted = new Map<string, BlockId>();
+    for (const p of redevelopment.placements) wanted.set(`${p.x},${p.y},${p.z}`, p.b);
+    const missing: string[] = [];
+    for (const [key, block] of wanted) {
+      const [x, y, z] = key.split(',').map(Number);
+      if (world.getBlock(x, y, z) !== block) missing.push(`${key}: ${world.getBlock(x, y, z)} not ${block}`);
+    }
+    expect(missing.slice(0, 5), 'the new building went up whole').toEqual([]);
+    // And it is taller than anything the town had before: a lift shaft that reaches the
+    // top floor is what a rebuilt middle is for.
+    let lifts = 0;
+    for (let y = BASE_Y; y < BASE_Y + 40; y++) {
+      for (let x = plot.x0; x < plot.x0 + plot.w; x++) {
+        for (let z = plot.z0; z < plot.z0 + plot.d; z++) {
+          if (isElevator(world.getBlock(x, y, z))) lifts++;
+        }
+      }
+    }
+    expect(lifts).toBeGreaterThanOrEqual(STOREY * MIN_FLOORS - 2);
+  });
+
+  it('changes nothing the second time it runs', () => {
+    clearGrowthCache();
+    const { world } = built();
+    apply(world, REDEVELOP_STAGE);
+    const edits = new Map(world.edits);
+    apply(world, REDEVELOP_STAGE);
+    expect(world.edits.size).toBe(edits.size);
+    for (const [key, block] of world.edits) expect(block).toBe(edits.get(key));
+  });
+
+  it('leaves anything the player put in the old shop where it is', () => {
+    clearGrowthCache();
+    const { world } = built();
+    const plot = planRedevelopment(1, SITE, BASE_Y, 'plains', REDEVELOP_STAGE)!.replaces[0];
+    // A chest on the shop floor, in the middle of the plot where the new building's own
+    // walls and desks want to be.
+    const x = plot.x0 + 3;
+    const z = plot.z0 + 3;
+    world.setBlock(x, BASE_Y + 1, z, Block.CHEST);
+    apply(world, REDEVELOP_STAGE);
+    expect(world.getBlock(x, BASE_Y + 1, z)).toBe(Block.CHEST);
+  });
+
+  it('builds nothing in the middle of a town that has not reached the stage', () => {
+    clearGrowthCache();
+    const { world, plan } = built();
+    const plot = planRedevelopment(1, SITE, BASE_Y, 'plains', REDEVELOP_STAGE)!.replaces[0];
+    apply(world, REDEVELOP_STAGE - 1);
+    // The old shop is still every bit of itself.
+    for (const [key, block] of oldShop(plan, plot)) {
+      const [x, y, z] = key.split(',').map(Number);
+      if (block === Block.AIR) continue;
+      expect(world.getBlock(x, y, z)).toBe(block);
+    }
   });
 });
