@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { boxIntersectsWorld, type StandingSurface } from '../core/aabb';
-import { mulberry32 } from '../core/rng';
+import { mulberry32, hashInts } from '../core/rng';
 import { ChunkRenderer } from '../render/chunkRenderer';
 import { Effects } from '../render/effects';
 import { EntityRenderer } from '../render/entityRenderer';
@@ -555,7 +555,7 @@ export class Game {
         },
       },
       {
-        spawnPorter: (point, vehicle, cargo, good) => this.spawnPorter(point, vehicle, cargo, good),
+        spawnPorter: (point, vehicle, cargo, good, seed) => this.spawnPorter(point, vehicle, cargo, good, seed),
         porterPosition: (id) => {
           const mob = this.livePorter(id);
           return mob ? { x: mob.x, z: mob.z } : null;
@@ -4258,6 +4258,7 @@ export class Game {
     vehicle: Vehicle,
     cargo: number,
     good: GoodId,
+    seed = 0,
   ): number | null {
     if (!this.world.hasChunk(toChunkCoord(point.x), toChunkCoord(point.z))) return null;
     const middle = centreOf(vehicle);
@@ -4267,6 +4268,12 @@ export class Game {
     // nowhere to put a second crate, so the count is only ever read for a train.
     mob.cars = carsFor(cargo);
     mob.carriesPeople = good === PASSENGER;
+    mob.cargoGood = good === PASSENGER || good === '' ? null : good;
+    mob.riders = good === PASSENGER ? cargo : 0;
+    // Which person is carrying it. The shipment's own number, so the porter who walks out
+    // of the village is the porter who walks into the far one: the mob is dropped and
+    // rebuilt at the platform, and a stranger appearing there would read as two trips.
+    mob.variant = seed;
     // The one thing on rails is the only thing given the deck to stand on. Everything
     // else that walks has no reason to be up on a viaduct and no way down off one; a
     // train has both, and without this it walks off the first pier and falls.
@@ -4367,7 +4374,7 @@ export class Game {
           commute.mobId = null;
         }
         if (!near) continue;
-        commute.mobId = this.spawnCommuter(village, here);
+        commute.mobId = this.spawnCommuter(village, here, commute);
         if (commute.mobId !== null) live.add(commute.mobId);
       }
     }
@@ -4399,9 +4406,17 @@ export class Game {
     return walk;
   }
 
-  private spawnCommuter(village: VillageRecord, at: { x: number; y: number; z: number }): number | null {
+  private spawnCommuter(
+    village: VillageRecord,
+    at: { x: number; y: number; z: number },
+    commute: Commute,
+  ): number | null {
     if (!this.world.hasChunk(toChunkCoord(at.x), toChunkCoord(at.z))) return null;
     const mob = new Mob('villager', at.x + 0.5, at.y + 1, at.z + 0.5);
+    // Keyed on the journey rather than on the mob: a commuter is dropped and redrawn
+    // every time they walk out of sight, and somebody who changed clothes each time
+    // would be a different person walking the same errand.
+    mob.variant = hashInts(this.world.seed ^ 0x5c0117, textSeed(commute.from), textSeed(commute.to));
     // Home is the village rather than the house, which is what `ensureVillageTrades` and
     // the tutorial's villagers both read: somebody walking to work is still somebody the
     // player can stop and talk to.
@@ -6114,4 +6129,13 @@ export class Game {
     for (const key of data.populatedChunks) this.populatedChunks.add(key);
     restoreSavedVillagers(data, this.mobs);
   }
+}
+
+/** A number from a string, so an identity that is spelled can be hashed with ones that
+ *  are counted. Any spread will do: what is wanted is the same answer for the same
+ *  building, not a distribution. */
+function textSeed(text: string): number {
+  let out = 0;
+  for (let i = 0; i < text.length; i++) out = (out * 31 + text.charCodeAt(i)) | 0;
+  return out;
 }

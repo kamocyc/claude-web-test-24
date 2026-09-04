@@ -1245,7 +1245,7 @@ describe('signals and the block ahead', () => {
   function ship(route: Route, t: number, dir: 1 | -1): Porter {
     const porter: Porter = {
       t, dir, home: dir === 1 ? 0 : 1, good: 'wheat', cargo: 1,
-      mobId: null, mobVehicle: null, held: 0, manual: false,
+      mobId: null, mobVehicle: null, held: 0, manual: false, seed: 1,
     };
     route.porters.push(porter);
     return porter;
@@ -1583,7 +1583,7 @@ describe('what a gradient and a curve cost a line', () => {
       route.porters.length = 0;
       const porter: Porter = {
         t: 0, dir: 1, home: 0, good: 'wheat', cargo: 1,
-        mobId: null, mobVehicle: null, held: 0, manual: false,
+        mobId: null, mobVehicle: null, held: 0, manual: false, seed: 1,
       };
       route.porters.push(porter);
       for (let i = 0; i < 40; i++) fixture.transport.update(0.5, 10_000, 10_000);

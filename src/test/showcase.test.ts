@@ -3,6 +3,7 @@ import { Block, blockDef, rotateBlockY } from '../world/blocks';
 import { CHUNK_HEIGHT, CHUNK_SIZE, blockIndex, toChunkCoord } from '../world/chunk';
 import { FLAT_GROUND_Y, flatBlockAt } from '../world/generation/flat';
 import { LANDMARKS } from '../world/generation/landmarks';
+import { PLOT } from '../world/generation/landmarks/japan';
 import { LOT, PITCH, Showcase, isAvenue } from '../world/generation/showcase';
 import { TerrainGenerator } from '../world/generation/terrain';
 import { SHOWCASE_SEED, findSpawn } from '../game/seeds';
@@ -10,19 +11,60 @@ import { SHOWCASE_SEED, findSpawn } from '../game/seeds';
 const showcase = new Showcase(SHOWCASE_SEED);
 
 describe('showcase layout', () => {
-  it('seats nine lots, one of them the plaza', () => {
+  it('seats a lot per exhibit, one of them the plaza', () => {
     expect(showcase.lots).toHaveLength(LANDMARKS.length + 1);
     expect(showcase.lots.filter((lot) => lot.landmark.kind === 'plaza')).toHaveLength(1);
     const plaza = showcase.lots.find((lot) => lot.landmark.kind === 'plaza')!;
     expect([plaza.gx, plaza.gz]).toEqual([0, 0]);
   });
 
-  it('covers all four kinds of building, twice each', () => {
+  it('covers every kind of building — the old ones twice each, the modern quarter four', () => {
     const counts = new Map<string, number>();
     for (const landmark of LANDMARKS) counts.set(landmark.kind, (counts.get(landmark.kind) ?? 0) + 1);
     expect([...counts.entries()].sort()).toEqual([
-      ['historic', 2], ['monument', 2], ['skyscraper', 2], ['western', 2],
+      ['historic', 2], ['modern', 4], ['monument', 2], ['skyscraper', 2], ['western', 2],
     ]);
+  });
+
+  it('gives the modern quarter the whole of its lot to pave', () => {
+    // The two numbers are written down in two files — the lot is the showcase's and the
+    // plot is the quarter's — because the buildings must not import the layout that
+    // seats them. This is what keeps them equal.
+    expect(PLOT).toBe(LOT);
+    for (const lot of showcase.lots.filter((entry) => entry.landmark.kind === 'modern')) {
+      expect(lot.landmark.width).toBe(LOT);
+      expect(lot.landmark.depth).toBe(LOT);
+    }
+  });
+
+  it('paves the modern lots to their boundary, and the old ones not at all', () => {
+    // Measured over the whole lot rather than over the building's own box: what is being
+    // asked is what the ground between the building and its boundary is made of.
+    const half = (LOT - 1) / 2;
+    const paved = (kind: string): number => {
+      const lot = showcase.lots.find((entry) => entry.landmark.kind === kind)!;
+      let count = 0;
+      for (let z = lot.cz - half; z <= lot.cz + half; z++) {
+        for (let x = lot.cx - half; x <= lot.cx + half; x++) {
+          const block = showcase.blockAt(x, FLAT_GROUND_Y, z);
+          if (block !== null && block !== Block.GRASS && block !== Block.DIRT) count++;
+        }
+      }
+      return count / (LOT * LOT);
+    };
+    // A street goes to the boundary. A temple stands in grass, as it did before.
+    expect(paved('modern')).toBeGreaterThan(0.9);
+    expect(paved('historic')).toBeLessThan(0.9);
+  });
+
+  it('puts the modern quarter one lot further out, at the end of each avenue', () => {
+    const modern = showcase.lots.filter((lot) => lot.landmark.kind === 'modern');
+    expect(modern).toHaveLength(4);
+    for (const lot of modern) {
+      // On an axis, two lots out: the four ends of the cross the avenues make.
+      expect(Math.max(Math.abs(lot.gx), Math.abs(lot.gz))).toBe(2);
+      expect(Math.min(Math.abs(lot.gx), Math.abs(lot.gz))).toBe(0);
+    }
   });
 
   it('keeps every building inside its own lot', () => {

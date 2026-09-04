@@ -12,9 +12,13 @@ import {
   type CarKind,
 } from '../game/consist';
 import type { MobKind } from '../game/mobs/types';
+import { VILLAGERS, seatedParts, villagerFor, type PersonSpec } from './people';
+import { villagerModel } from './creatureModels';
+import { cargoStyle, type CargoForm } from './cargoStyle';
+import type { GoodId } from '../game/villages';
 import { CREATURES, type CreatureKind } from './creatureModels';
 import type { GaitName } from './mobAnimation';
-import { MOB } from './palette';
+import { MOB, PEOPLE } from './palette';
 
 /**
  * A frame that can turn, named after the body part it drives.
@@ -64,9 +68,15 @@ export interface ModelPart {
   role: PartRole;
   /** Default `box`. */
   shape?: PartShape;
-  /** Rest rotation about the part's own centre, radians, applied Z then X then Y.
-   *  This is what lets a leg splay, a horn angle out and an ear lie back without
-   *  a joint of its own. */
+  /** Rest rotation about the part's own centre, in radians, as `[x, y, z]` — applied Z
+   *  first, then X, then Y. This is what lets a leg splay, a horn angle out and an ear lie
+   *  back without a joint of its own.
+   *
+   *  The one thing worth writing down: a round part's *length* is its own +Y, so laying a
+   *  cylinder along the world's z is a quarter turn about **x**, and standing one on an
+   *  axle across the world's x is a quarter turn about **z**. Getting those two the wrong
+   *  way round gives a wheel lying flat and a log standing on end, and it is not obvious
+   *  from the numbers which one you have. */
   rotation?: [number, number, number];
   /** Bevel as a fraction of the part's smallest dimension. Default 0.2. */
   round?: number;
@@ -132,6 +142,9 @@ const HORSE = 0xb5825c;
 const HORSE_DEEP = 0x8c6142;
 const HORSE_MANE = 0x6b4a34;
 const BUS_SIDE = 0x8fa9d8;
+/** Top of the coach body. Taller than the old solid box, because a window somebody can
+ *  see through has to have room behind it for the person sitting there. */
+const BUS_ROOF = 2.74;
 const BUS_TRIM = 0xf2e5c8;
 
 /** The hull, the deck and what stands on it. A small steamer, which is what a world with
@@ -157,17 +170,60 @@ function axle(z: number): ModelPart {
   return { size: [WHEEL_SPAN + 0.3, WHEEL, WHEEL * 0.4], offset: [0, AXLE, z], color: CHASSIS, role: 'body' };
 }
 
+/** Moves a built set of parts to where they go inside a vehicle. Seated people are
+ *  authored about the front middle of their own seat, so this is what puts a bench of
+ *  them down a carriage without any of the numbers being written twice. */
+function place(parts: ModelPart[], x: number, y: number, z: number): ModelPart[] {
+  return parts.map((part) => ({
+    ...part,
+    offset: [part.offset[0] + x, part.offset[1] + y, part.offset[2] + z] as [number, number, number],
+  }));
+}
+
+/** Which person is in a given seat. A number rather than an index, so a caller can hand
+ *  it a position and get somebody different in each seat without keeping a counter. */
+function riderFor(n: number): PersonSpec {
+  return villagerFor(Math.round(Math.abs(n) * 7 + 3));
+}
+
+/** A crate roped to somebody's back. It has to read as "carrying something somewhere"
+ *  from across a field; who is under it is whoever the mob's variant says. */
+function porterLoad(): ModelPart[] {
+  return [
+    { size: [0.48, 0.48, 0.32], offset: [0, 1.28, 0.28], color: CRATE, role: 'body' },
+    { size: [0.52, 0.1, 0.05], offset: [0, 1.28, 0.45], color: TIMBER_DARK, role: 'body' },
+    { size: [0.44, 0.06, 0.06], offset: [0, 1.34, 0], color: PEOPLE.strap, role: 'body', rotation: [0.4, 0, 0] },
+  ];
+}
+
+/** A two wheeled cart behind them. It has to read as "this road is wide enough for that"
+ *  from the side of the road, so the cart is deliberately as broad as the collision box
+ *  and the wheels stand proud of it. */
+function cartLoad(): ModelPart[] {
+  return [
+    // shafts from the hands back to the bed
+    { size: [0.06, 0.06, 0.7], offset: [-0.3, 1.05, 0.45], color: TIMBER_DARK, role: 'body' },
+    { size: [0.06, 0.06, 0.7], offset: [0.3, 1.05, 0.45], color: TIMBER_DARK, role: 'body' },
+    // the bed, its load, and the wheels
+    { size: [1.2, 0.34, 0.8], offset: [0, 0.75, 0.95], color: TIMBER, role: 'body' },
+    { size: [1.24, 0.08, 0.84], offset: [0, 0.94, 0.95], color: TIMBER_DARK, role: 'body' },
+    { size: [0.86, 0.3, 0.56], offset: [0, 1.06, 0.95], color: CRATE, role: 'body' },
+    { size: [0.14, 0.66, 0.66], offset: [-0.65, 0.62, 0.95], color: CHASSIS, role: 'body' },
+    { size: [0.14, 0.66, 0.66], offset: [0.65, 0.62, 0.95], color: CHASSIS, role: 'body' },
+  ];
+}
+
 /** A pair of horses and the coach behind them.
  *
  *  It has to read as "people, not crates" from the side of the road — that is the entire
- *  reason it exists rather than another cart — so the body is a proper coach with windows
- *  along it and a roof over them, and it is the horses in front that say why it is
- *  quicker. The legs carry the trot roles; everything else rides along.
+ *  reason it exists rather than another cart — so the body is a proper coach with a window
+ *  band you can see *through*, passengers sitting behind it, and a driver on the box. The
+ *  horses in front are what say why it is quicker.
  *
  *  The wheels are cylinders lying on their axles rather than the thin boxes the cart uses.
  *  At a cart's scale a bevelled slab reads as a wheel; at this one, four of them read as
  *  table legs, and the whole thing stops being a carriage. */
-function omnibus(): ModelPart[] {
+function omnibus(spec: PersonSpec): ModelPart[] {
   /** A wheel: a disc in the plane of travel, turned onto an axle along x. */
   const wheel = (x: number, z: number, size: number): ModelPart => ({
     size: [size, 0.16, size],
@@ -175,7 +231,8 @@ function omnibus(): ModelPart[] {
     color: CHASSIS,
     role: 'body',
     shape: 'cylinder',
-    rotation: [Math.PI / 2, 0, 0],
+    // On an axle across the vehicle: the disc's own +Y turned onto the world's x.
+    rotation: [0, 0, Math.PI / 2],
     segments: 12,
   });
   const horse = (side: -1 | 1): ModelPart[] => {
@@ -195,6 +252,43 @@ function omnibus(): ModelPart[] {
       { size: [0.2, 1.0, 0.2], offset: [x + 0.14, 0.5, -1.12], color: HORSE_DEEP, role: 'legBackRight', shape: 'cylinder' },
     ];
   };
+  // The body, as panels rather than as one box: the window band between them is an
+  // opening, and what is behind it is the people the bus is carrying.
+  const floor = 1.2;
+  const roof = BUS_ROOF;
+  const sill = floor + 0.62;
+  const head = sill + 0.62;
+  const halfWide = 0.66;
+  const body: ModelPart[] = [
+    { size: [1.36, 0.24, 2.5], offset: [0, floor - 0.1, 0.55], color: CHASSIS, role: 'body' },
+    { size: [1.32, 0.12, 2.44], offset: [0, floor, 0.5], color: TIMBER, role: 'body' },
+    { size: [1.32, roof - head, 0.14], offset: [0, (roof + head) / 2, -0.71], color: BUS_SIDE, role: 'body' },
+    { size: [1.32, sill - floor, 0.14], offset: [0, (sill + floor) / 2, -0.71], color: BUS_SIDE, role: 'body' },
+    { size: [1.32, roof - floor, 0.14], offset: [0, (roof + floor) / 2, 1.71], color: BUS_SIDE, role: 'body' },
+    { size: [1.44, 0.14, 2.62], offset: [0, roof + 0.07, 0.5], color: BUS_TRIM, role: 'body' },
+    { size: [1.46, 0.12, 0.1], offset: [0, roof + 0.2, 1.74], color: TIMBER_DARK, role: 'detail' },
+    { size: [0.1, 0.12, 2.5], offset: [-0.68, roof + 0.2, 0.5], color: TIMBER_DARK, role: 'detail' },
+    { size: [0.1, 0.12, 2.5], offset: [0.68, roof + 0.2, 0.5], color: TIMBER_DARK, role: 'detail' },
+  ];
+  for (const side of [-1, 1] as const) {
+    const x = side * halfWide;
+    body.push(
+      { size: [0.12, sill - floor, 2.44], offset: [x, (sill + floor) / 2, 0.5], color: BUS_SIDE, role: 'body' },
+      { size: [0.12, roof - head, 2.44], offset: [x, (roof + head) / 2, 0.5], color: BUS_SIDE, role: 'body' },
+      // The pillars between the windows, which is what stops the open band reading as a
+      // missing wall.
+      { size: [0.14, head - sill, 0.16], offset: [x, (head + sill) / 2, -0.5], color: BUS_SIDE, role: 'body' },
+      { size: [0.14, head - sill, 0.16], offset: [x, (head + sill) / 2, 0.5], color: BUS_SIDE, role: 'body' },
+      { size: [0.14, head - sill, 0.16], offset: [x, (head + sill) / 2, 1.5], color: BUS_SIDE, role: 'body' },
+      { size: [0.16, 0.1, 2.44], offset: [x, sill, 0.5], color: BUS_TRIM, role: 'body' },
+      // A bench down each side, and the people on it looking across the aisle. Low: a
+      // passenger's head has to clear the roof, and the roof has to clear the horses.
+      { size: [0.42, 0.16, 2.2], offset: [side * 0.42, floor + 0.14, 0.5], color: TIMBER, role: 'body' },
+    );
+    for (const z of [-0.1, 1.0]) {
+      body.push(...place(seatedParts(riderFor(side * 2 + z), side === -1 ? 1 : -1), side * 0.42, floor + 0.2, z));
+    }
+  }
   return [
     ...horse(-1),
     ...horse(1),
@@ -202,19 +296,11 @@ function omnibus(): ModelPart[] {
     { size: [0.1, 0.1, 1.8], offset: [0, 1.24, -1.6], color: TIMBER_DARK, role: 'body' },
     { size: [0.09, 0.09, 1.3], offset: [-0.5, 1.16, -0.7], color: TIMBER_DARK, role: 'body' },
     { size: [0.09, 0.09, 1.3], offset: [0.5, 1.16, -0.7], color: TIMBER_DARK, role: 'body' },
-    // The coach: a sprung body with a window band down each side, a driver's bench out in
-    // front of the passengers, and a rail round the roof for what will not fit inside.
-    { size: [1.36, 0.26, 2.5], offset: [0, 1.0, 0.55], color: CHASSIS, role: 'body' },
-    { size: [1.3, 1.16, 2.42], offset: [0, 1.72, 0.5], color: BUS_SIDE, role: 'body' },
-    { size: [1.34, 0.42, 1.86], offset: [0, 1.94, 0.5], color: GLASS, role: 'body' },
-    { size: [1.34, 0.16, 0.5], offset: [0, 1.42, -0.72], color: BUS_TRIM, role: 'body' },
-    { size: [1.42, 0.14, 2.56], offset: [0, 2.36, 0.5], color: BUS_TRIM, role: 'body' },
-    { size: [1.44, 0.12, 0.1], offset: [0, 2.48, 1.72], color: TIMBER_DARK, role: 'detail' },
-    { size: [0.1, 0.12, 2.5], offset: [-0.66, 2.48, 0.5], color: TIMBER_DARK, role: 'detail' },
-    { size: [0.1, 0.12, 2.5], offset: [0.66, 2.48, 0.5], color: TIMBER_DARK, role: 'detail' },
-    // The driver's bench, ahead of the body and over the shafts.
-    { size: [1.16, 0.3, 0.56], offset: [0, 1.9, -0.86], color: TIMBER, role: 'body' },
-    { size: [1.16, 0.42, 0.12], offset: [0, 2.16, -0.62], color: TIMBER_DARK, role: 'body' },
+    ...body,
+    // The driver on the box, out in front of the passengers where they belong.
+    { size: [1.16, 0.3, 0.56], offset: [0, floor + 0.34, -1.0], color: TIMBER, role: 'body' },
+    { size: [1.16, 0.5, 0.12], offset: [0, floor + 0.72, -0.78], color: TIMBER_DARK, role: 'body' },
+    ...place(seatedParts(spec, -1), 0, floor + 0.49, -1.05),
     wheel(-0.7, -0.3, 0.7),
     wheel(0.7, -0.3, 0.7),
     wheel(-0.72, 1.3, 1.0),
@@ -275,9 +361,99 @@ function locomotive(): ModelPart[] {
   ];
 }
 
+/** What a wagon is carrying, drawn in the wagon.
+ *
+ *  The freight used to be one crate whatever it was, which made a trainload of coal and a
+ *  trainload of glass the same picture. This is the same vocabulary the placards and the
+ *  emblems use — `cargoStyle` — so a stack of logs on a wagon is the stack of logs the
+ *  depot had waiting. An empty wagon draws nothing, which is how a train running home
+ *  light says so. */
+function wagonLoad(form: CargoForm | null, colour: number): ModelPart[] {
+  if (form === null) return [];
+  const bed = CAR_FLOOR + 0.15;
+  const wide = CAR_WIDTH - 0.5;
+  const long = CAR_LENGTH - 0.8;
+  // Lying along the wagon: a part's own +Y is its length, so a quarter turn about x lays
+  // that length down the world's z.
+  const lying: [number, number, number] = [Math.PI / 2, 0, 0];
+  switch (form) {
+    case 'logs':
+      return [-0.36, 0, 0.36].map((x, i) => ({
+        size: [0.46, long, 0.46] as [number, number, number],
+        offset: [x, bed + 0.23 + (i === 1 ? 0.4 : 0), 0] as [number, number, number],
+        color: i === 1 ? colour : shade(colour, -0.08),
+        role: 'body' as const,
+        shape: 'cylinder' as const,
+        rotation: lying,
+        segments: 8,
+      }));
+    case 'sacks':
+      return ([[-0.3, -0.75, 0], [0.3, -0.75, 0], [-0.3, 0.05, 0], [0.3, 0.05, 0], [0, 0.85, 0], [0, -0.35, 1]] as const)
+        .map(([x, z, up]) => ({
+          size: [0.5, 0.42, 0.62] as [number, number, number],
+          offset: [x, bed + 0.21 + up * 0.4, z] as [number, number, number],
+          color: up ? shade(colour, 0.08) : colour,
+          role: 'body' as const,
+          shape: 'sphere' as const,
+          segments: 8,
+        }));
+    case 'mineral':
+      return [
+        { size: [wide, 0.5, long], offset: [0, bed + 0.25, 0], color: colour, role: 'body' },
+        { size: [wide - 0.3, 0.36, long - 0.5], offset: [0, bed + 0.56, -0.1], color: shade(colour, 0.1), role: 'body', shape: 'sphere', segments: 7 },
+      ];
+    case 'ingots':
+      return [0, 1, 2].map((row) => ({
+        size: [wide - row * 0.24, 0.2, long - row * 0.5] as [number, number, number],
+        offset: [0, bed + 0.1 + row * 0.2, 0] as [number, number, number],
+        color: row === 1 ? shade(colour, -0.06) : colour,
+        role: 'body' as const,
+      }));
+    case 'planks':
+      return [0, 1, 2, 3].map((row) => ({
+        size: [wide, 0.16, long] as [number, number, number],
+        offset: [row % 2 === 0 ? -0.05 : 0.05, bed + 0.08 + row * 0.17, 0] as [number, number, number],
+        color: row % 2 === 0 ? colour : shade(colour, -0.07),
+        role: 'body' as const,
+      }));
+    case 'blocks':
+      return ([[-0.35, -0.7, 0], [0.35, -0.7, 0], [-0.35, 0.35, 0], [0.35, 0.35, 1]] as const).map(([x, z, up]) => ({
+        size: [0.62, 0.62, 0.62] as [number, number, number],
+        offset: [x, bed + 0.31 + up * 0.62, z] as [number, number, number],
+        color: up ? shade(colour, 0.08) : colour,
+        role: 'body' as const,
+      }));
+    case 'torches':
+      return [
+        { size: [wide - 0.2, 0.5, long - 0.4], offset: [0, bed + 0.25, 0], color: TIMBER, role: 'body' },
+        ...[-0.3, 0, 0.3].map((x) => ({
+          size: [0.12, 0.5, 0.12] as [number, number, number],
+          offset: [x, bed + 0.72, 0] as [number, number, number],
+          color: colour,
+          role: 'body' as const,
+          shape: 'cylinder' as const,
+        })),
+      ];
+    default:
+      return [
+        { size: [wide, WAGON_TOP - CAR_FLOOR - 0.2, long], offset: [0, (bed + WAGON_TOP) / 2, 0], color: colour, role: 'body' },
+        { size: [wide + 0.08, 0.1, long + 0.1], offset: [0, bed + 0.4, 0], color: shade(colour, -0.18), role: 'body' },
+      ];
+  }
+}
+
+/** A colour lightened or darkened, so one load can have two tones without a second entry
+ *  in the palette for every good there is. */
+function shade(colour: number, by: number): number {
+  const mix = (c: number): number =>
+    Math.max(0, Math.min(255, Math.round(by >= 0 ? c + (255 - c) * by : c * (1 + by))));
+  return (mix((colour >> 16) & 255) << 16) | (mix((colour >> 8) & 255) << 8) | mix(colour & 255);
+}
+
 /** An open wagon with its load standing proud of the sides. The load's top is `WAGON_TOP`,
  *  which is also what somebody standing on the wagon is standing on. */
-function wagonCar(): ModelPart[] {
+function wagonCar(load: CarLoad): ModelPart[] {
+  const style = load.good ? cargoStyle(load.good) : null;
   return [
     axle(-CAR_LENGTH / 2 + 0.8),
     axle(CAR_LENGTH / 2 - 0.8),
@@ -286,21 +462,22 @@ function wagonCar(): ModelPart[] {
     { size: [0.16, 0.7, CAR_LENGTH], offset: [HALF_WIDE - 0.08, CAR_FLOOR + 0.35, 0], color: TIMBER, role: 'body' },
     { size: [CAR_WIDTH, 0.7, 0.16], offset: [0, CAR_FLOOR + 0.35, -CAR_LENGTH / 2 + 0.08], color: TIMBER, role: 'body' },
     { size: [CAR_WIDTH, 0.7, 0.16], offset: [0, CAR_FLOOR + 0.35, CAR_LENGTH / 2 - 0.08], color: TIMBER, role: 'body' },
-    // the freight, borrowing the porter's crate so the same goods look the same however
-    // they are being carried
-    { size: [CAR_WIDTH - 0.4, WAGON_TOP - CAR_FLOOR, CAR_LENGTH - 0.7], offset: [0, (CAR_FLOOR + WAGON_TOP) / 2, 0], color: CRATE, role: 'body' },
-    { size: [CAR_WIDTH - 0.32, 0.1, CAR_LENGTH - 0.6], offset: [0, CAR_FLOOR + 0.5, 0], color: TIMBER_DARK, role: 'body' },
+    // People never ride in a wagon — they get coaches — so a wagon told it is carrying
+    // them draws the crate it would otherwise have drawn.
+    ...wagonLoad(style === null ? null : style.form === 'people' ? 'crate' : style.form, style?.colour ?? CRATE),
   ];
 }
 
-/** A carriage with a doorway in each side and nothing in the way of walking through it.
+/** A carriage with the window band open and the people it is carrying behind it.
  *
- *  The walls are drawn and not solid, which is the same bargain the viaduct's piers made:
- *  the floor holds you up, everything vertical is scenery. What that buys is that getting
- *  in is walking in — off a platform, at the same height, through a gap you can see. */
-function coachCar(): ModelPart[] {
+ *  The band used to be a pane painted on a solid wall, which is the same picture whether
+ *  the train is full or empty. Opening it costs two more panels a side and buys the one
+ *  thing a passenger train has to show: that there are passengers on it. */
+function coachCar(load: CarLoad): ModelPart[] {
   const panel = (CAR_LENGTH - DOORWAY) / 2;
   const panelZ = DOORWAY / 2 + panel / 2;
+  const sill = CAR_FLOOR + 1.0;
+  const head = CAR_FLOOR + 1.74;
   const parts: ModelPart[] = [
     axle(-CAR_LENGTH / 2 + 0.8),
     axle(CAR_LENGTH / 2 - 0.8),
@@ -310,19 +487,38 @@ function coachCar(): ModelPart[] {
     { size: [CAR_WIDTH, CAR_HEIGHT, 0.16], offset: [0, CAR_FLOOR + CAR_HEIGHT / 2, CAR_LENGTH / 2 - 0.08], color: COACH_SIDE, role: 'body' },
     { size: [CAR_WIDTH + 0.16, 0.16, CAR_LENGTH + 0.2], offset: [0, ROOF_TOP - 0.08, 0], color: ROOF, role: 'body' },
   ];
-  for (const side of [-1, 1]) {
+  for (const side of [-1, 1] as const) {
     const x = side * (HALF_WIDE - 0.08);
     for (const z of [-panelZ, panelZ]) {
       parts.push(
-        { size: [0.16, CAR_HEIGHT, panel], offset: [x, CAR_FLOOR + CAR_HEIGHT / 2, z], color: COACH_SIDE, role: 'body' },
-        { size: [0.2, 0.7, panel - 0.4], offset: [x, CAR_FLOOR + 1.45, z], color: GLASS, role: 'body' },
-        { size: [0.2, 0.1, panel], offset: [x, CAR_FLOOR + 0.95, z], color: COACH_TRIM, role: 'body' },
+        // Below the window and above it. Between them is a hole, and behind the hole is
+        // the inside of the carriage.
+        { size: [0.16, sill - CAR_FLOOR, panel], offset: [x, (sill + CAR_FLOOR) / 2, z], color: COACH_SIDE, role: 'body' },
+        { size: [0.16, ROOF_TOP - head, panel], offset: [x, (ROOF_TOP + head) / 2, z], color: COACH_SIDE, role: 'body' },
+        { size: [0.2, 0.12, panel], offset: [x, sill, z], color: COACH_TRIM, role: 'body' },
+        // A pillar down the middle of each opening, so it reads as two windows rather
+        // than as a missing side.
+        { size: [0.18, head - sill, 0.16], offset: [x, (head + sill) / 2, z], color: COACH_SIDE, role: 'body' },
       );
     }
     // A lintel over the doorway, so the gap reads as a door rather than as a missing wall.
     parts.push({ size: [0.16, 0.4, DOORWAY], offset: [x, ROOF_TOP - 0.32, 0], color: COACH_TRIM, role: 'body' });
     // And a bench to sit on, which is what tells a player the inside is meant for them.
     parts.push({ size: [0.4, 0.45, CAR_LENGTH - 1.2], offset: [side * (HALF_WIDE - 0.36), CAR_FLOOR + 0.22, 0], color: TIMBER, role: 'body' });
+  }
+  // The passengers, filled from the front. An odd number leaves the last seat on one
+  // side, which is what a real carriage looks like and costs nothing to allow.
+  for (let i = 0; i < load.riders; i++) {
+    const side = i % 2 === 0 ? -1 : 1;
+    const z = (Math.floor(i / 2) % 2 === 0 ? -1 : 1) * (panelZ - 0.15);
+    parts.push(
+      ...place(
+        seatedParts(riderFor(i * 5 + side + z), side === -1 ? 1 : -1),
+        side * (HALF_WIDE - 0.44),
+        CAR_FLOOR + 0.45,
+        z,
+      ),
+    );
   }
   return parts;
 }
@@ -465,66 +661,36 @@ const MODELS: Record<MobKind, ModelPart[]> = {
     { size: [0.16, 0.9, 0.16], offset: [-0.3, 0.45, 0.42], color: MOB.camelDeep, role: 'legBackLeft' },
     { size: [0.16, 0.9, 0.16], offset: [0.3, 0.45, 0.42], color: MOB.camelDeep, role: 'legBackRight' },
   ],
-  villager: [
-    { size: [0.5, 0.5, 0.5], offset: [0, 1.66, 0], color: MOB.skin, role: 'head' },
-    { size: [0.12, 0.16, 0.16], offset: [0, 1.6, -0.31], color: MOB.skinDeep, role: 'head' },
-    { size: [0.56, 0.75, 0.3], offset: [0, 1.03, 0], color: MOB.villager, role: 'body' },
-    { size: [0.5, 0.35, 0.34], offset: [0, 1.2, 0], color: MOB.villagerTrim, role: 'body' },
-    { size: [0.16, 0.5, 0.16], offset: [-0.35, 1.1, 0], color: MOB.skin, role: 'armLeft' },
-    { size: [0.16, 0.5, 0.16], offset: [0.35, 1.1, 0], color: MOB.skin, role: 'armRight' },
-    { size: [0.2, 0.7, 0.2], offset: [-0.14, 0.35, 0], color: MOB.villagerLegs, role: 'legFrontLeft' },
-    { size: [0.2, 0.7, 0.2], offset: [0.14, 0.35, 0], color: MOB.villagerLegs, role: 'legFrontRight' },
-  ],
-  // A villager in working clothes with a crate roped to their back. It has to read as
-  // "carrying something somewhere" from across a field.
-  porter: [
-    { size: [0.5, 0.5, 0.5], offset: [0, 1.66, 0], color: MOB.skin, role: 'head' },
-    { size: [0.12, 0.16, 0.16], offset: [0, 1.6, -0.31], color: MOB.skinDeep, role: 'head' },
-    { size: [0.56, 0.75, 0.3], offset: [0, 1.03, 0], color: MOB.porter, role: 'body' },
-    { size: [0.5, 0.35, 0.34], offset: [0, 1.2, 0], color: MOB.porterTrim, role: 'body' },
-    { size: [0.16, 0.5, 0.16], offset: [-0.35, 1.1, 0], color: MOB.skin, role: 'armLeft' },
-    { size: [0.16, 0.5, 0.16], offset: [0.35, 1.1, 0], color: MOB.skin, role: 'armRight' },
-    { size: [0.2, 0.7, 0.2], offset: [-0.14, 0.35, 0], color: MOB.porterLegs, role: 'legFrontLeft' },
-    { size: [0.2, 0.7, 0.2], offset: [0.14, 0.35, 0], color: MOB.porterLegs, role: 'legFrontRight' },
-    { size: [0.52, 0.52, 0.34], offset: [0, 1.32, 0.3], color: CRATE, role: 'body' },
-    { size: [0.56, 0.1, 0.05], offset: [0, 1.32, 0.48], color: TIMBER_DARK, role: 'body' },
-  ],
+  villager: villagerModel(VILLAGERS[0]).parts,
+  porter: [...villagerModel(VILLAGERS[0]).parts, ...porterLoad()],
   // The same porter with a two wheeled cart behind them. It has to read as "this road is
   // wide enough for that" from the side of the road, so the cart is deliberately as broad
   // as the collision box and the wheels stand proud of it.
-  cart: [
-    { size: [0.5, 0.5, 0.5], offset: [0, 1.66, 0], color: MOB.skin, role: 'head' },
-    { size: [0.12, 0.16, 0.16], offset: [0, 1.6, -0.31], color: MOB.skinDeep, role: 'head' },
-    { size: [0.56, 0.75, 0.3], offset: [0, 1.03, 0], color: MOB.porter, role: 'body' },
-    { size: [0.5, 0.35, 0.34], offset: [0, 1.2, 0], color: MOB.porterTrim, role: 'body' },
-    { size: [0.16, 0.5, 0.16], offset: [-0.35, 1.1, 0], color: MOB.skin, role: 'armLeft' },
-    { size: [0.16, 0.5, 0.16], offset: [0.35, 1.1, 0], color: MOB.skin, role: 'armRight' },
-    { size: [0.2, 0.7, 0.2], offset: [-0.14, 0.35, 0], color: MOB.porterLegs, role: 'legFrontLeft' },
-    { size: [0.2, 0.7, 0.2], offset: [0.14, 0.35, 0], color: MOB.porterLegs, role: 'legFrontRight' },
-    // shafts from the porter's hands back to the bed
-    { size: [0.06, 0.06, 0.7], offset: [-0.3, 1.05, 0.45], color: TIMBER_DARK, role: 'body' },
-    { size: [0.06, 0.06, 0.7], offset: [0.3, 1.05, 0.45], color: TIMBER_DARK, role: 'body' },
-    // the bed, its load, and the wheels
-    { size: [1.2, 0.34, 0.8], offset: [0, 0.75, 0.95], color: TIMBER, role: 'body' },
-    { size: [1.24, 0.08, 0.84], offset: [0, 0.94, 0.95], color: TIMBER_DARK, role: 'body' },
-    { size: [0.86, 0.3, 0.56], offset: [0, 1.06, 0.95], color: CRATE, role: 'body' },
-    { size: [0.14, 0.66, 0.66], offset: [-0.65, 0.62, 0.95], color: CHASSIS, role: 'body' },
-    { size: [0.14, 0.66, 0.66], offset: [0.65, 0.62, 0.95], color: CHASSIS, role: 'body' },
-  ],
+  cart: [...villagerModel(VILLAGERS[0]).parts, ...cartLoad()],
   // The locomotive. Built to the track's own numbers rather than to numbers that happened
   // to look right — see `consist.ts` — because a train the player can stand on and walk
   // into has to be the size the rails say it is. Nothing here has a leg or an arm role:
   // the renderer swings those from the walk phase, and a train that walked would be
   // telling the player the wrong thing about what is moving the goods.
-  bus: omnibus(),
+  bus: omnibus(VILLAGERS[0]),
   ship: steamer(),
   train: locomotive(),
 };
 
-const CARS: Record<CarKind, ModelPart[]> = {
-  loco: MODELS.train,
-  wagon: wagonCar(),
-  coach: coachCar(),
+/** What one car is carrying, as the two things that change what it looks like: the good
+ *  in it, and how many people are sitting in it. Both are quantised by the renderer before
+ *  they get here — a car's geometry is built once per distinct load, not per car. */
+export interface CarLoad {
+  good: GoodId | null;
+  riders: number;
+}
+
+const EMPTY_LOAD: CarLoad = { good: null, riders: 0 };
+
+const CAR_BUILDERS: Record<CarKind, (load: CarLoad) => ModelPart[]> = {
+  loco: () => MODELS.train,
+  wagon: wagonCar,
+  coach: coachCar,
 };
 
 /** Which row of the animator's table each kind walks on. */
@@ -634,29 +800,83 @@ function tune(joints: Joint[], tuning: Tuning | undefined): Joint[] {
   return joints.map((joint) => ({ ...joint, ...tuning[joint.name] }));
 }
 
-const RIGGED = new Map<MobKind, MobModel>();
+const RIGGED = new Map<string, MobModel>();
 
-export function modelFor(kind: MobKind): MobModel {
-  // The living kinds are modelled and rigged by hand in `creatureModels.ts`. The
-  // haulers and the rolling stock are the same boxes they always were, and take
-  // the derived rig — which is what gives a porter hips without anyone having to
-  // decide where a porter's hips are.
-  const creature = CREATURES[kind as CreatureKind];
+/** The kinds with a person in them, and how each of them is built round one.
+ *
+ *  A villager *is* the person; a porter is the person with a crate on their back; a cart
+ *  and a bus are the person with something behind them. One list, so adding a thirteenth
+ *  villager gives a thirteenth porter and a thirteenth carter for nothing. */
+const PERSONAL: Partial<Record<MobKind, (spec: PersonSpec) => MobModel>> = {
+  villager: (spec) => villagerModel(spec),
+  // The person, and what they are carrying or pulling. The extras hang off no joint, so
+  // the villager's own rig — a robed walk, hands clasped, a head that looks about — is
+  // exactly what a porter gets.
+  porter: (spec) => withParts(villagerModel(spec), porterLoad()),
+  cart: (spec) => withParts(villagerModel(spec), cartLoad()),
+  // The bus is the other way round: the vehicle is the model and the people are sitting
+  // in it, so it keeps the derived rig its horses need.
+  bus: (spec) => rigged('bus', omnibus(spec)),
+};
+
+/** A model with more scenery on it. */
+function withParts(base: MobModel, extra: ModelPart[]): MobModel {
+  return { ...base, parts: [...base.parts, ...extra] };
+}
+
+/** A model from a flat list of boxes, rigged the derived way. */
+function rigged(kind: MobKind, parts: ModelPart[]): MobModel {
+  const gait = GAIT_OF[kind];
+  return { parts, joints: tune(rigFor(parts, gait), TUNING[kind]), gait };
+}
+
+/** How many ways a kind can look. One for nearly everything; the number of people there
+ *  are for anything with a person in it. */
+export function variantCount(kind: MobKind): number {
+  return PERSONAL[kind] ? VILLAGERS.length : 1;
+}
+
+/**
+ * The model for one mob, built once per kind and variant.
+ *
+ * The living kinds are modelled and rigged by hand in `creatureModels.ts`. The haulers
+ * and the rolling stock are boxes and take the derived rig — which is what gives a porter
+ * hips without anyone having to decide where a porter's hips are.
+ *
+ * `variant` is which person, for the kinds that have one. It is a plain number and is
+ * taken modulo the count, so a caller can hand over a mob id and be right.
+ */
+export function modelFor(kind: MobKind, variant = 0): MobModel {
+  // Every living kind but one is modelled and rigged by hand and has nothing to vary.
+  // The villager is the exception: it is a person, and there are twelve of those.
+  const creature = kind === 'villager' ? undefined : CREATURES[kind as CreatureKind];
   if (creature) return creature;
-  let model = RIGGED.get(kind);
+  const build = PERSONAL[kind];
+  const at = build ? ((Math.floor(variant) % VILLAGERS.length) + VILLAGERS.length) % VILLAGERS.length : 0;
+  const key = `${kind}:${at}`;
+  let model = RIGGED.get(key);
   if (!model) {
-    const parts = MODELS[kind];
-    const gait = GAIT_OF[kind];
-    model = { parts, joints: tune(rigFor(parts, gait), TUNING[kind]), gait };
-    RIGGED.set(kind, model);
+    model = build ? build(villagerFor(at)) : rigged(kind, MODELS[kind]);
+    RIGGED.set(key, model);
   }
   return model;
 }
 
 /** One car of a train, drawn in its own frame. The cars behind the engine are placed by
  *  the game from where the engine has been, so each of them is its own group in the scene
- *  rather than another box hanging off the engine's. */
-export function carModel(kind: CarKind): ModelPart[] {
-  return CARS[kind];
+ *  rather than another box hanging off the engine's.
+ *
+ *  `load` is what makes two wagons on the same train look different from two on another:
+ *  the freight is drawn in the wagon and the passengers are drawn in the coach. */
+export function carModel(kind: CarKind, load: CarLoad = EMPTY_LOAD): ModelPart[] {
+  return CAR_BUILDERS[kind](load);
+}
+
+/** What a car's geometry may be keyed by. Everything that changes its shape and nothing
+ *  that does not, so a fleet of coaches with four people in them is one geometry. */
+export function carLoadKey(kind: CarKind, load: CarLoad): string {
+  if (kind === 'loco') return 'loco';
+  if (kind === 'coach') return `coach:${load.riders}`;
+  return `wagon:${load.good ?? ''}`;
 }
 

@@ -1,6 +1,22 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import type { GoodId } from '../game/villages';
+import { cargoStyle } from './cargoStyle';
+
+export { cargoStyle, type CargoForm } from './cargoStyle';
+
+interface CargoView {
+  group: THREE.Group;
+  label: THREE.Sprite;
+  labelTexture: THREE.CanvasTexture;
+  signature: string;
+}
+
+const WOOD = 0xc7955b;
+const WOOD_DARK = 0x765238;
+const ROPE = 0xe7d39a;
+const CLOTH = 0xe8d4a5;
+const SKIN = 0xd8a47f;
 
 export type CargoDisplayKind = 'waiting' | 'porter' | 'cart' | 'bus' | 'ship' | 'train';
 
@@ -18,46 +34,6 @@ export interface CargoDisplay {
   yaw?: number;
   /** Extra vertical separation for several placards sharing one depot. */
   labelLift?: number;
-}
-
-export type CargoForm = 'people' | 'logs' | 'sacks' | 'mineral' | 'ingots' | 'planks' | 'torches' | 'blocks' | 'crate';
-
-interface CargoStyle {
-  form: CargoForm;
-  colour: number;
-}
-
-interface CargoView {
-  group: THREE.Group;
-  label: THREE.Sprite;
-  labelTexture: THREE.CanvasTexture;
-  signature: string;
-}
-
-const WOOD = 0xc7955b;
-const WOOD_DARK = 0x765238;
-const ROPE = 0xe7d39a;
-const CLOTH = 0xe8d4a5;
-const SKIN = 0xd8a47f;
-const TRAVEL = 0x57a89a;
-
-/** Stable visual vocabulary: the shape names the family and the colour names the good. */
-export function cargoStyle(good: GoodId): CargoStyle {
-  switch (good) {
-    case 'passenger': return { form: 'people', colour: TRAVEL };
-    case 'oak_log': return { form: 'logs', colour: 0x9b6a3c };
-    case 'wheat': return { form: 'sacks', colour: 0xe8bd57 };
-    case 'bread': return { form: 'sacks', colour: 0xc9813f };
-    case 'sand': return { form: 'sacks', colour: 0xe8d7a7 };
-    case 'coal': return { form: 'mineral', colour: 0x383640 };
-    case 'iron_ore': return { form: 'mineral', colour: 0xa98772 };
-    case 'iron_ingot': return { form: 'ingots', colour: 0xcbd4dc };
-    case 'oak_planks': return { form: 'planks', colour: 0xc99b61 };
-    case 'torch': return { form: 'torches', colour: 0xffb44c };
-    case 'glass': return { form: 'blocks', colour: 0x9ddce6 };
-    case 'sandstone': return { form: 'blocks', colour: 0xd9c784 };
-    default: return { form: 'crate', colour: 0xc58c54 };
-  }
 }
 
 export function cargoCaption(cargo: Pick<CargoDisplay, 'kind' | 'label' | 'count'>): string {

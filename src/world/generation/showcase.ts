@@ -33,8 +33,11 @@ export const LOT = 45;
 /** Blocks of avenue between one lot and the next. */
 export const AVENUE = 12;
 export const PITCH = LOT + AVENUE;
+/** How many lots out from the plaza the exhibition reaches. Two: the ring round the
+ *  square, and the modern quarter one lot further out along each avenue. */
+export const RINGS = 2;
 /** How far the grid reaches from the origin, lots and avenues together. */
-export const SHOWCASE_REACH = PITCH + (LOT - 1) / 2;
+export const SHOWCASE_REACH = RINGS * PITCH + (LOT - 1) / 2;
 /** Blocks between one street lamp and the next along a kerb. Sixteen rather than
  *  eight: a lamp is a lit block and stands out in daylight, and at eight the
  *  avenues had more lamp in them than they had avenue. */
@@ -47,10 +50,23 @@ const STEP_UP = 2;
 /** How far the avenues run past the outermost lots, so they read as roads out. */
 const AVENUE_OVERRUN = 12;
 
-/** Where an exhibit sits, clockwise from north — the order `LANDMARKS` is in. */
-const SEATS: ReadonlyArray<readonly [number, number]> = [
+/** The eight lots around the plaza, clockwise from north. */
+const INNER_SEATS: ReadonlyArray<readonly [number, number]> = [
   [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1],
 ];
+
+/** And the modern quarter, one lot further out at the end of each avenue.
+ *
+ *  Out there rather than in the ring for two reasons. The ring is full, and it is a ring
+ *  *of one period*: eight buildings all from the same few centuries of Europe. Walking
+ *  out of it along an avenue and arriving at a tower block is the comparison the whole
+ *  world exists to make. */
+const OUTER_SEATS: ReadonlyArray<readonly [number, number]> = [
+  [0, -2], [2, 0], [0, 2], [-2, 0],
+];
+
+/** Where an exhibit sits — the order `LANDMARKS` is in. */
+const SEATS: ReadonlyArray<readonly [number, number]> = [...INNER_SEATS, ...OUTER_SEATS];
 
 /** The material each exhibit is known by, for the plaza's marker pillars. */
 const MARKER_BLOCKS: Record<string, BlockId> = {
@@ -62,6 +78,10 @@ const MARKER_BLOCKS: Record<string, BlockId> = {
   lattice_tower: Block.STEEL,
   manor_house: Block.TIMBER_FRAME,
   townhouse_row: Block.ROOF_TILE,
+  tower_block: Block.TINTED_GLASS,
+  tenant_block: Block.SIGN_RED,
+  apartment: Block.WHITE_TILE,
+  jp_house: Block.SLATE,
 };
 
 export interface ShowcaseLot {
@@ -115,7 +135,10 @@ export class Showcase {
   private readonly plans = new Map<string, LotPlan>();
 
   constructor(private readonly seed: number) {
-    const markers = SEATS.map((_, index) => MARKER_BLOCKS[LANDMARKS[index].id] ?? Block.STONE_BRICKS);
+    // One marker pillar per direction, and there are eight directions: the pillars name
+    // the ring round the square. What is further out along an avenue is found by walking
+    // down it, which is what an avenue is for.
+    const markers = INNER_SEATS.map((_, index) => MARKER_BLOCKS[LANDMARKS[index].id] ?? Block.STONE_BRICKS);
     const plaza = createPlaza(markers);
     const lots: ShowcaseLot[] = [seatLot(0, 0, plaza)];
     SEATS.forEach(([gx, gz], index) => lots.push(seatLot(gx, gz, LANDMARKS[index])));
@@ -125,7 +148,7 @@ export class Showcase {
   lotAt(x: number, z: number): ShowcaseLot | null {
     const gx = Math.round(x / PITCH);
     const gz = Math.round(z / PITCH);
-    if (Math.abs(gx) > 1 || Math.abs(gz) > 1) return null;
+    if (Math.abs(gx) > RINGS || Math.abs(gz) > RINGS) return null;
     const lot = this.lots.find((candidate) => candidate.gx === gx && candidate.gz === gz);
     if (!lot) return null;
     return x >= lot.x0 && x <= lot.x1 && z >= lot.z0 && z <= lot.z1 ? lot : null;
@@ -347,18 +370,20 @@ function readPlan(plan: LotPlan, x: number, y: number, z: number): BlockId | nul
   return cell === 0 ? null : cell - 1;
 }
 
-/** Half a lot, and the two coordinates an avenue strip runs between. */
+/** Half a lot, and the first coordinate past it. */
 const LOT_HALF = (LOT - 1) / 2;
 const GAP_NEAR = LOT_HALF + 1;
-const GAP_FAR = PITCH - LOT_HALF - 1;
 
 /** How deep into an avenue strip a coordinate lies, or null when it is not in one.
- *  Measured from the strip's inner kerb, and symmetric about the origin, so the
- *  four avenues are one rule rather than four. */
+ *
+ *  One rule for the whole grid rather than one per street: the lots repeat every `PITCH`
+ *  blocks, so what matters is how far this column is from the nearest lot's middle. Under
+ *  half a lot it is somebody's plot; past that it is the street, and how far past is which
+ *  side of the carriageway it is on. */
 function stripDepth(v: number): number | null {
-  const a = Math.abs(v);
-  if (a < GAP_NEAR || a > GAP_FAR) return null;
-  return a - GAP_NEAR;
+  const from = ((v % PITCH) + PITCH) % PITCH;
+  if (from <= LOT_HALF || from >= PITCH - LOT_HALF) return null;
+  return from - GAP_NEAR;
 }
 
 /** Whether one of the exhibition's avenues runs through this column. */

@@ -5,7 +5,7 @@ import type { Brush } from './brush';
  *  lot that is never turned to face the square, being the square — but the rest
  *  are what the README's table is written from, and what the tests check the
  *  exhibition covers two of each of. Seating follows declaration order. */
-export type LandmarkKind = 'skyscraper' | 'western' | 'monument' | 'historic' | 'plaza';
+export type LandmarkKind = 'skyscraper' | 'western' | 'monument' | 'historic' | 'modern' | 'plaza';
 
 export interface LandmarkContext {
   /** Deterministic stream for this building on this lot: bond patterns, which

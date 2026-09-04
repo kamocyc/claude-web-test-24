@@ -1357,6 +1357,103 @@ tile('stop', (ctx) => {
   rect(ctx, 5, 4, 6, 1, [90, 84, 74]);
 });
 
+// --- the modern quarter -------------------------------------------------------
+// A Japanese street, as six surfaces. The white tile is the one that does the most work:
+// it is on the flats, on the tenant buildings and on half the houses, and it is what
+// makes those buildings read as themselves rather than as concrete boxes.
+
+const ASPHALT_C: Color = [86, 86, 92];
+const TILE_WHITE: Color = [238, 238, 232];
+const SHUTTER_C: Color = [168, 172, 178];
+
+tile('asphalt', (ctx, rng) => {
+  facets(ctx, rng, ASPHALT_C, 4, 6);
+  speckle(ctx, rng, shade(ASPHALT_C, 26), 26, 0.7);
+  speckle(ctx, rng, shade(ASPHALT_C, -20), 20, 0.6);
+});
+
+// The kerb face, so a paved edge has a side worth looking at.
+tile('asphalt_side', (ctx, rng) => {
+  facets(ctx, rng, ASPHALT_C, 3, 5);
+  rect(ctx, 0, 0, U, 2.4, shade(ASPHALT_C, 42));
+  rect(ctx, 0, 2.4, U, 0.5, shade(ASPHALT_C, -18), 0.7);
+  speckle(ctx, rng, shade(ASPHALT_C, 18), 14, 0.6);
+});
+
+// Eight courses of small tiles with a grout line between them. The course height divides
+// the tile exactly, so a wall of it carries the joint across the block seams.
+tile('white_tile', (ctx, rng) => {
+  rect(ctx, 0, 0, U, U, shade(TILE_WHITE, -34));
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 4; col++) {
+      const tone = shade(TILE_WHITE, (rng() - 0.5) * 12);
+      roundRect(ctx, col * 4 + 0.3, row * 2 + 0.3, 3.4, 1.4, 0.3, tone);
+      rect(ctx, col * 4 + 0.6, row * 2 + 0.5, 2.8, 0.4, shade(tone, 12), 0.8);
+    }
+  }
+});
+
+// A corrugated roller shutter, closed. The ribs run down the tile and repeat exactly, so
+// two of them stacked make one shutter rather than two.
+tile('shutter', (ctx, rng) => {
+  rect(ctx, 0, 0, U, U, SHUTTER_C);
+  for (let x = 0; x < U; x += 2) {
+    rect(ctx, x, 0, 1, U, shade(SHUTTER_C, 20));
+    rect(ctx, x + 1.4, 0, 0.6, U, shade(SHUTTER_C, -26));
+  }
+  // The slat joints across it, and the grime that collects on them.
+  for (let y = 3.5; y < U; y += 4) rect(ctx, 0, y, U, 0.5, shade(SHUTTER_C, -34), 0.7);
+  speckle(ctx, rng, shade(SHUTTER_C, -18), 6, 0.6);
+});
+
+/** A signboard: a coloured face, a border, and the marks that read as writing at this
+ *  size. Not letters — no font survives sixteen pixels — but the *rhythm* of a line of
+ *  them, which is what says "this is a sign" from across the street. */
+function signboard(ctx: CanvasRenderingContext2D, rng: Rng, face: Color): void {
+  rect(ctx, 0, 0, U, U, shade(face, -40));
+  rect(ctx, 0.8, 0.8, U - 1.6, U - 1.6, face);
+  rect(ctx, 0.8, 0.8, U - 1.6, 1.2, shade(face, 30), 0.7);
+  const ink: Color = [250, 248, 240];
+  // Two lines of writing, in blocks of two and three strokes: a character, near enough.
+  for (const y of [4, 9.5]) {
+    let x = 2.4;
+    while (x < U - 3.4) {
+      const wide = 1.6 + rng() * 1.4;
+      rect(ctx, x, y, wide, 0.9, ink, 0.92);
+      rect(ctx, x, y + 1.5, wide, 0.9, ink, 0.92);
+      if (rng() < 0.5) rect(ctx, x + wide / 2 - 0.35, y + 0.6, 0.7, 1.6, ink, 0.92);
+      x += wide + 1.3;
+    }
+  }
+  rect(ctx, 1.6, U - 2.6, U - 3.2, 0.8, shade(face, 46), 0.6);
+}
+
+tile('sign_red', (ctx, rng) => signboard(ctx, rng, [206, 74, 74]));
+tile('sign_blue', (ctx, rng) => signboard(ctx, rng, [66, 108, 176]));
+
+// An air conditioner's outdoor unit: a louvred box with a fan behind a grille. There is
+// one of these on every wall in the country and their absence is what makes a modern
+// building look like a model of one.
+tile('ac_side', (ctx, rng) => {
+  const shell: Color = [226, 226, 220];
+  facets(ctx, rng, shell, 2, 4);
+  rect(ctx, 0, 0, U, 1.2, shade(shell, -22));
+  rect(ctx, 0, U - 1.4, U, 1.4, shade(shell, -30));
+  disc(ctx, 8, 8.4, 5.4, shade(shell, -18));
+  disc(ctx, 8, 8.4, 4.9, shade(shell, -6));
+  // The grille bars across the fan.
+  for (let y = 4; y < 13; y += 1.6) rect(ctx, 3, y, 10, 0.7, shade(shell, -26), 0.8);
+  disc(ctx, 8, 8.4, 1.1, shade(shell, -34));
+});
+
+tile('ac_top', (ctx, rng) => {
+  const shell: Color = [226, 226, 220];
+  facets(ctx, rng, shell, 3, 5);
+  rect(ctx, 1, 1, U - 2, U - 2, shade(shell, 8));
+  for (let x = 2.5; x < U - 2; x += 2.2) rect(ctx, x, 2, 1.1, U - 4, shade(shell, -14), 0.8);
+  speckle(ctx, rng, shade(shell, -20), 6, 0.6);
+});
+
 // The industry kit, as it looks in the hand. A surveyor's stake driven into a seam: what
 // the tool actually does is *look at the ground and answer*, so the picture is the stake
 // and the rock rather than a factory the player has not earned yet.

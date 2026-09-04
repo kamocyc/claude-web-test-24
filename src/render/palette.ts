@@ -36,6 +36,32 @@ export const MOB = {
   spider: 0x9070b0, spiderDeep: 0x765897, spiderLeg: 0x624a86, spiderEye: 0xff7fa8,
 } as const;
 
+/** The people of the world, as the ranges the specs in `people.ts` pick from.
+ *
+ *  Ranges rather than named colours, because what matters is that a street holds a
+ *  variety and not that any one person is a particular brown. Skin tones are four across
+ *  a warm range; hair runs black to grey by way of the browns and one fair; the coats are
+ *  the dyed wools a place like this would actually have. */
+export const PEOPLE = {
+  skin: [0xf1cba7, 0xe0b088, 0xc08d63, 0x8c6242],
+  nose: 0xdcaf88,
+  hair: [0x4a3a30, 0x2f2a2c, 0x6b4a34, 0xc9a262, 0xd9d4cc, 0xa9a29b],
+  coat: [
+    0xc9946a, 0x8f7f6d, 0x9a6f86, 0xe0a45c, 0x7fa8d4, 0xb0708a,
+    0x6f9e7a, 0x5e7fac, 0xd0a3b4, 0x7d7495, 0x9c6f52, 0x6d8fa8,
+  ],
+  trim: [0xe3ba8f, 0xd8cfc2, 0xf0d5b0, 0xffe1a8, 0xcfe3f2],
+  legs: [0x99714f, 0x6a6270, 0x8a7f9a, 0x5c5a72],
+  cap: 0x5e7fac,
+  straw: 0xe3c98d,
+  scarf: 0xd7a0b4,
+  apron: 0xf3ead6,
+  satchel: 0x8a6a4d,
+  strap: 0x6b5340,
+  stick: 0xa8794b,
+  basket: 0xd8b782,
+} as const;
+
 export const SKY = {
   dawn: ['#ffd6b8', '#ffc7dd', '#b9d9ff'],
   day: ['#bfe9ff', '#9fd8fb', '#7fc6f5'],

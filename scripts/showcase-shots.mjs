@@ -27,6 +27,14 @@ const VIEWS = [
   { id: 'lattice_tower', seat: [-1, 1], back: 74, eye: 28, pitch: 0.25 },
   { id: 'manor_house', seat: [-1, 0], back: 40, eye: 12, pitch: 0.0 },
   { id: 'townhouse_row', seat: [-1, -1], back: 42, eye: 12, pitch: 0.0 },
+  // The modern quarter, one lot further out. Photographed from the avenue between the
+  // two rings, which is where somebody walking out of the old quarter first sees them.
+  { id: 'tower_block', seat: [0, -2], back: 70, eye: 36, pitch: 0.24 },
+  { id: 'tenant_block', seat: [2, 0], back: 40, eye: 12, pitch: 0.06 },
+  // The block of flats is thirty-five across and has an exhibit standing between it and
+  // the plaza, so it is taken from the corner of the avenue rather than head on.
+  { id: 'apartment', seat: [0, 2], from: [-44, 85], eye: 15, pitch: 0.02 },
+  { id: 'jp_house', seat: [-2, 0], back: 36, eye: 10, pitch: 0.0 },
 ];
 
 await mkdir(out, { recursive: true });
@@ -81,8 +89,10 @@ for (const view of VIEWS) {
   const cx = view.seat[0] * PITCH;
   const cz = view.seat[1] * PITCH;
   const length = Math.hypot(cx, cz);
-  const px = cx - (cx / length) * view.back;
-  const pz = cz - (cz / length) * view.back;
+  // Straight down the avenue by default; `from` is for the two lots that have an exhibit
+  // standing between them and the plaza.
+  const px = view.from ? view.from[0] : cx - (cx / length) * view.back;
+  const pz = view.from ? view.from[1] : cz - (cz / length) * view.back;
   await stand(px, GROUND + view.eye, pz, cx - px, cz - pz, view.pitch);
   await bareScreen();
   await page.screenshot({ path: `${out}/${view.id}.png` });
@@ -91,7 +101,7 @@ for (const view of VIEWS) {
 
 // The plaza from its own edge, and one corner of the exhibition from the air.
 // Not the whole of it: the game's fog closes in well before 200 blocks, and a
-// viewpoint far enough back to hold all nine lots holds them all in haze.
+// viewpoint far enough back to hold every lot holds them all in haze.
 await stand(0, GROUND + 4, 26, 0, -1, 0.05);
 await bareScreen();
 await page.screenshot({ path: `${out}/plaza.png` });
@@ -100,6 +110,11 @@ await page.screenshot({ path: `${out}/plaza.png` });
 await stand(-29, GROUND + 58, 29, 1, -1, -0.36);
 await bareScreen();
 await page.screenshot({ path: `${out}/overview.png` });
+// And the one view the world was extended to make: the modern quarter in the foreground
+// with the old ring behind it, which is the comparison the whole world is for.
+await stand(0, GROUND + 62, -186, 0, 1, -0.3);
+await bareScreen();
+await page.screenshot({ path: `${out}/avenue.png` });
 
 console.log(await page.evaluate(() => ({
   position: window.voxelcraft.position(),

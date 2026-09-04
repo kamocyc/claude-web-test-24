@@ -114,6 +114,17 @@ blockItem('marble_slab', Block.MARBLE_SLAB);
 blockItem('oak_slab', Block.OAK_SLAB);
 blockItem('concrete_slab', Block.CONCRETE_SLAB);
 
+// The modern quarter. Every one of them is a block the player can pick up and build with,
+// for the same reason the rest of the palette is: a world whose whole purpose is to show
+// what is available has to hand it over.
+blockItem('asphalt', Block.ASPHALT);
+blockItem('white_tile', Block.WHITE_TILE);
+blockItem('white_tile_slab', Block.WHITE_TILE_SLAB);
+blockItem('shutter', Block.SHUTTER);
+blockItem('sign_red', Block.SIGN_RED);
+blockItem('sign_blue', Block.SIGN_BLUE);
+blockItem('ac_unit', Block.AC_UNIT);
+
 // Cobblestone smelts back into smooth stone.
 ITEMS.get('cobblestone')!.smeltsTo = 'stone';
 

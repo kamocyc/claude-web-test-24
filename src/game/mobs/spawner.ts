@@ -1,4 +1,4 @@
-import { type Rng, mulberry32 } from '../../core/rng';
+import { type Rng, hashInts, mulberry32 } from '../../core/rng';
 import { Block, blockDef } from '../../world/blocks';
 import { CHUNK_HEIGHT } from '../../world/chunk';
 import type { World } from '../../world/world';
@@ -69,6 +69,10 @@ export class MobManager {
   addVillager(x: number, y: number, z: number, profession: string, stage = 0): Mob {
     const mob = new Mob('villager', x, y, z);
     mob.profession = profession;
+    // Which person they are, from where they live. Stable for as long as the village is:
+    // the smith at this door is the same person every time the player walks back into
+    // town, which is the whole difference between a village and a spawn table.
+    mob.variant = hashInts(this.seed ^ 0x7e0b1e, Math.round(x), Math.round(z));
     mob.trades = generateTrades(this.seed, profession, x, z, stage);
     return this.add(mob);
   }

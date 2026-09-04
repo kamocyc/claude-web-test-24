@@ -110,6 +110,39 @@ for (const kind of KINDS) {
   console.log(`${kind}: shot`);
 }
 
+// The people, all of them, in a row. The villager is the one kind with more than one
+// model, and the whole point of that is how a crowd of them looks rather than how any one
+// of them does — so this is a line-up rather than another twelve portraits.
+{
+  const spot = await page.evaluate(() => {
+    const g = window.voxelcraft;
+    for (const mob of g.mobs()) mob.health = 0;
+    const here = g.position();
+    const made = [];
+    for (let i = 0; i < 12; i++) {
+      const mob = g.game.mobs.addVillager(here.x - 12.1 + i * 2.2, here.y + 0.1, here.z - 20, 'farmer');
+      mob.variant = i;
+      made.push(mob.id);
+    }
+    return { x: here.x, y: here.y, z: here.z, made: made.length };
+  });
+  await page.waitForTimeout(900);
+  await page.evaluate((at) => {
+    const g = window.voxelcraft;
+    if (!g.player.flying) g.toggleFly();
+    g.player.x = at.x;
+    g.player.y = at.y + 1.2;
+    g.player.z = at.z - 2;
+    g.player.vx = 0; g.player.vy = 0; g.player.vz = 0;
+    g.player.yaw = 0;
+    g.player.pitch = 0;
+    for (const mob of g.mobs()) { if (mob.kind === 'villager') { mob.yaw = Math.PI; mob.vx = 0; mob.vz = 0; } }
+  }, spot);
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: `${outDir}/villagers.png` });
+  console.log(`villagers: ${spot.made} shot`);
+}
+
 const cost = await page.evaluate(async () => {
   const g = window.voxelcraft;
   for (const mob of g.mobs()) mob.health = 0;

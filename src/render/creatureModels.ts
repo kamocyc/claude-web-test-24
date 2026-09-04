@@ -1,6 +1,7 @@
 import type { GaitName } from './mobAnimation';
 import type { Joint, JointName, MobModel, ModelPart, PartRole } from './models';
-import { MOB } from './palette';
+import { MOB, PEOPLE } from './palette';
+import { VILLAGERS, type PersonSpec } from './people';
 
 /**
  * The animals and the people, one model each.
@@ -632,36 +633,184 @@ function camel(): MobModel {
 // --- the people --------------------------------------------------------------
 
 /** Upright, robed, hands clasped: everything the zombie is not. */
-function villager(): MobModel {
-  return model([
-    { size: [0.44, 0.44, 0.42], offset: [0, 1.7, 0], color: MOB.skin, tip: 0xf8dcbf, role: 'head' },
-    { size: [0.1, 0.13, 0.14], offset: [0, 1.65, -0.24], color: MOB.skinDeep, shape: 'taper', taper: 0.6, rotation: [-Math.PI / 2, 0, 0], role: 'head' },
-    ...pair({ size: [0.05, 0.05, 0.03], offset: [-0.1, 1.75, -0.21], color: DARK }, 'head', 'head'),
-    { size: [0.46, 0.08, 0.44], offset: [0, 1.9, 0], color: MOB.villagerTrim, role: 'head' },
-    { size: [0.16, 0.14, 0.16], offset: [0, 1.46, 0], color: MOB.skinDeep, role: 'neck' },
-    { size: [0.5, 0.6, 0.28], offset: [0, 1.16, 0], color: MOB.villager, tip: 0xd6a479, role: 'body' },
-    // The robe flares to the ground, so the walk is a sway rather than a scissor.
-    { size: [0.44, 0.62, 0.3], offset: [0, 0.54, 0], color: MOB.villager, shape: 'taper', taper: 0.62, rotation: [Math.PI, 0, 0], role: 'body' },
-    { size: [0.24, 0.66, 0.32], offset: [0, 1.12, -0.05], color: MOB.villagerTrim, role: 'body' },
-    ...limb([-0.24, 1.4, 0], Math.PI, [
-      { length: 0.3, thick: 0.15, pitch: 0.14, color: MOB.villager },
-      { length: 0.28, thick: 0.13, pitch: -0.5, color: MOB.skin },
+/**
+ * A person.
+ *
+ * One function for everybody in the world, because a town of forty identical people is
+ * not a town, it is a pattern — and the pattern is the one thing that makes a place look
+ * generated rather than lived in. What the spec turns is what actually reads at a
+ * distance: how tall they are, how big their head is for that height (a child's is much
+ * bigger), whether they wear a robe or trousers, what is on their head, and what they are
+ * carrying. Everything else is the same villager it always was, down to the numbers.
+ *
+ * `PersonSpec` and the list of people live in `people.ts`; nothing here chooses who
+ * anybody is.
+ */
+export function villagerModel(spec: PersonSpec): MobModel {
+  const s = spec.build;
+  const head = 0.44 * s * spec.headScale;
+  // The head sits on the neck wherever the neck is, so a bigger head grows upwards rather
+  // than sinking into the shoulders.
+  const neckTop = 1.48 * s;
+  const headY = neckTop + head / 2;
+  const crown = headY + head / 2;
+  const shoulder = 1.4 * s;
+  const hip = 0.34 * s;
+  const parts: ModelPart[] = [
+    { size: [head, head, head * 0.96], offset: [0, headY, 0], color: spec.skin, tip: lighten(spec.skin), role: 'head' },
+    {
+      size: [head * 0.23, head * 0.3, head * 0.32],
+      offset: [0, headY - head * 0.12, -head * 0.55],
+      color: darken(spec.skin), shape: 'taper', taper: 0.6, rotation: [-Math.PI / 2, 0, 0], role: 'head',
+    },
+    ...pair({ size: [0.05 * s, 0.05 * s, 0.03], offset: [-head * 0.23, headY + head * 0.11, -head * 0.48], color: DARK }, 'head', 'head'),
+    { size: [0.16 * s, 0.14 * s, 0.16 * s], offset: [0, 1.46 * s, 0], color: darken(spec.skin), role: 'neck' },
+    { size: [0.5 * s * spec.girth, 0.6 * s, 0.28 * s], offset: [0, 1.16 * s, 0], color: spec.coat, tip: darken(spec.coat), role: 'body' },
+    ...limb([-0.24 * s * spec.girth, shoulder, 0], OUTWARD, [
+      { length: 0.3 * s, thick: 0.15 * s, pitch: 0.14, color: spec.coat },
+      { length: 0.28 * s, thick: 0.13 * s, pitch: -0.5, color: spec.skin },
     ], 'armLeft'),
-    ...limb([0.24, 1.4, 0], 0, [
-      { length: 0.3, thick: 0.15, pitch: 0.14, color: MOB.villager },
-      { length: 0.28, thick: 0.13, pitch: -0.5, color: MOB.skin },
+    ...limb([0.24 * s * spec.girth, shoulder, 0], 0, [
+      { length: 0.3 * s, thick: 0.15 * s, pitch: 0.14, color: spec.coat },
+      { length: 0.28 * s, thick: 0.13 * s, pitch: -0.5, color: spec.skin },
     ], 'armRight'),
-    ...pair({ size: [0.16, 0.32, 0.16], offset: [-0.11, 0.18, 0], color: MOB.villagerLegs, shape: 'cylinder' }, 'legFrontLeft', 'legFrontRight'),
-    ...pair({ size: [0.17, 0.07, 0.24], offset: [-0.11, 0.035, -0.04], color: HOOF }, 'legFrontLeft', 'legFrontRight'),
-  ], [
-    joint('neck', [0, 1.4, 0]),
-    joint('head', [0, 1.48, 0]),
+  ];
+  if (spec.skirt) {
+    // A robe that flares to the ground, so the walk is a sway rather than a scissor, with
+    // the legs showing under the hem.
+    parts.push(
+      { size: [0.44 * s, 0.62 * s, 0.3 * s], offset: [0, 0.54 * s, 0], color: spec.coat, shape: 'taper', taper: 0.62, rotation: [Math.PI, 0, 0], role: 'body' },
+      ...pair({ size: [0.15 * s, 0.24 * s, 0.15 * s], offset: [-0.11 * s, 0.14 * s, 0], color: spec.legs, shape: 'cylinder' }, 'legFrontLeft', 'legFrontRight'),
+    );
+  } else {
+    parts.push(
+      ...pair({ size: [0.18 * s, 0.52 * s, 0.18 * s], offset: [-0.12 * s, 0.32 * s, 0], color: spec.legs, shape: 'cylinder' }, 'legFrontLeft', 'legFrontRight'),
+    );
+  }
+  parts.push(...pair({ size: [0.17 * s, 0.07 * s, 0.24 * s], offset: [-0.115 * s, 0.035 * s, -0.04 * s], color: HOOF }, 'legFrontLeft', 'legFrontRight'));
+  parts.push(...headwear(spec, headY, head, crown, s));
+  parts.push(...carried(spec, s));
+  return model(parts, [
+    joint('neck', [0, 1.4 * s, 0]),
+    joint('head', [0, neckTop, 0]),
     // Hands clasped in front and only a little swing: a robed walk stays robed.
-    joint('armLeft', [-0.24, 1.4, 0], { rest: [-0.35, 0, 0], gain: 0.4 }),
-    joint('armRight', [0.24, 1.4, 0], { rest: [-0.35, 0, 0], gain: 0.4 }),
-    joint('legFrontLeft', [-0.11, 0.34, 0], { gain: 0.35 }),
-    joint('legFrontRight', [0.11, 0.34, 0], { gain: 0.35 }),
+    joint('armLeft', [-0.24 * s * spec.girth, shoulder, 0], { rest: [-0.35, 0, 0], gain: 0.4 }),
+    joint('armRight', [0.24 * s * spec.girth, shoulder, 0], { rest: [-0.35, 0, 0], gain: 0.4 }),
+    joint('legFrontLeft', [-0.11 * s, hip, 0], { gain: spec.skirt ? 0.35 : 0.7 }),
+    joint('legFrontRight', [0.11 * s, hip, 0], { gain: spec.skirt ? 0.35 : 0.7 }),
   ], 'biped');
+}
+
+/** Hair and hat, hung off the head so they turn with it. */
+function headwear(spec: PersonSpec, headY: number, head: number, crown: number, s: number): ModelPart[] {
+  const parts: ModelPart[] = [];
+  const capOfHair = { size: [head + 0.02, head * 0.26, head * 0.98] as [number, number, number], offset: [0, crown - head * 0.12, 0] as [number, number, number], color: spec.hair, role: 'head' as const };
+  switch (spec.hairStyle) {
+    case 'crop':
+      parts.push(capOfHair);
+      break;
+    case 'long':
+      parts.push(capOfHair, {
+        size: [head + 0.02, head * 0.85, head * 0.3],
+        offset: [0, headY - head * 0.16, head * 0.4],
+        color: spec.hair, role: 'head',
+      });
+      break;
+    case 'braid':
+      parts.push(capOfHair, {
+        size: [head * 0.28, head * 1.1, head * 0.28],
+        offset: [0, headY - head * 0.42, head * 0.46],
+        color: spec.hair, shape: 'taper', taper: 0.5, rotation: [Math.PI, 0, 0], role: 'head',
+      });
+      break;
+    case 'bun':
+      parts.push(capOfHair, {
+        size: [head * 0.4, head * 0.4, head * 0.4],
+        offset: [0, crown - head * 0.02, head * 0.46],
+        color: spec.hair, shape: 'sphere', role: 'head',
+      });
+      break;
+    case 'bald':
+      // A rim round the back and sides, which is what a bald head looks like at this
+      // scale and is the difference between elderly and wearing a helmet.
+      parts.push({
+        size: [head + 0.02, head * 0.16, head * 0.98],
+        offset: [0, headY + head * 0.16, head * 0.04],
+        color: spec.hair, role: 'head',
+      });
+      break;
+  }
+  switch (spec.hat) {
+    case 'cap':
+      parts.push(
+        { size: [head + 0.04, head * 0.26, head + 0.02], offset: [0, crown + head * 0.04, 0], color: PEOPLE.cap, role: 'head' },
+        { size: [head * 0.9, head * 0.08, head * 0.38], offset: [0, crown - head * 0.04, -head * 0.62], color: PEOPLE.cap, role: 'head' },
+      );
+      break;
+    case 'straw':
+      // The one piece of headgear that reads from fifty blocks away.
+      parts.push({
+        size: [head * 2.0, head * 0.3, head * 2.0],
+        offset: [0, crown + head * 0.06, 0],
+        color: PEOPLE.straw, shape: 'taper', taper: 0.4, segments: 10, role: 'head',
+      });
+      break;
+    case 'hood':
+      parts.push(
+        { size: [head + 0.1 * s, head + 0.06 * s, head + 0.1 * s], offset: [0, headY + head * 0.05, head * 0.05], color: spec.trim, role: 'head' },
+        { size: [head * 0.72, head * 0.72, head * 0.16], offset: [0, headY - head * 0.02, -head * 0.56], color: spec.skin, role: 'head' },
+      );
+      break;
+    case 'scarf':
+      parts.push({ size: [head * 0.94, head * 0.26, head * 0.94], offset: [0, 1.44 * s, 0], color: PEOPLE.scarf, role: 'body' });
+      break;
+    default:
+      break;
+  }
+  return parts;
+}
+
+/** What they have with them. On an arm where it should swing, on the body where it
+ *  should not. */
+function carried(spec: PersonSpec, s: number): ModelPart[] {
+  switch (spec.carry) {
+    case 'apron':
+      return [
+        { size: [0.34 * s, 0.5 * s, 0.05], offset: [0, 0.82 * s, -0.16 * s], color: PEOPLE.apron, role: 'body' },
+        { size: [0.42 * s, 0.07 * s, 0.06], offset: [0, 1.05 * s, -0.16 * s], color: PEOPLE.strap, role: 'body' },
+      ];
+    case 'satchel':
+      return [
+        { size: [0.5 * s, 0.06 * s, 0.06], offset: [0, 1.2 * s, 0], color: PEOPLE.strap, rotation: [0.55, 0, 0], role: 'body' },
+        { size: [0.28 * s, 0.26 * s, 0.14 * s], offset: [0.26 * s, 0.9 * s, 0.06 * s], color: PEOPLE.satchel, role: 'body' },
+      ];
+    case 'stick':
+      return [{ size: [0.06 * s, 1.15 * s, 0.06 * s], offset: [0.32 * s, 0.58 * s, -0.06 * s], color: PEOPLE.stick, shape: 'cylinder', role: 'armRight' }];
+    case 'basket':
+      return [
+        { size: [0.3 * s, 0.2 * s, 0.24 * s], offset: [0, 0.94 * s, -0.28 * s], color: PEOPLE.basket, shape: 'taper', taper: 1.3, role: 'body' },
+        { size: [0.32 * s, 0.04 * s, 0.26 * s], offset: [0, 1.05 * s, -0.28 * s], color: PEOPLE.stick, role: 'body' },
+      ];
+    default:
+      return [];
+  }
+}
+
+/** A shade of a colour, for the highlight and the fold. Written here rather than in the
+ *  palette because what is wanted is "a little lighter than whatever this person is
+ *  wearing", and the palette does not know who that is. */
+function lighten(colour: number): number {
+  return mix(colour, 0.22);
+}
+
+function darken(colour: number): number {
+  return mix(colour, -0.16);
+}
+
+function mix(colour: number, by: number): number {
+  const one = (c: number): number =>
+    Math.max(0, Math.min(255, Math.round(by >= 0 ? c + (255 - c) * by : c * (1 + by))));
+  return (one((colour >> 16) & 255) << 16) | (one((colour >> 8) & 255) << 8) | one(colour & 255);
 }
 
 /** Every living kind. The haulers and the rolling stock keep their own tables. */
@@ -678,7 +827,7 @@ export const CREATURES = {
   fox: fox(),
   rabbit: rabbit(),
   camel: camel(),
-  villager: villager(),
+  villager: villagerModel(VILLAGERS[0]),
 } as const;
 
 export type CreatureKind = keyof typeof CREATURES;

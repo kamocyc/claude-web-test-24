@@ -101,6 +101,19 @@ export class Mob implements Damageable {
    *  drawn as coaches. Set from the shipment when the mob is spawned, for the same reason
    *  `cars` is: it is the one thing about a train that is visible from outside it. */
   carriesPeople = false;
+  /** What is in the wagons, so the load can be drawn as what it actually is rather than
+   *  as a crate whatever it happens to be. Null on everything that carries nothing. */
+  cargoGood: string | null = null;
+  /** How many people are on board, for the carriages to seat. Zero for freight. */
+  riders = 0;
+  /** Which of the world's people this one is, where the kind has people in it — a
+   *  villager, a porter, and whoever is driving a cart or a bus.
+   *
+   *  A plain number: the renderer takes it modulo however many there are. It is set by
+   *  whoever spawns the mob, from something that will not change under it — a commuter
+   *  keyed on its own journey looks the same each time it walks back into view, which a
+   *  commuter keyed on its mob id would not. */
+  variant = 0;
   /** Where the head of the train has been, newest first, and where each car behind it
    *  therefore is. Both are filled by whoever drives the mob — see `Game.updateTrains` —
    *  because a car is a picture of a shipment exactly as the engine is, and the mob itself

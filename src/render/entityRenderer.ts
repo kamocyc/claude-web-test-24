@@ -6,7 +6,7 @@ import type { Arrow } from '../game/mobs/spawner';
 import { itemDef } from '../game/items';
 import { blockDef } from '../world/blocks';
 import { mobDef } from '../game/mobs/types';
-import { carModel, modelFor, type Joint, type JointName } from './models';
+import { carLoadKey, carModel, modelFor, variantCount, type CarLoad, type Joint, type JointName } from './models';
 import { GAITS, jitterFor, poseMob, type GaitSpec } from './mobAnimation';
 import { buildPart, mergeParts, type PartMesh } from './mobGeometry';
 import type { Atlas } from './textures';
@@ -33,6 +33,8 @@ interface MobView {
 
 interface CarView {
   kind: CarKind;
+  /** What was built into this one, so a car whose load has changed is rebuilt. */
+  key: string;
   group: THREE.Group;
   material: THREE.MeshLambertMaterial;
 }
@@ -67,13 +69,42 @@ function shadowed(mesh: THREE.Mesh): THREE.Mesh {
   return mesh;
 }
 
+/**
+ * What one car of a train is carrying.
+ *
+ * The freight is the whole train's — a train carries one good — and the passengers are
+ * spread over the coaches after the first, which is the player's own and stays empty for
+ * them to get into. A wagon on a train carrying people is a wagon with nothing in it,
+ * which is exactly what it would be.
+ */
+function loadOfCar(mob: Mob, index: number): CarLoad {
+  // `mob.consist` is the cars *behind* the engine, so index 0 is the first coach — the
+  // one that is always there for the player to get into, and is therefore left empty.
+  if (mob.consist[index]?.kind === 'coach') {
+    if (!mob.carriesPeople || index < 1) return { good: null, riders: 0 };
+    const coaches = mob.consist.filter((car, at) => car.kind === 'coach' && at >= 1).length;
+    const before = mob.consist.slice(1, index).filter((car) => car.kind === 'coach').length;
+    // Spread over the carriages that are carrying them, so a train with three people in
+    // it is not four carriages of four.
+    const share = Math.ceil(mob.riders / Math.max(1, coaches));
+    return { good: null, riders: Math.max(0, Math.min(SEATS_PER_COACH, mob.riders - before * share)) };
+  }
+  return { good: mob.carriesPeople ? null : mob.cargoGood, riders: 0 };
+}
+
+/** How many people fit in one carriage, as far as the picture is concerned. */
+const SEATS_PER_COACH = 4;
+
 /** Draws mobs, dropped items and arrows. Meshes are created lazily and reused. */
 export class EntityRenderer {
   readonly group = new THREE.Group();
   private readonly mobViews = new Map<number, MobView>();
-  /** Geometry per kind, shared by every mob of it and never disposed with one. */
-  private readonly models = new Map<Mob['kind'], BuiltModel>();
-  private readonly cars = new Map<CarKind, THREE.BufferGeometry>();
+  /** Geometry per kind *and variant*, shared by every mob of it and never disposed with
+   *  one. Two villagers who happen to be the same person are one geometry; two who are
+   *  not are two, which is the whole cost of a street that does not look stamped out. */
+  private readonly models = new Map<string, BuiltModel>();
+  /** Car geometry, keyed by what is in the car as well as by what kind of car it is. */
+  private readonly cars = new Map<string, THREE.BufferGeometry>();
   private readonly dropViews = new Map<ItemDrop, THREE.Mesh>();
   private readonly arrowViews: THREE.Mesh[] = [];
   private readonly itemGeometries = new Map<string, THREE.BufferGeometry>();
@@ -149,10 +180,12 @@ export class EntityRenderer {
    * boxes is drawn in fewer calls than it used to be, because the two dozen that
    * never move are one mesh instead of two dozen.
    */
-  private modelFor(kind: Mob['kind']): BuiltModel {
-    const cached = this.models.get(kind);
+  private modelFor(kind: Mob['kind'], variant: number): BuiltModel {
+    const at = variantCount(kind) > 1 ? ((variant % variantCount(kind)) + variantCount(kind)) % variantCount(kind) : 0;
+    const key = `${kind}:${at}`;
+    const cached = this.models.get(key);
     if (cached) return cached;
-    const model = modelFor(kind);
+    const model = modelFor(kind, at);
     const byJoint = new Map<JointName, PartMesh[]>();
     const still: PartMesh[] = [];
     const pivots = new Map<JointName, [number, number, number]>();
@@ -188,7 +221,7 @@ export class EntityRenderer {
       rig: model.joints,
       gait: GAITS[model.gait],
     };
-    this.models.set(kind, built);
+    this.models.set(key, built);
     return built;
   }
 
@@ -196,7 +229,7 @@ export class EntityRenderer {
     const group = new THREE.Group();
     const body = new THREE.Group();
     group.add(body);
-    const built = this.modelFor(mob.kind);
+    const built = this.modelFor(mob.kind, mob.variant);
     const material = MOB_MATERIAL.clone();
     const joints: MobView['joints'] = [];
     const frames = new Map<JointName, THREE.Object3D>();
@@ -228,8 +261,13 @@ export class EntityRenderer {
       // up a different load only ever grows or loses cars off the back — but a kind that
       // has changed under an index is built again rather than repainted, because a wagon
       // and a carriage are not the same boxes in different colours.
-      if (built && built.kind !== pose.kind) this.dropCar(built);
-      const car = built && built.kind === pose.kind ? built : this.createCarView(pose.kind);
+      const load = loadOfCar(mob, i);
+      const key = carLoadKey(pose.kind, load);
+      // A kind or a load that has changed under an index is built again rather than
+      // repainted: a wagon and a carriage are not the same boxes in different colours,
+      // and neither are a wagon of logs and a wagon of coal.
+      if (built && built.key !== key) this.dropCar(built);
+      const car = built && built.key === key ? built : this.createCarView(pose.kind, load);
       if (car !== built) {
         view.cars[i] = car;
         this.group.add(car.group);
@@ -240,16 +278,17 @@ export class EntityRenderer {
   }
 
   /** A car's parts never move, so the whole thing is one mesh. */
-  private createCarView(kind: CarKind): CarView {
-    let geometry = this.cars.get(kind);
+  private createCarView(kind: CarKind, load: CarLoad): CarView {
+    const key = carLoadKey(kind, load);
+    let geometry = this.cars.get(key);
     if (!geometry) {
-      geometry = toGeometry(mergeParts(carModel(kind).map((part) => buildPart(part, [0, 0, 0]))));
-      this.cars.set(kind, geometry);
+      geometry = toGeometry(mergeParts(carModel(kind, load).map((part) => buildPart(part, [0, 0, 0]))));
+      this.cars.set(key, geometry);
     }
     const group = new THREE.Group();
     const material = MOB_MATERIAL.clone();
     group.add(shadowed(new THREE.Mesh(geometry, material)));
-    return { kind, group, material };
+    return { kind, key, group, material };
   }
 
   private dropCar(car: CarView): void {

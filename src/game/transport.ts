@@ -205,6 +205,10 @@ export interface Porter {
   /** Seconds this shipment has been standing at a signal it may not pass. Zero whenever
    *  it moved, so it counts the wait it is in rather than the waits it has had. */
   held: number;
+  /** This shipment's own number, for anything that has to look the same every time it is
+   *  drawn. The mob showing it is dropped and rebuilt whenever the goods change hands, and
+   *  a different porter appearing at the platform would read as a different trip. */
+  seed: number;
   /** True while the player is driving this one. The timetable stops moving it and the
    *  throttle starts; everything else about it — what it holds, what it is owed, what it
    *  hands over at the far end — is unchanged, which is the point of driving being a
@@ -441,7 +445,7 @@ export interface PorterHost {
    *  `good` is what it is carrying, and the only thing the view does with it is decide
    *  whether those cars are wagons or coaches. A train full of people that looked like a
    *  goods train would make the one visible difference between the two invisible. */
-  spawnPorter(point: RoadPoint, vehicle: Vehicle, cargo: number, good: GoodId): number | null;
+  spawnPorter(point: RoadPoint, vehicle: Vehicle, cargo: number, good: GoodId, seed: number): number | null;
   porterPosition(mobId: number): { x: number; z: number } | null;
   /** Walks the mob towards where its shipment has got to, at the route's speed, and puts
    *  it back on the road if it has fallen more than `PORTER_LEASH` behind. */
@@ -628,6 +632,8 @@ export class TransportNetwork {
   private readonly holding = new Map<number, Porter>();
   /** The train the player is driving, if any. One at a time: there is one player. */
   private run: ManualRun | null = null;
+  /** Numbers handed to shipments, so each one can be drawn the same way twice. */
+  private nextSeed = 1;
 
   constructor(
     private readonly roads: RoadNetwork,
@@ -1411,6 +1417,7 @@ export class TransportNetwork {
           mobVehicle: null,
           held: 0,
           manual: false,
+          seed: this.nextSeed++,
         });
         return;
       }
@@ -1551,7 +1558,7 @@ export class TransportNetwork {
     }
 
     if (!near) return;
-    porter.mobId = this.host.spawnPorter(here, vehicle, porter.cargo, porter.good);
+    porter.mobId = this.host.spawnPorter(here, vehicle, porter.cargo, porter.good, porter.seed);
     porter.mobVehicle = porter.mobId === null ? null : vehicle;
   }
 
@@ -1612,6 +1619,7 @@ export class TransportNetwork {
       mobVehicle: null,
       held: 0,
       manual: true,
+      seed: this.nextSeed++,
     };
     best.route.porters.push(porter);
     this.run = {

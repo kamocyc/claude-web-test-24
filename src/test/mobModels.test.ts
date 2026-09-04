@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { CREATURES, type CreatureKind } from '../render/creatureModels';
-import { modelFor, type Joint, type JointName, type ModelPart } from '../render/models';
+import { carLoadKey, carModel, modelFor, variantCount, type Joint, type JointName, type ModelPart } from '../render/models';
+import { VILLAGERS } from '../render/people';
+import { CAR_LENGTH, CAR_WIDTH, ROOF_TOP } from '../game/consist';
 import { GAITS } from '../render/mobAnimation';
 import { MOB_KINDS, mobDef } from '../game/mobs/types';
 
@@ -206,5 +208,124 @@ describe('a model and its rig', () => {
       expect(parts.length, `${kind} has too many parts`).toBeLessThanOrEqual(40);
       expect(joints.length, `${kind} has too many joints`).toBeLessThanOrEqual(14);
     }
+  });
+});
+
+describe('the people of the world', () => {
+  it('has a dozen of them, all different', () => {
+    expect(VILLAGERS.length).toBeGreaterThanOrEqual(8);
+    const ids = new Set(VILLAGERS.map((spec) => spec.id));
+    expect(ids.size, 'two people share an id').toBe(VILLAGERS.length);
+    // Different in the four things that read at a distance. Two people who differ only
+    // in the colour of their shoes are one person as far as a street is concerned.
+    const looks = new Set(
+      VILLAGERS.map((spec) => `${spec.build}|${spec.hairStyle}${spec.hat}|${spec.coat}|${spec.skirt}`),
+    );
+    expect(looks.size).toBe(VILLAGERS.length);
+  });
+
+  it('covers the range of people a town holds', () => {
+    // Children, elders and grown adults, and both ways of dressing. Not a checklist for
+    // its own sake: a crowd that is all one height and all one silhouette is the thing
+    // this replaced.
+    expect(VILLAGERS.some((spec) => spec.build < 0.7)).toBe(true);
+    expect(VILLAGERS.some((spec) => spec.build > 1)).toBe(true);
+    expect(VILLAGERS.some((spec) => spec.hairStyle === 'bald' || spec.hair === 0xd9d4cc)).toBe(true);
+    expect(VILLAGERS.some((spec) => spec.skirt)).toBe(true);
+    expect(VILLAGERS.some((spec) => !spec.skirt)).toBe(true);
+    expect(new Set(VILLAGERS.map((spec) => spec.skin)).size).toBeGreaterThanOrEqual(3);
+  });
+
+  it('builds every one of them to fit the box the game collides with', () => {
+    const def = mobDef('villager');
+    for (let variant = 0; variant < VILLAGERS.length; variant++) {
+      const model = modelFor('villager', variant);
+      const box = boxOf(model.parts);
+      const who = VILLAGERS[variant].id;
+      expect(box.maxY, `${who} is taller than a villager collides`).toBeLessThanOrEqual(def.height * 1.06);
+      expect(box.maxX, `${who} reaches too far right`).toBeLessThanOrEqual((def.width / 2) * OVERHANG);
+      expect(box.minX, `${who} reaches too far left`).toBeGreaterThanOrEqual(-(def.width / 2) * OVERHANG);
+      expect(box.minY, `${who} floats`).toBeLessThanOrEqual(0.12);
+      expect(box.minY, `${who} is buried`).toBeGreaterThanOrEqual(-0.16);
+    }
+  });
+
+  it('hangs every part of every one of them on a joint that exists', () => {
+    for (const kind of ['villager', 'porter', 'cart'] as const) {
+      for (let variant = 0; variant < VILLAGERS.length; variant++) {
+        const { parts, joints } = modelFor(kind, variant);
+        const names = new Set(joints.map((joint) => joint.name));
+        for (const part of parts) {
+          if (part.role === 'body' || part.role === 'detail') continue;
+          expect(names.has(part.role), `${kind} ${variant} hangs a part on a missing ${part.role}`)
+            .toBe(true);
+        }
+      }
+    }
+  });
+
+  it('gives a porter and a carter the person their variant says', () => {
+    // The same body under the crate, so the porter who walks out of a village is somebody
+    // from it rather than a uniformed stranger.
+    const person = modelFor('villager', 3).parts;
+    const porter = modelFor('porter', 3).parts;
+    expect(porter.length).toBeGreaterThan(person.length);
+    for (let i = 0; i < person.length; i++) expect(porter[i]).toEqual(person[i]);
+    expect(modelFor('porter', 3).parts).not.toEqual(modelFor('porter', 4).parts);
+  });
+
+  it('takes any number for a variant', () => {
+    // Mob ids and hashes go in here; nothing is required to have taken a modulo first.
+    expect(modelFor('villager', -1).parts).toEqual(modelFor('villager', VILLAGERS.length - 1).parts);
+    expect(modelFor('villager', VILLAGERS.length * 3 + 2).parts).toEqual(modelFor('villager', 2).parts);
+    expect(variantCount('villager')).toBe(VILLAGERS.length);
+    expect(variantCount('cow')).toBe(1);
+  });
+});
+
+describe('what a vehicle is carrying', () => {
+  it('draws a different load for a different good', () => {
+    const logs = carModel('wagon', { good: 'oak_log', riders: 0 });
+    const coal = carModel('wagon', { good: 'coal', riders: 0 });
+    const empty = carModel('wagon', { good: null, riders: 0 });
+    expect(logs).not.toEqual(coal);
+    // An empty wagon is the wagon and nothing else, which is how a train running home
+    // light says so.
+    expect(empty.length).toBeLessThan(logs.length);
+    expect(empty.length).toBeLessThan(coal.length);
+  });
+
+  it('keeps the load inside the wagon', () => {
+    for (const good of ['oak_log', 'coal', 'wheat', 'iron_ingot', 'oak_planks', 'glass', 'torch', 'emerald']) {
+      const box = boxOf(carModel('wagon', { good, riders: 0 }));
+      expect(box.maxX, `${good} hangs over the side`).toBeLessThanOrEqual(CAR_WIDTH / 2 + 0.2);
+      expect(box.minX, `${good} hangs over the side`).toBeGreaterThanOrEqual(-CAR_WIDTH / 2 - 0.2);
+      expect(box.maxZ, `${good} hangs over the end`).toBeLessThanOrEqual(CAR_LENGTH / 2 + 0.2);
+      expect(box.maxY, `${good} is piled absurdly high`).toBeLessThanOrEqual(3);
+    }
+  });
+
+  it('puts people in a carriage, and none in an empty one', () => {
+    const empty = carModel('coach', { good: null, riders: 0 });
+    const full = carModel('coach', { good: null, riders: 4 });
+    expect(full.length).toBeGreaterThan(empty.length);
+    // Sitting on the seats, under the roof, and inside the sides.
+    const box = boxOf(full);
+    expect(box.maxY).toBeLessThanOrEqual(ROOF_TOP);
+    expect(box.maxX).toBeLessThanOrEqual(CAR_WIDTH / 2 + 0.1);
+    expect(box.minX).toBeGreaterThanOrEqual(-CAR_WIDTH / 2 - 0.1);
+  });
+
+  it('keys a car\'s geometry by everything that changes it and nothing else', () => {
+    expect(carLoadKey('wagon', { good: 'coal', riders: 0 }))
+      .not.toBe(carLoadKey('wagon', { good: 'oak_log', riders: 0 }));
+    expect(carLoadKey('coach', { good: null, riders: 2 }))
+      .not.toBe(carLoadKey('coach', { good: null, riders: 4 }));
+    // A coach does not care what the train is carrying and a wagon does not care who is
+    // on it, so neither of those may split the cache.
+    expect(carLoadKey('coach', { good: 'coal', riders: 2 }))
+      .toBe(carLoadKey('coach', { good: null, riders: 2 }));
+    expect(carLoadKey('wagon', { good: 'coal', riders: 4 }))
+      .toBe(carLoadKey('wagon', { good: 'coal', riders: 0 }));
   });
 });

@@ -102,6 +102,15 @@ export const Block = {
   MARBLE_SLAB: 93,
   OAK_SLAB: 94,
   CONCRETE_SLAB: 95,
+
+  // --- the modern quarter -----------------------------------------------------
+  ASPHALT: 96,
+  WHITE_TILE: 97,
+  SHUTTER: 98,
+  SIGN_RED: 99,
+  SIGN_BLUE: 100,
+  AC_UNIT: 101,
+  WHITE_TILE_SLAB: 102,
 } as const;
 
 export type BlockId = number;
@@ -309,6 +318,22 @@ def({ id: B.STONE_BRICK_SLAB, name: 'stone_brick_slab', label: '石レンガの�
 def({ id: B.MARBLE_SLAB, name: 'marble_slab', label: '大理石の段', shape: 'slab', opaque: false, hardness: 2.2, tool: 'pickaxe', tier: 1, tex: { all: 'marble' } });
 def({ id: B.OAK_SLAB, name: 'oak_slab', label: '木材の段', shape: 'slab', opaque: false, hardness: 2, tool: 'axe', tex: { all: 'oak_planks' } });
 def({ id: B.CONCRETE_SLAB, name: 'concrete_slab', label: 'コンクリートの段', shape: 'slab', opaque: false, hardness: 2.4, tool: 'pickaxe', tier: 1, tex: { all: 'concrete' } });
+
+// --- the modern quarter -------------------------------------------------------
+// What a Japanese street is actually made of. Small white tiles on everything from a
+// block of flats to a six storey tenant building; a corrugated shutter over every shop
+// front after closing; a stack of signboards up the side of anything with tenants in it;
+// and an air conditioner on every wall that will hold one.
+def({ id: B.ASPHALT, name: 'asphalt', label: 'アスファルト', hardness: 1.4, tool: 'pickaxe', tier: 1, tex: { top: 'asphalt', side: 'asphalt_side', bottom: 'asphalt' } });
+def({ id: B.WHITE_TILE, name: 'white_tile', label: '白タイル', hardness: 2.2, tool: 'pickaxe', tier: 1, tex: { all: 'white_tile' } });
+def({ id: B.WHITE_TILE_SLAB, name: 'white_tile_slab', label: '白タイルの段', shape: 'slab', opaque: false, hardness: 2.2, tool: 'pickaxe', tier: 1, tex: { all: 'white_tile' } });
+def({ id: B.SHUTTER, name: 'shutter', label: 'シャッター', hardness: 2.6, tool: 'pickaxe', tier: 1, tex: { all: 'shutter' } });
+// The signs give off a little light of their own: a tenant building with its signboards
+// lit is what a street like this looks like after dark, and it is the one thing the
+// palette could not say in daylight alone.
+def({ id: B.SIGN_RED, name: 'sign_red', label: '看板（赤）', hardness: 1, tool: 'axe', light: 9, tex: { all: 'sign_red' } });
+def({ id: B.SIGN_BLUE, name: 'sign_blue', label: '看板（青）', hardness: 1, tool: 'axe', light: 9, tex: { all: 'sign_blue' } });
+def({ id: B.AC_UNIT, name: 'ac_unit', label: '室外機', hardness: 1.6, tool: 'pickaxe', tier: 1, tex: { top: 'ac_top', side: 'ac_side', bottom: 'ac_top' } });
 
 for (let i = 0; i < DEFS.length; i++) {
   if (!DEFS[i]) throw new Error(`block id ${i} has no definition`);
